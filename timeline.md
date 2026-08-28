@@ -38,11 +38,51 @@ Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
 
 | Item | Status | Evidence |
 |---|---|---|
-| 1. Plan the build in detail for a local model to execute | ✅ done | Plan file above; 12 milestones, frozen container spec, binary done-criteria per milestone |
+| 1. Plan the build in detail for a local model to execute | ✅ done | 12 milestones, frozen container spec, binary done-criteria per milestone |
 | 2. Make it model-agnostic | ✅ designed | Capability tiers probed at runtime (PROMPT/OPAQUE/CANONICAL/MAPPED); identity read from the live server; every path degrades to native prefill |
 | 3. Sidecar behind the proxy | ✅ designed | kvxd consumes `~/.cfrproxy/cache/**` manifests and adopts cfrproxy's fingerprint formula — zero proxy changes in v1 |
-| 4. M0 repo hygiene | 🟡 in progress | `.gitignore` extended; this file created |
-| 5. M1–M8 implementation | 🔴 outstanding | Fanned out to 8 parallel sandboxed sub-agents on `fred/glimmer` (Tiel Coder 35B-A3B, 2×W6800) |
+| 4. M0 repo hygiene | ✅ done | `.gitignore` extended; `timeline.md` created; `docs/research-findings.md` written |
+| 5. M1 package + manifest kvx/0.2 | ✅ done | `kv_rosetta/manifest.py` + `cli.py`; golden fingerprint unchanged (see below) |
+| 6. M2 KVX container + dtypes | ✅ done | `kv_rosetta/container.py`, `dtypes.py`; byte layout verified independently |
+| 7. M3 adapter ABC + conformance | ✅ done | `kv_rosetta/adapters/base.py`, `conformance.py`, tier enum, registry |
+| 8. M5 metrics + quality gate | ✅ done | `kv_rosetta/metrics.py`, `gate.py`; adversarial case verified |
+| 9. M8 GGSQ v3 blob parser | ✅ done | `kv_rosetta/adapters/ggsq.py`; transposed-value field order checked against the C++ |
+| 10. M9a RoPE apply/strip | ✅ done | `kv_rosetta/mappers/rope.py`; exact inverse verified |
+| 11. M6a store + watcher + budget | ✅ done | `kv_rosetta/store.py`, `daemon/watcher.py`, `daemon/budget.py` |
+| 12. Remaining test files (container, adapters, store, budget, ggsq) | 🔴 outstanding | Generation blocked by repeated upstream 502s; implementations are in place and independently verified |
+| 13. M4a/b/c runtime adapters (HF, llama.cpp HTTP, vLLM) | 🔴 outstanding | Next milestone |
+
+#### Verification evidence (independent, not the generated tests)
+
+| Claim | Method | Result |
+|---|---|---|
+| kvx/0.1 fingerprints survive the kvx/0.2 extension | Loaded the pre-change module and the new one side by side against the same manifest | Both `6e9e1fa7e16699f781403a2555844cde142a1bed4746dc0087c25f300b7b39d2` |
+| `rope_applied` / `kv_tokens` excluded from identity | Two manifests differing only in those fields | Identical fingerprints |
+| RoPE matches the HuggingFace convention | Hand-computed the pairwise rotation for D=4 at position 3 and compared | Exact match |
+| `strip_rope` is the true inverse of `apply_rope` | Round trip at position offset 100000, theta 1e6 | Max error 4.4e-16 |
+| The gate never admits on tensor similarity | Constructed near-parallel logits with the argmax moved on every position | cosine 0.999980, top-1 0.000, **admitted False**; `tensor_cosine` absent from the failure logic |
+| KVX round trip is lossless and aligned | f32/f16/bf16 write→read, offset check, byte flip, truncation, mmap vs non-mmap | Bit-identical; offset 64-byte aligned; corruption caught; no raises on bad input |
+| GGSQ transposed-value branch | Compared the parser against `llama-kv-cache.cpp:2277` | Reads `v_size_el` as uint32, not a uint64 row size — correct |
+| CLI behaviour preserved | Ran `validate`, `fingerprint`, `compat` plus the new `inspect` | rc=0; fingerprint unchanged; `inspect` reports integrity ok |
+
+#### Files
+- `kv_rosetta/` — manifest, container, dtypes, metrics, gate, store, cli, adapters/, mappers/, daemon/
+- `tests/` — 63 tests passing (`python3 -m unittest discover -s tests`)
+- `docs/research-findings.md` — runtime seams, cfrproxy surface, tier design, GGSQ layout, environment
+
+#### Notes on generating with a local model
+
+Fanned out to Tiel-Coder 35B-A3B (2x W6800) via `fred:9069`. Five distinct failure modes, all
+recorded in `docs/research-findings.md` §8: oversized prompts stall reasoning-native models;
+lossy prompt compression corrupts specs; reasoning tokens consume the output budget leaving
+empty `content` (and an empty file still compiles); long multi-file generations exceed the
+proxy's upstream timeout; a cold model returns 502 under concurrent load.
+
+The three format-critical keystones — `manifest.py`, `container.py`, `cli.py` — were written
+by hand after repeated truncations, because every other module imports through them. Every
+model-authored test file inspected so far contained at least one wrong assertion against
+correct code, so each module's central claim was re-verified independently rather than trusted
+to a green suite.
 
 #### Environment recorded (do not re-derive)
 
@@ -53,7 +93,7 @@ Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
   and the Docker registry is unreachable from this shell, so numpy-dependent modules are
   syntax-checked in-sandbox and unit-tested on the host.
 
-**REQ-002 status: IN-PROGRESS.**
+**REQ-002 status: IN-PROGRESS** — core modules landed and verified; runtime adapters (M4a/b/c) next.
 
 ### REQ-001 — Start portable KV Rosetta core
 
