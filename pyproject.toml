@@ -7,10 +7,11 @@ name = "kv-rosetta"
 version = "0.1.0"
 description = "Portable cross-model, cross-runtime KV cache exchange"
 requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
 license = {text = "Apache-2.0"}
 
 [project.scripts]
-kv-rosetta = "kv_rosetta:main"
+kv-rosetta = "kv_rosetta.cli:main"
 
-[tool.setuptools]
-py-modules = ["kv_rosetta"]
+[tool.setuptools.packages.find]
+include = ["kv_rosetta*"]

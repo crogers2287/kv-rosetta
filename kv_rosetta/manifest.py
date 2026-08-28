@@ -7,16 +7,16 @@ they are not part of cache identity.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA = "kvx/0.1"
+SCHEMA_LATEST = "kvx/0.2"
+ACCEPTED_SCHEMAS = frozenset({"kvx/0.1", "kvx/0.2"})
 LAYOUT = "layer,kv,token,head,dim"
 DTYPES = {"f32", "f16", "bf16", "fp8_e4m3", "q8_0", "q4_0"}
 
@@ -38,6 +38,24 @@ def _text(obj: dict[str, Any], key: str, where: str) -> str:
     return value
 
 
+def _bool(obj: dict[str, Any], key: str, where: str, default: bool) -> bool:
+    if key not in obj:
+        return default
+    value = obj[key]
+    if not isinstance(value, bool):
+        raise ManifestError(f"{where}.{key} must be a boolean")
+    return value
+
+
+def _non_negative_int(obj: dict[str, Any], key: str, where: str, default: int) -> int:
+    if key not in obj:
+        return default
+    value = obj[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ManifestError(f"{where}.{key} must be a non-negative integer")
+    return value
+
+
 def _positive_int(obj: dict[str, Any], key: str, where: str) -> int:
     value = obj.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -56,11 +74,13 @@ class ModelABI:
     dtype: str
     position_kind: str
     position_params: tuple[tuple[str, Any], ...]
+    rope_applied: bool = True
+    kv_tokens: int = 0
 
     @classmethod
     def from_manifest(cls, data: dict[str, Any]) -> "ModelABI":
-        if data.get("schema") != SCHEMA:
-            raise ManifestError(f"schema must be {SCHEMA!r}")
+        if data.get("schema") not in ACCEPTED_SCHEMAS:
+            raise ManifestError(f"schema must be one of {sorted(ACCEPTED_SCHEMAS)}")
         model = _object(data.get("model"), "model")
         kv = _object(data.get("kv"), "kv")
         prompt = _object(data.get("prompt"), "prompt")
@@ -76,7 +96,7 @@ class ModelABI:
         _positive_int(prompt, "token_count", "prompt")
         _text(prompt, "token_ids_sha256", "prompt")
 
-        ignored = {"kind"}
+        ignored = {"kind", "rope_applied"}
         position_params = tuple(
             sorted((key, value) for key, value in position.items() if key not in ignored)
         )
@@ -90,10 +110,32 @@ class ModelABI:
             dtype=dtype,
             position_kind=_text(position, "kind", "position"),
             position_params=position_params,
+            rope_applied=_bool(position, "rope_applied", "position", True),
+            kv_tokens=_non_negative_int(kv, "tokens", "kv", 0),
         )
 
     def fingerprint(self) -> str:
-        payload = json.dumps(self.__dict__, sort_keys=True, separators=(",", ":"))
+        """Identity digest.
+
+        Deliberately covers an explicit key subset rather than ``self.__dict__``:
+        fields added after kvx/0.1 (``rope_applied``, ``kv_tokens``) MUST NOT change
+        the digest of a manifest that already exists in the wild.
+        """
+        payload = json.dumps(
+            {
+                "architecture": self.architecture,
+                "weights_id": self.weights_id,
+                "tokenizer_id": self.tokenizer_id,
+                "layers": self.layers,
+                "kv_heads": self.kv_heads,
+                "head_dim": self.head_dim,
+                "dtype": self.dtype,
+                "position_kind": self.position_kind,
+                "position_params": self.position_params,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -148,48 +190,3 @@ def compatibility(source: ModelABI, target: ModelABI) -> dict[str, Any]:
         + (["head/dimension projector"] if not matched_kv else [])
         + (["position encoder adapter"] if not rope_pair else []),
     }
-
-
-def _json(value: Any) -> None:
-    print(json.dumps(value, indent=2, sort_keys=True))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="kv-rosetta")
-    commands = parser.add_subparsers(dest="command", required=True)
-    validate = commands.add_parser("validate", help="validate a KVX manifest")
-    validate.add_argument("manifest")
-    fingerprint = commands.add_parser("fingerprint", help="print model/cache ABI identity")
-    fingerprint.add_argument("manifest")
-    compat = commands.add_parser("compat", help="plan source-to-target cache transfer")
-    compat.add_argument("source")
-    compat.add_argument("target")
-    args = parser.parse_args(argv)
-
-    try:
-        if args.command == "validate":
-            data, abi = load(args.manifest)
-            _json({
-                "valid": True,
-                "schema": data["schema"],
-                "abi_fingerprint": abi.fingerprint(),
-                "producer": data.get("producer"),
-            })
-        elif args.command == "fingerprint":
-            _, abi = load(args.manifest)
-            print(abi.fingerprint())
-        else:
-            _, source = load(args.source)
-            _, target = load(args.target)
-            result = compatibility(source, target)
-            result["source_abi"] = source.fingerprint()
-            result["target_abi"] = target.fingerprint()
-            _json(result)
-        return 0
-    except ManifestError as exc:
-        print(f"kv-rosetta: {exc}", file=sys.stderr)
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

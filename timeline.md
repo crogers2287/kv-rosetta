@@ -1,0 +1,78 @@
+# Timeline — kv-rosetta
+
+Newest entries at the top. `REQ-NNN` increments per-repo, never resets.
+
+## 2026-08-28
+
+### REQ-002 — Build out KV Rosetta as a model-agnostic sidecar (kvxd) behind cfrproxy
+
+Source: chat ("look at this project and the context. i want to plan this out in detail so that we
+can build it"; then "id like to make it model agnostic if possible. can we add it as a sidecar to
+our model if we run it through a proxy or something like that? check the cfrproxy proj in gh").
+Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
+
+#### Decisions locked (operator, via question prompts)
+
+| Decision | Choice |
+|---|---|
+| Sidecar home / language | kv-rosetta owns `kvxd`, Python. cfrproxy unmodified in v1. |
+| Relationship to `cfrproxy/scripts/kvwarm.py` | kvxd supersedes it; replay-warm becomes its tier-0 floor. |
+| Backend seams | All three in parallel (HF transformers, llama.cpp, vLLM). |
+| Scope | Full, through the learned heterogeneous projector. |
+| ROCm leg | Real CUDA↔HIP test, not provenance-only. |
+
+#### Findings that changed the design
+
+| Finding | Evidence |
+|---|---|
+| llama.cpp already exposes a sequence-state ABI | `llama_state_seq_get_data/set_data`, `LLAMA_STATE_SEQ_VERSION 3` — `~/llama.cpp/include/llama.h:874` |
+| llama-server exposes HTTP slot save/restore | `POST /slots/:id_slot` — `~/llama.cpp/tools/server/server.cpp:286`; needs `--slot-save-path`, **not set** in `~/llama-swap/config.yaml` |
+| vLLM 0.24.0 has the V1 KV connector API | `KVConnectorBase_V1` in `~/venvs/jlens-m36v`; `shared_storage_connector` no longer exists in this version |
+| cfrproxy already implements the prompt-corpus layer | `internal/proxy/prefixcache.go` (content-addressed prefix manifests), `cachelog.go` (cache_n / cache_source / cache_reason), `routesticky.go` (affinity routing) |
+| kvwarm already probes model identity from the live server | `model_path + ftype + chat_template + bos + eos` → adopted verbatim as KVX `identity.l0_sha256` |
+| No new torch install needed | `~/venvs/jlens-m36v` = torch 2.11.0+cu130 / transformers 5.13.1 / vllm 0.24.0; `~/ComfyUI-rocm/venv` = torch 2.9.1+rocm6.4 / transformers 5.15.0 |
+| KV quant differs across the fleet | CUDA 27B runs `kvarn4`/`kvarn6`, W6800 27B runs `q8_0` → opaque (tier-1) blobs are **not** interchangeable between them |
+| transformers 5.x changed the Cache API | **Verified on `~/venvs/jlens-m36v` (transformers 5.13.1):** `key_cache`/`value_cache` are GONE. The accessor is now `cache.layers[i].keys` and `.values`, each `[batch, kv_heads, seq, head_dim]`; `DynamicLayer` also carries `is_initialized`, `dtype`, `device`. `cache.update(k, v, layer_idx)` still returns a `(keys, values)` tuple. The HF adapter MUST use `.layers[i].keys/.values`, not the 4.x names |
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Plan the build in detail for a local model to execute | ✅ done | Plan file above; 12 milestones, frozen container spec, binary done-criteria per milestone |
+| 2. Make it model-agnostic | ✅ designed | Capability tiers probed at runtime (PROMPT/OPAQUE/CANONICAL/MAPPED); identity read from the live server; every path degrades to native prefill |
+| 3. Sidecar behind the proxy | ✅ designed | kvxd consumes `~/.cfrproxy/cache/**` manifests and adopts cfrproxy's fingerprint formula — zero proxy changes in v1 |
+| 4. M0 repo hygiene | 🟡 in progress | `.gitignore` extended; this file created |
+| 5. M1–M8 implementation | 🔴 outstanding | Fanned out to 8 parallel sandboxed sub-agents on `fred/glimmer` (Tiel Coder 35B-A3B, 2×W6800) |
+
+#### Environment recorded (do not re-derive)
+
+- CUDA: 2× RTX 3090, `sm_86`. ROCm: Radeon PRO W6800, `gfx1030`.
+- llama.cpp CUDA build `~/llama.cpp/build/bin/libllama.so` @ commit `ca3d5a3`. HIP builds exist
+  only in unrelated forks under `~/tiel-dflash-*` — a same-commit HIP build is still required.
+- Sandbox for sub-agents: `python:3.12-alpine`, `--network none`. **numpy is unavailable there**
+  and the Docker registry is unreachable from this shell, so numpy-dependent modules are
+  syntax-checked in-sandbox and unit-tested on the host.
+
+**REQ-002 status: IN-PROGRESS.**
+
+### REQ-001 — Start portable KV Rosetta core
+
+Source: prior session (commit `7675906`, "feat: start portable KV Rosetta core").
+
+#### Items
+
+| Item | Status | Evidence |
+|---|---|---|
+| 1. Define the device-neutral KVX manifest boundary | 🟡 built | `kv_rosetta.py` — `ModelABI`, schema `kvx/0.1`, canonical layout `layer,kv,token,head,dim` |
+| 2. Prove hardware is provenance, not identity | 🟡 built | `tests/test_kv_rosetta.py::test_hardware_backend_does_not_change_identity` — cuda and hip manifests share a fingerprint |
+| 3. Classify cross-model transfer paths | 🟡 built | `compatibility()` returns exact / linear-candidate / learned-candidate |
+
+#### Files
+- `kv_rosetta.py` — manifest validation, ABI fingerprint, compatibility planner, CLI
+- `tests/test_kv_rosetta.py` — 4 tests
+- `README.md`, `pyproject.toml`
+
+#### Verify
+- `python3 -m unittest discover -s tests -v` — 4 tests, ok
+
+**REQ-001 status: COMPLETE.**

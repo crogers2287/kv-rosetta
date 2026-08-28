@@ -3,4 +3,9 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+*.kvx
 *.kvx.bin
+*.kvmap
+.plugin-config/
+openmessage_mcp.log
+.project-structure.md
