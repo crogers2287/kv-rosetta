@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from kv_rosetta.identity import ArtifactKey
+
 import hashlib
 import os
 import re
@@ -216,8 +218,10 @@ class Store:
             p = Path(rec.path)
             if p.exists():
                 p.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            # Dropping the row after a failed unlink would leave an orphaned file that
+            # nothing knows about and cannot be reclaimed. Keep the record and report.
+            raise StoreError(f"could not delete {rec.path}: {exc}") from exc
         self._conn.execute("DELETE FROM artifacts WHERE fingerprint=?", (fingerprint,))
         self._conn.commit()
         return True
@@ -306,3 +310,174 @@ class Store:
                     deleted.append(rec)
 
         return tuple(deleted)
+
+
+# ---------------------------------------------------------------------------
+# Composite-identity store
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS artifacts_v2 (
+    artifact_digest       TEXT PRIMARY KEY,
+    prompt_digest         TEXT NOT NULL,
+    model_digest          TEXT NOT NULL,
+    cache_abi_digest      TEXT NOT NULL,
+    encoding              TEXT NOT NULL,
+    format_version        TEXT NOT NULL,
+    representation_digest TEXT NOT NULL,
+    mapper_id             TEXT NOT NULL,
+    nbytes                INTEGER NOT NULL,
+    created               REAL NOT NULL,
+    last_used             REAL NOT NULL,
+    path                  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS artifacts_v2_prompt ON artifacts_v2(prompt_digest, last_used);
+CREATE INDEX IF NOT EXISTS artifacts_v2_model  ON artifacts_v2(model_digest, last_used);
+"""
+
+
+@dataclass(frozen=True)
+class ArtifactRecord:
+    artifact_digest: str
+    prompt_digest: str
+    model_digest: str
+    cache_abi_digest: str
+    encoding: str
+    format_version: str
+    representation_digest: str
+    mapper_id: str
+    nbytes: int
+    created: float
+    last_used: float
+    path: str
+
+
+class ArtifactStore:
+    """Store keyed by composite artifact identity.
+
+    A prompt fingerprint identifies a reusable prefix, not an artifact. One prompt
+    legitimately has many artifacts - a CUDA opaque state, a HIP opaque state, a canonical
+    representation, a target-native translation, several KV dtypes, several runtime
+    revisions, several mapper versions - and they must coexist rather than overwrite one
+    another. The primary key is therefore the full ArtifactKey digest.
+
+    The digest is never truncated for uniqueness. ``ArtifactKey.label()`` exists for logs.
+    """
+
+    def __init__(self, root: Path | str | None = None) -> None:
+        self.root = Path(root) if root is not None else default_root()
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._conn = sqlite3.connect(str(self.root / "artifacts.sqlite"))
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.executescript(_ARTIFACT_SCHEMA)
+        self._conn.commit()
+
+    def path_for(self, key: "ArtifactKey") -> Path:
+        digest = require_digest(key.digest(), "artifact_digest")
+        model_dir = require_digest(key.model.digest(), "model_digest")[:16]
+        path = (self.root / model_dir / (digest + ".kvx")).resolve()
+        root = self.root.resolve()
+        if not (path == root or root in path.parents):
+            raise IdentityError(f"resolved path {path} escapes store root {root}")
+        return path
+
+    def put(self, key: "ArtifactKey", source: Path | str,
+            now: float | None = None) -> ArtifactRecord:
+        source = Path(source)
+        if not source.is_file():
+            raise StoreError(f"source artifact does not exist: {source}")
+        dest = self.path_for(key)
+        dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, dest)
+
+        stamp = time.time() if now is None else now
+        digest = key.digest()
+        row = self._conn.execute(
+            "SELECT created FROM artifacts_v2 WHERE artifact_digest=?", (digest,)
+        ).fetchone()
+        created = row["created"] if row else stamp
+        record = ArtifactRecord(
+            artifact_digest=digest,
+            prompt_digest=key.prompt.digest(),
+            model_digest=key.model.digest(),
+            cache_abi_digest=key.cache_abi.digest(),
+            encoding=key.encoding,
+            format_version=key.format_version,
+            representation_digest=key.representation_digest,
+            mapper_id=key.mapper_id,
+            nbytes=dest.stat().st_size,
+            created=created,
+            last_used=stamp,
+            path=str(dest),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO artifacts_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (record.artifact_digest, record.prompt_digest, record.model_digest,
+             record.cache_abi_digest, record.encoding, record.format_version,
+             record.representation_digest, record.mapper_id, record.nbytes,
+             record.created, record.last_used, record.path),
+        )
+        self._conn.commit()
+        return record
+
+    def get(self, key_or_digest: "ArtifactKey | str") -> ArtifactRecord | None:
+        digest = key_or_digest if isinstance(key_or_digest, str) else key_or_digest.digest()
+        row = self._conn.execute(
+            "SELECT * FROM artifacts_v2 WHERE artifact_digest=?", (digest,)
+        ).fetchone()
+        if row is None:
+            return None
+        if not Path(row["path"]).exists():
+            # A record pointing at a missing file is worse than no record: callers would
+            # hand a dead path to a runtime.
+            self._conn.execute("DELETE FROM artifacts_v2 WHERE artifact_digest=?", (digest,))
+            self._conn.commit()
+            return None
+        return ArtifactRecord(**{k: row[k] for k in row.keys()})
+
+    def find(self, *, prompt_digest: str = "", model_digest: str = "",
+             encoding: str = "", mapper_id: str | None = None) -> tuple[ArtifactRecord, ...]:
+        clauses, params = [], []
+        for column, value in (("prompt_digest", prompt_digest),
+                              ("model_digest", model_digest),
+                              ("encoding", encoding)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        if mapper_id is not None:
+            clauses.append("mapper_id=?")
+            params.append(mapper_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM artifacts_v2{where} ORDER BY last_used DESC", params
+        ).fetchall()
+        return tuple(ArtifactRecord(**{k: r[k] for k in r.keys()}) for r in rows)
+
+    def delete(self, key_or_digest: "ArtifactKey | str") -> bool:
+        digest = key_or_digest if isinstance(key_or_digest, str) else key_or_digest.digest()
+        row = self._conn.execute(
+            "SELECT path FROM artifacts_v2 WHERE artifact_digest=?", (digest,)
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            path = Path(row["path"])
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            raise StoreError(f"could not delete {row['path']}: {exc}") from exc
+        self._conn.execute("DELETE FROM artifacts_v2 WHERE artifact_digest=?", (digest,))
+        self._conn.commit()
+        return True
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> "ArtifactStore":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
