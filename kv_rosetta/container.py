@@ -20,16 +20,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from kv_rosetta import dtypes
+from kv_rosetta.segments import Segment, table_digest
+from kv_rosetta import segments as _segments
 
 MAGIC = b"KVX1"
 CONTAINER_VERSION = 1
+SEGMENTED_VERSION = 2
+SUPPORTED_VERSIONS = frozenset({1, 2})
 ALIGNMENT = 64
 _PREAMBLE = 12
 _MAX_OFFSET_PASSES = 5
@@ -82,7 +86,54 @@ def _resolve_offset(manifest: dict[str, Any]) -> tuple[bytes, int]:
     raise ContainerError("payload offset did not converge")
 
 
-def _write(path: Path | str, manifest: dict[str, Any], payload: bytes) -> Path:
+def write_segments(path: Path | str, manifest: dict[str, Any],
+                   parts: list[tuple[Segment, bytes]]) -> Path:
+    """Write a segmented artifact (container version 2).
+
+    Segment offsets are stored RELATIVE to the payload start. Absolute offsets would
+    depend on the header length, which depends on the offsets written into it; keeping
+    them relative removes that circularity so only ``blob.offset`` needs resolving.
+    """
+    if not parts:
+        raise ContainerError("a segmented artifact needs at least one segment")
+    placed: list[Segment] = []
+    chunks: list[bytes] = []
+    cursor = 0
+    for seg, data in parts:
+        pad = (-cursor) % ALIGNMENT
+        if pad:
+            chunks.append(b"\x00" * pad)
+            cursor += pad
+        if seg.nbytes != len(data):
+            raise ContainerError(
+                f"segment {seg.name!r} declares {seg.nbytes} bytes but carries {len(data)}")
+        placed.append(replace(seg, offset=cursor, sha256=hashlib.sha256(data).hexdigest()))
+        chunks.append(data)
+        cursor += len(data)
+    payload = b"".join(chunks)
+
+    ok, reason = _segments.validate(placed, payload_start=0, file_size=len(payload),
+                                    alignment=ALIGNMENT)
+    if not ok:
+        raise ContainerError(f"invalid segment table: {reason}")
+
+    manifest = dict(manifest)
+    manifest["blob"] = {
+        "encoding": "segmented",
+        "offset": 0,
+        "nbytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "shape": None,
+        "opaque_format": None,
+        "segment_schema": _segments.SEGMENT_SCHEMA,
+        "segments": [seg.as_dict() for seg in placed],
+        "representation_digest": table_digest(placed),
+    }
+    return _write(path, manifest, payload, version=SEGMENTED_VERSION)
+
+
+def _write(path: Path | str, manifest: dict[str, Any], payload: bytes,
+           version: int = CONTAINER_VERSION) -> Path:
     path = Path(path)
     # Integrity must cover the semantic header too, not only the payload: dtype,
     # shape, offsets and model identity must not be mutable without detection.
@@ -96,7 +147,7 @@ def _write(path: Path | str, manifest: dict[str, Any], payload: bytes) -> Path:
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as handle:
         handle.write(MAGIC)
-        handle.write(CONTAINER_VERSION.to_bytes(4, "little"))
+        handle.write(version.to_bytes(4, "little"))
         handle.write(len(header).to_bytes(4, "little"))
         handle.write(header)
         handle.write(b"\x20" * padding)
@@ -166,6 +217,29 @@ class KVXArtifact:
         return raw.view(np.dtype(dtypes.NUMPY_DTYPE[name])).reshape(tuple(self.blob["shape"]))
 
     @property
+    def segments(self) -> tuple[Segment, ...]:
+        """Segments with offsets resolved to absolute file positions."""
+        if self.encoding != "segmented":
+            raise ContainerError(f"artifact encoding is {self.encoding!r}, not 'segmented'")
+        base = int(self.blob["offset"])
+        return tuple(
+            replace(Segment.from_dict(d), offset=base + int(d["offset"]))
+            for d in self.blob.get("segments", [])
+        )
+
+    def segment(self, name: str) -> np.ndarray:
+        """Return one segment's data as an array of its declared dtype and shape."""
+        for seg in self.segments:
+            if seg.name == name:
+                if not dtypes.is_canonical(seg.dtype):
+                    raise ContainerError(
+                        f"segment {name!r} dtype {seg.dtype!r} is opaque-only")
+                start = seg.offset - int(self.blob["offset"])
+                raw = np.asarray(self.buffer, dtype=np.uint8)[start:start + seg.nbytes]
+                return raw.view(np.dtype(dtypes.NUMPY_DTYPE[seg.dtype])).reshape(seg.shape)
+        raise ContainerError(f"no segment named {name!r}")
+
+    @property
     def opaque(self) -> bytes:
         if self.encoding != "opaque":
             raise ContainerError(f"artifact encoding is {self.encoding!r}, not 'opaque'")
@@ -179,7 +253,7 @@ def _read_header(handle) -> tuple[dict[str, Any], int]:
     if preamble[:4] != MAGIC:
         raise ContainerError(f"bad magic {preamble[:4]!r}, expected {MAGIC!r}")
     version = int.from_bytes(preamble[4:8], "little")
-    if version != CONTAINER_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise ContainerError(f"unsupported container version {version}")
     header_len = int.from_bytes(preamble[8:12], "little")
     raw = handle.read(header_len)
@@ -251,6 +325,26 @@ def verify(path: Path | str) -> tuple[bool, str]:
                 remaining -= len(chunk)
         if digest.hexdigest() != blob["sha256"]:
             return False, "payload sha256 mismatch"
+
+        if blob.get("encoding") == "segmented":
+            try:
+                segs = [Segment.from_dict(d) for d in blob.get("segments", [])]
+            except _segments.SegmentError as exc:
+                return False, str(exc)
+            ok, reason = _segments.validate(
+                segs, payload_start=0, file_size=nbytes, alignment=ALIGNMENT)
+            if not ok:
+                return False, reason
+            if blob.get("representation_digest") not in (None, "", table_digest(segs)):
+                return False, "representation_digest does not match the segment table"
+            with open(path, "rb") as body:
+                for seg in segs:
+                    body.seek(offset + seg.offset)
+                    data = body.read(seg.nbytes)
+                    if len(data) != seg.nbytes:
+                        return False, f"segment {seg.name!r} truncated"
+                    if seg.sha256 and hashlib.sha256(data).hexdigest() != seg.sha256:
+                        return False, f"segment {seg.name!r} sha256 mismatch"
         return True, "ok"
     except ContainerError as exc:
         return False, str(exc)

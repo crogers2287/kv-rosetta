@@ -160,7 +160,7 @@ class Store:
         if not src.exists():
             raise StoreError(f"source does not exist: {src}")
         mk = model_key(provider, model)
-        dest = self.root / mk / (fingerprint[:24] + ".kvx")
+        dest = self.path_for(provider, model, fingerprint)
         dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         tmp = dest.with_name(dest.name + ".tmp")
         shutil.copy2(src, tmp)
