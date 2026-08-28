@@ -33,6 +33,22 @@ CONTAINER_VERSION = 1
 ALIGNMENT = 64
 _PREAMBLE = 12
 _MAX_OFFSET_PASSES = 5
+_ZERO_DIGEST = "0" * 64
+_DIGEST_KEY = b'"header_sha256":"'
+
+
+def _digest_placeholder(header: bytes) -> tuple[bytes, int]:
+    """Locate the header digest field so it can be zeroed for hashing.
+
+    The digest covers the header that contains it, so it is written as a fixed-width
+    placeholder, hashed with the placeholder in place, then overwritten. Length never
+    changes, so the payload offset stays valid.
+    """
+    start = header.find(_DIGEST_KEY)
+    if start < 0:
+        raise ContainerError("header is missing integrity.header_sha256")
+    value_at = start + len(_DIGEST_KEY)
+    return header[:value_at] + _ZERO_DIGEST.encode() + header[value_at + 64:], value_at
 
 
 class ContainerError(ValueError):
@@ -68,7 +84,14 @@ def _resolve_offset(manifest: dict[str, Any]) -> tuple[bytes, int]:
 
 def _write(path: Path | str, manifest: dict[str, Any], payload: bytes) -> Path:
     path = Path(path)
+    # Integrity must cover the semantic header too, not only the payload: dtype,
+    # shape, offsets and model identity must not be mutable without detection.
+    manifest = dict(manifest)
+    manifest["integrity"] = {"header_sha256": _ZERO_DIGEST}
     header, offset = _resolve_offset(manifest)
+    zeroed, value_at = _digest_placeholder(header)
+    digest = hashlib.sha256(zeroed).hexdigest()
+    header = header[:value_at] + digest.encode() + header[value_at + 64:]
     padding = offset - (_PREAMBLE + len(header))
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as handle:
@@ -196,11 +219,22 @@ def verify(path: Path | str) -> tuple[bool, str]:
         if not path.is_file():
             return False, "not a file"
         with open(path, "rb") as handle:
-            header, _ = _read_header(handle)
+            header, header_len = _read_header(handle)
             blob = header["blob"]
             for key in ("encoding", "offset", "nbytes", "sha256"):
                 if key not in blob:
                     return False, f"blob.{key} missing"
+            integrity = header.get("integrity")
+            if not isinstance(integrity, dict) or not isinstance(integrity.get("header_sha256"), str):
+                return False, "integrity.header_sha256 missing"
+            handle.seek(0)
+            raw_header = handle.read(_PREAMBLE + header_len)[_PREAMBLE:]
+            try:
+                zeroed, _ = _digest_placeholder(raw_header)
+            except ContainerError as exc:
+                return False, str(exc)
+            if hashlib.sha256(zeroed).hexdigest() != integrity["header_sha256"]:
+                return False, "header sha256 mismatch"
             offset, nbytes = int(blob["offset"]), int(blob["nbytes"])
             if offset % ALIGNMENT:
                 return False, f"payload offset {offset} is not {ALIGNMENT}-byte aligned"

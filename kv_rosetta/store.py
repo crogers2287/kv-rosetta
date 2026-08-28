@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -11,6 +12,27 @@ from pathlib import Path
 
 class StoreError(ValueError):
     pass
+
+
+_HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+class IdentityError(StoreError):
+    """An externally supplied identity is not a well-formed digest."""
+
+
+def require_digest(value: str, name: str = "fingerprint") -> str:
+    """Validate an externally supplied hash before it is ever used in a path.
+
+    A prefix manifest is written by another process. If its fingerprint reached the
+    filesystem unchecked, a value like ``../../etc`` would escape the store root.
+    Nothing that fails this check may be used to build a path.
+    """
+    if not isinstance(value, str) or not _HEX64.match(value):
+        raise IdentityError(
+            f"{name} must be 64 lowercase hex characters, got {value!r}"
+        )
+    return value
 
 
 def fingerprint(
@@ -109,8 +131,19 @@ class Store:
         )
 
     def path_for(self, provider: str, model: str, fp: str) -> Path:
+        """Resolve an artifact path, refusing anything that could leave the root.
+
+        The full digest is used as the filename: truncating it for tidiness would
+        trade a real collision risk for cosmetics. A short form is fine as a display
+        label, never as an identity.
+        """
+        require_digest(fp)
         mk = model_key(provider, model)
-        return self.root / mk / (fp[:24] + ".kvx")
+        path = (self.root / mk / (fp + ".kvx")).resolve()
+        root = self.root.resolve()
+        if not (path == root or root in path.parents):
+            raise IdentityError(f"resolved path {path} escapes store root {root}")
+        return path
 
     def put(
         self,

@@ -2,13 +2,13 @@ import unittest
 
 import numpy as np
 
-from kv_rosetta.gate import EXACT, GateThresholds, admit
+from kv_rosetta.gate import EXACT, GateBinding, GateError, GateThresholds, admit
 
 
 class GateAdmissionTests(unittest.TestCase):
     def test_identical_logits_admitted(self):
         rng = np.random.default_rng(1234)
-        ref = rng.standard_normal((16, 32))
+        ref = rng.standard_normal((64, 32))
         cand = ref.copy()
         result = admit(ref, cand)
         self.assertTrue(result.admitted)
@@ -40,7 +40,7 @@ class GateAdmissionTests(unittest.TestCase):
         cand = np.zeros((0, 16))
         result = admit(ref, cand)
         self.assertFalse(result.admitted)
-        self.assertEqual(result.reason, "no holdout tokens")
+        self.assertIn("insufficient holdout", result.reason)
 
     def test_holdout_truncation_scores_tail(self):
         T = 100
@@ -55,7 +55,7 @@ class GateAdmissionTests(unittest.TestCase):
 
     def test_exact_thresholds(self):
         rng = np.random.default_rng(7)
-        ref = rng.standard_normal((8, 16))
+        ref = rng.standard_normal((64, 16))
         identical = admit(ref, ref.copy(), EXACT)
         self.assertTrue(identical.admitted)
         self.assertEqual(identical.reason, "admitted")
@@ -63,11 +63,79 @@ class GateAdmissionTests(unittest.TestCase):
         self.assertFalse(perturbed.admitted)
 
     def test_none_tensors_yield_nan_cosine_without_affecting_admission(self):
-        ref = np.zeros((8, 16))
-        cand = np.zeros((8, 16))
+        ref = np.zeros((64, 16))
+        cand = np.zeros((64, 16))
         result = admit(ref, cand)
         self.assertTrue(np.isnan(result.metrics["tensor_cosine"]))
         self.assertTrue(result.admitted)
+
+
+class GateFailsClosedTests(unittest.TestCase):
+    """Regressions for the fail-closed contract.
+
+    Each of these passed before hardening, which is exactly why they are kept: the
+    gate is the last thing standing between a translated cache and a runtime import.
+    """
+
+    def test_holdout_is_a_minimum_not_a_slice(self):
+        # One position must never satisfy a 64-position policy.
+        ref = np.array([[9.0, 0.0, 0.0]])
+        result = admit(ref, ref.copy(), GateThresholds(holdout_tokens=64))
+        self.assertFalse(result.admitted)
+        self.assertIn("insufficient holdout", result.reason)
+        self.assertEqual(result.metrics["required_holdout_tokens"], 64)
+
+    def test_short_holdout_rejected_for_every_shortfall(self):
+        for available in (1, 8, 63):
+            ref = np.zeros((available, 4))
+            with self.subTest(available=available):
+                self.assertFalse(admit(ref, ref.copy(), GateThresholds(holdout_tokens=64)).admitted)
+
+    def test_exactly_enough_holdout_is_accepted(self):
+        ref = np.tile(np.array([[9.0, 0.0, 0.0]]), (64, 1))
+        self.assertTrue(admit(ref, ref.copy(), GateThresholds(holdout_tokens=64)).admitted)
+
+    def test_non_finite_thresholds_are_rejected_at_construction(self):
+        for kwargs in (
+            {"top1_agreement": float("nan")},
+            {"top1_agreement": float("inf")},
+            {"mean_kl": float("nan")},
+            {"mean_kl": float("inf")},
+            {"max_kl": float("inf")},
+            {"max_logit_delta": float("nan")},
+        ):
+            with self.subTest(**kwargs), self.assertRaises(GateError):
+                GateThresholds(**kwargs)
+
+    def test_out_of_range_thresholds_are_rejected(self):
+        for kwargs in (
+            {"holdout_tokens": 0},
+            {"holdout_tokens": -1},
+            {"top1_agreement": -0.1},
+            {"top1_agreement": 1.1},
+            {"mean_kl": -1.0},
+            {"max_kl": -0.001},
+            {"max_logit_delta": -1.0},
+        ):
+            with self.subTest(**kwargs), self.assertRaises(GateError):
+                GateThresholds(**kwargs)
+
+    def test_verdict_is_bound_to_its_context(self):
+        ref = np.tile(np.array([[9.0, 0.0]]), (64, 1))
+        binding = GateBinding(
+            source_model_id="src", target_model_id="dst",
+            source_artifact_digest="a" * 64, mapper_id="ridge/1",
+        )
+        result = admit(ref, ref.copy(), binding=binding)
+        self.assertEqual(result.binding["source_model_id"], "src")
+        self.assertEqual(result.binding["mapper_id"], "ridge/1")
+        self.assertEqual(result.binding["policy_version"], "kvx-gate/1")
+
+    def test_admit_never_raises(self):
+        ref = np.tile(np.array([[1.0, 2.0]]), (64, 1))
+        for bad in (np.zeros((0, 2)), np.zeros((64,)), np.zeros((2, 2, 2)), ref[:, :1]):
+            with self.subTest(shape=getattr(bad, "shape", None)):
+                self.assertFalse(admit(ref, bad).admitted)
 
 
 if __name__ == "__main__":

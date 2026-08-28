@@ -210,3 +210,45 @@ would otherwise have to be rediscovered:
   back empty because the whole allowance went to `reasoning_content`. An empty file also
   compiles, so a naive syntax check reports success — generated files must be checked for
   non-trivial length as well as validity.
+
+## 9. Audit of commit fb3ecf7 against the hardening steer
+
+The steer (`codex/steer-kv-rosetta-hardening`, commit 105f1fc) asserted that fb3ecf7 was
+scaffolding with fail-open defects. Each claim was reproduced against the pushed code before
+any fix was written. All of them were real.
+
+| # | Defect | Reproduction | Severity |
+|---|---|---|---|
+| 1 | `holdout_tokens` was a maximum slice, not a minimum | `T=1` compared against a 64-token policy returned `admitted=True` | fail-open |
+| 2 | Non-finite thresholds disabled the comparison they guard | `top1_agreement=nan`, `mean_kl=inf` admitted a candidate whose argmax was wrong at every position | fail-open |
+| 3 | Untrusted fingerprints reached the filesystem | `path_for(fingerprint="../../../../tmp/pwned")` resolved outside the store root | path traversal |
+| 4 | bf16 conversion truncated instead of rounding | `0x3F80C000` became `1.0` rather than `1.0078125` | silent, compounding precision loss |
+| 5 | Integrity covered only the payload | Editing `kv.head_dim` from 4 to 8 in the header still returned `verify() == (True, "ok")` | fail-open |
+| 6 | Conformance did not require a successful round trip | An adapter that always returns a failed `ImportReport` satisfies the suite | vacuous gate |
+| 7 | GGSQ parsing took a bare body | `parse(blob)` has no magic or version check and cannot distinguish an in-process buffer from a `GGSQ` file | guesses the start offset |
+| 8 | `Capabilities` exposed a single maximum tier | Cannot express "exports canonical, imports opaque only" | too coarse to be safe |
+
+Defect 4 originated in the specification handed to the generating model, which said
+"Truncate, do NOT round". The model implemented the spec correctly; the spec was wrong.
+
+### Fixed so far
+
+- **Gate fails closed.** `holdout_tokens` is a minimum; a shortfall is rejected as insufficient
+  evidence rather than judged leniently on a small sample. All thresholds are validated on
+  construction, so a NaN or infinite bound raises instead of silently disabling its check. A
+  verdict now carries a `GateBinding` recording the source and target model identities, the
+  artifact digest, the mapper id, the calibration digest and the policy version, because a
+  verdict is a property of a specific translation and not of two arrays.
+- **Store paths are contained.** Externally supplied digests must be 64 lowercase hex
+  characters before they are used to build a path, and the resolved path is confirmed to be
+  under the store root. The full digest is the filename: truncating it traded a real collision
+  risk for tidiness.
+- **Integrity covers the header.** A fixed-width digest placeholder is written into the header,
+  hashed with the placeholder zeroed, then overwritten, so the header length and the payload
+  offset stay valid. Editing any semantic field now fails verification.
+- **bf16 rounds to nearest even**, with NaN, both infinities and signed zeros preserved.
+
+Still outstanding from the steer: the segment table (P0 #2), composite artifact identity
+(P0 #1), content-derived model and cache-ABI identity (P0 #4), explicit GGSQ envelopes
+(P0 #6), directional capabilities (P0 #7), and a conformance suite that demands a real round
+trip. Runtime adapters must not be built until those land.

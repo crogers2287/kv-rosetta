@@ -52,9 +52,17 @@ def convert(arr: "np.ndarray", src: str, dst: str) -> "np.ndarray":
             return f32
         if dst == "f16":
             return f32.astype(np.float16)
-        # bf16: view float32 as uint32, right-shift 16, cast to uint16 (truncate)
-        u = np.asarray(f32).view(np.uint32)
-        u = u >> 16
-        return u.astype(np.uint16)
+        # bf16: keep the top 16 bits of the float32, rounding to nearest even rather
+        # than truncating. Truncation biases every converted value toward zero, and the
+        # bias compounds across a whole KV cache; RNE is the defined IEEE behaviour.
+        u = np.asarray(f32, dtype=np.float32).view(np.uint32).astype(np.uint64)
+        lsb = (u >> np.uint64(16)) & np.uint64(1)
+        rounded = u + np.uint64(0x7FFF) + lsb
+        out = (rounded >> np.uint64(16)).astype(np.uint16)
+        # NaN must stay NaN: rounding can carry a NaN payload into an infinity pattern.
+        nan_mask = np.isnan(np.asarray(f32, dtype=np.float32))
+        if nan_mask.any():
+            out = np.where(nan_mask, np.uint16(0x7FC0), out).astype(np.uint16)
+        return out
 
     return from_f32(to_f32(arr))
