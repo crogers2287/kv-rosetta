@@ -974,3 +974,36 @@ evidence rather than pathname, and phases reconciled.
 
 Status: **measured three times on this host**. **Proven by retained test**: 490 offline.
 **Untested**: 32K, canonical extraction, cross-dtype transfer.
+
+## REQ-035 — The decoder reads bytes llama.cpp actually wrote
+
+Every decoder test so far used fixtures I built from the writer's field order, which means
+they shared my reading of it. That is exactly the shape of the 12-versus-16-byte checkpoint
+error: self-consistent, and wrong. This decodes real output.
+
+Produced on CPU (`-ngl 0`) from `library_of_alexandria_Q4_K_M.gguf`, so the fleet's GPUs were
+never touched — 881/914 MiB free before and after. 49 prompt tokens, 1,808,028 bytes.
+
+| check | source of truth | result |
+|---|---|---|
+| body consumed exactly | file size | **1,808,028 of 1,808,028 — nothing left over** |
+| layer count | GGUF `block_count` = 36 | 36, 72 spans (36 k + 36 v) |
+| row stride | GGUF `head_count_kv` × `embedding_length/head_count` = 2×128, f16 | 512 = 512 |
+| materialised tensor | — | (49, 2, 128) float32, all finite, range [-75.31, 92.13] |
+
+Every expected value is computed from the **GGUF**, never from the decoder's own output, so
+the check can fail. The exact-consumption result is the sharpest of these: a wrong field
+width anywhere in the attention section would leave a remainder or overrun, and this model is
+non-hybrid so the body legitimately ends there.
+
+One incidental finding: the unpatched `~/llama.cpp/build` emits **sequence-state version 2**,
+not 3. The attention layout parsed identically, so that part of the format is stable across
+those two versions on this evidence.
+
+Retained as `tests/test_ggsq_live.py`, skipped unless `KVX_LIVE_STATE` and `KVX_LIVE_MODEL`
+point at a real artifact and its model — so CI stays green without a GPU while the check
+exists for anyone who can run it.
+
+Status: **measured once on this host** (real-artifact decode). **Proven by retained test**:
+the synthetic decoder suite, 589 offline. **Untested**: a real *hybrid* artifact, whose body
+continues into recurrent state and checkpoints — that needs the 27B and a GPU window.
