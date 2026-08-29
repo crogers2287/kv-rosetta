@@ -30,6 +30,11 @@ CMAKE_FLAGS=(
   -DGGML_CUDA=ON
   -DLLAMA_CURL=OFF
   -DLLAMA_BUILD_TESTS=OFF
+  # ccache is disabled deliberately. On this host ~/.cache/ccache/tmp is owned by root
+  # from an earlier privileged build, so an unprivileged compile dies with "failed to
+  # create temporary file ... Permission denied". A reproducible build must not depend on
+  # the ownership of a shared cache directory it does not control.
+  -DGGML_CCACHE=OFF
 )
 
 say() { printf '  %s\n' "$*"; }
@@ -104,7 +109,17 @@ say "built: $BIN"
 say "upstream base:  $EXPECTED_BASE"
 say "patch sha256:   $EXPECTED_PATCH_SHA256"
 say "state seq ver:  $(grep -oE '#define LLAMA_STATE_SEQ_VERSION +[0-9]+' "$TARGET/include/llama.h" | grep -oE '[0-9]+$')"
-say "checkpoint magic present in binary: $(grep -c 'SCKP' "$TARGET/tools/server/server-context.cpp" || echo 0) reference(s) in source"
+# The server implementation lives in libllama-server-impl.so; llama-server itself is a thin
+# launcher (~18 KB), so probing the executable for the magic finds nothing and proves nothing.
+IMPL="$TARGET/build/bin/libllama-server-impl.so"
+if [ -f "$IMPL" ]; then
+  n_magic="$(strings "$IMPL" 2>/dev/null | grep -c 'SCKP' || true)"
+  n_ckpt="$(strings "$IMPL" 2>/dev/null | grep -c 'context checkpoint' || true)"
+  say "patch compiled in: SCKP magic x$n_magic, 'context checkpoint' strings x$n_ckpt (in $(basename "$IMPL"))"
+  [ "$n_magic" -gt 0 ] || die "built binary does not contain the checkpoint magic; the patch did not compile in"
+else
+  die "expected $IMPL; cannot verify the patch compiled in"
+fi
 
 cat <<EOF
 

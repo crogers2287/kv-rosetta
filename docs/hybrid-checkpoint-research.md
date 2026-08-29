@@ -232,3 +232,75 @@ work must create a *real* checkpoint, never relabel one.
 - **Reported by third parties, for a different implementation:** the sidecar working on
   qwen3.6-27b and on Qwen3.5 122B with MTP.
 - **Untested here:** everything. No patched binary has been built or run on this host.
+
+## R3/R6: the patched runtime, built and proven across a restart
+
+### Build
+
+`scripts/build_patched_llama.sh /mnt/storage/llama-kvx-patched` on this host:
+
+- patch sha256 verified, upstream pinned at `ca3d5a3e1`, applied by three-way merge;
+- one real failure on the way: the build died with
+  `ccache: failed to create temporary file ... Permission denied`, because
+  `~/.cache/ccache/tmp` is owned by `root:root` from an earlier privileged build. The script
+  now sets `-DGGML_CCACHE=OFF` - a reproducible build must not depend on the ownership of a
+  shared cache directory it does not control;
+- the resulting `llama-server` is only ~18 KB, because it is a thin launcher. The server
+  implementation is in `libllama-server-impl.so`, which carries the `SCKP` magic twice and
+  13 `context checkpoint` strings. An earlier probe that searched the executable found
+  nothing and would have reported a successful build as unpatched; the script now probes the
+  library and refuses if the magic is absent.
+
+### In-process reuse
+
+| step | unpatched | patched |
+|---|---|---|
+| cold | `cache_n=0 prompt_n=256` | `cache_n=0 prompt_n=256` |
+| save | 173,678,144 bytes | **330,573,584 bytes** |
+| control after erase | `cache_n=0` | `cache_n=0` |
+| restore | `n_restored=256` | `n_restored=256` |
+| next completion | `cache_n=0 prompt_n=256` | **`cache_n=252 prompt_n=4`** |
+
+The 157 MB difference is the checkpoint: the server logs
+`restored context checkpoint (pos_min = 251, pos_max = 251, n_tokens = 252, size = 149.626 MiB)`.
+
+### The restart proof
+
+The step that separates persistence from an in-memory cache experiment:
+
+```
+before restart  cold cache_n=0 | saved 263 cells, 316 MB
+STOP SERVER     confirmed down
+FRESH SERVER    no restore -> cache_n=0        <- a new process has nothing
+restore         n_restored=263
+AFTER RESTART   cache_n=252  prompt_n=4
+parity          output matches the pre-restart cold run; token IDs identical
+```
+
+Retained as `tests/test_hybrid_checkpoint_restart.py`, alongside the negative control.
+
+### The negative control did its job
+
+Run against the patched binary it now **fails**, with the message written for exactly this
+moment: *"if this is nonzero the runtime has been patched; update the capability rule and
+retire this control deliberately."* A control that never fails proves nothing; this one
+flipped when the world changed.
+
+### What this does and does not establish
+
+**Proven by retained test on this host:** a hybrid `qwen35` model reuses a restored prefix
+after a full server restart, with output and token IDs matching a cold prefill.
+
+**Not established:**
+
+- **Full-prefix reuse.** `cache_n=252` of 256, because reuse is bounded by checkpoint
+  granularity (`--ctx-checkpoints`, `--checkpoint-min-step`) exactly as upstream #25913
+  predicts. Steer R2 - forcing a checkpoint at the exact stable-prefix boundary - is still
+  open, and the four re-prefilled tokens are the visible symptom of it.
+- **Economics.** One run, not three, and no ladder. Nothing here is a measurement of
+  restore-versus-prefill cost.
+- **The production model.** This was OpenMythos-Q6_K, a `qwen35` hybrid, not the specific
+  27B the steer names.
+- **Capability advertisement.** The patched binary reports nothing machine-readable, so the
+  adapter deliberately still withholds the capability. A test asserts that it does: a
+  patched binary that cannot be detected is still unsafe to assume.

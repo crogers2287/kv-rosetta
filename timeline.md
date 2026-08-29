@@ -115,6 +115,9 @@ the conclusion that hybrid architectures are a dead end.
 | R1. Choose the smallest correct llama.cpp persistence patch | ✅ decided | Base on upstream PR #26004 (appends a versioned `SCKP` payload inside the slot save file). Smaller than both issue options, no file-pairing failure mode, carries `data_tgt`/`data_dft`/`data_spec`, ships a server test. See `hybrid-checkpoint-research.md` §R1 |
 | R2. Exact-boundary checkpoint | 🔴 next | PR #26004 persists only checkpoints that already exist; reuse is bounded by `--ctx-checkpoints`/`--checkpoint-min-step`. Synthesising `pos_min = 0` is a correctness trap, not a shortcut |
 | R3. Reproducible patch + guarded build script | 🟡 partial | `patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch` (sha256 `baf44e7c…`) + `scripts/build_patched_llama.sh`, which refuses a tampered patch or an unexpected base, unshallows before verifying, and applies three-way. Not yet built |
+| R3. Build the patched runtime | ✅ done | `/mnt/storage/llama-kvx-patched`, patch verified and applied three-way; `-DGGML_CCACHE=OFF` after a root-owned ccache dir broke the build; probe corrected to check `libllama-server-impl.so` |
+| R6. Restart persistence proof | ✅ **PROVEN** | Save, full server stop, fresh start, restore -> `cache_n=252 prompt_n=4`, output and token IDs match the pre-restart cold run. `tests/test_hybrid_checkpoint_restart.py` |
+| R2. Exact-boundary checkpoint | 🔴 open | Reuse is 252/256; bounded by checkpoint granularity as upstream predicts |
 | R3. Runtime capability advertisement | 🔴 outstanding | PR #26004 adds no `slot_checkpoint_persistence` field; support must not be inferred from a version string |
 | Binary provenance verified | ✅ proven | Running binary = commit `3e7344670` (seq version 2); HEAD `ca3d5a3` is 150 commits ahead (version 3); `~/llama.cpp` is a shallow clone, which fails ancestry checks silently |
 | R2–R10 | 🔴 outstanding | Gated behind R1 |
