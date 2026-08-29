@@ -186,8 +186,10 @@ def require_clean_worktree() -> str:
 
 
 class Server:
-    def __init__(self, binary: str, model: str, slots: str, port: int, log: Path):
+    def __init__(self, binary: str, model: str, slots: str, port: int, log: Path,
+                 n_ctx: int = 8192):
         self.binary, self.model, self.slots, self.port = binary, model, slots, port
+        self.n_ctx = n_ctx
         self.log, self.proc = log, None
         self.url = f"http://127.0.0.1:{port}"
 

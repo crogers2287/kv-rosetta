@@ -229,6 +229,9 @@ def main() -> int:
     ap.add_argument("--prompt-tokens", type=int, default=2048)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--storage-note", default="")
+    ap.add_argument("--n-ctx", type=int, default=0,
+                    help="server context size; 0 derives it from --prompt-tokens with "
+                         "headroom for the generated tail")
     ap.add_argument("--bytes-per-token", type=float, default=295390.0,
                     help="predicted artifact bytes per prompt token; the default is "
                          "measured from the retained 2K record (604,958,676 / 2048)")
@@ -243,6 +246,9 @@ def main() -> int:
     ap.add_argument("--out", default="bench/admitted-store-2k.json")
     args = ap.parse_args()
     repo_commit = require_clean_worktree()
+    # The prompt must fit with room for the generated tail: a context equal to the prompt
+    # length makes the very first completion fail with HTTP 400.
+    n_ctx = args.n_ctx or max(8192, args.prompt_tokens + 1024)
 
     slots = Path(args.slots)
     slots.mkdir(parents=True, exist_ok=True)
@@ -271,7 +277,8 @@ def main() -> int:
     store = AdmittedStore(slots)
 
     # ---- admission, once, off the request path ---------------------------------------
-    first = Server(args.patched, args.model, str(slots), free_port(), log_dir / "admit.log")
+    first = Server(args.patched, args.model, str(slots), free_port(), log_dir / "admit.log",
+                    n_ctx=n_ctx)
     first_pid = first.start()
     try:
         ids = first.post("/tokenize", {"content": prompt_text(args.prompt_tokens)}
@@ -306,7 +313,7 @@ def main() -> int:
     repetitions = []
     for index in range(1, args.repeats + 1):
         server = Server(args.patched, args.model, str(slots), free_port(),
-                        log_dir / f"rep{index}.log")
+                        log_dir / f"rep{index}.log", n_ctx=n_ctx)
         pid = server.start()
         try:
             if pid == first_pid:
@@ -397,7 +404,7 @@ def main() -> int:
 
     # ---- unpatched control ------------------------------------------------------------
     control = Server(args.unpatched, args.model, str(slots), free_port(),
-                     log_dir / "control.log")
+                     log_dir / "control.log", n_ctx=n_ctx)
     control.start()
     try:
         control_adapter = LlamaCppHTTPAdapter(control.url, str(slots))
@@ -428,6 +435,7 @@ def main() -> int:
         "page_cache_policy": args.page_cache_policy,
         "filesystem": evidence["filesystem"],
         "prompt_tokens": args.prompt_tokens,
+        "n_ctx": n_ctx,
         "model_path": args.model,
         "architecture": gguf.architecture(args.model),
         "model_content_digest": obj.manifest.get("model_content_digest"),
