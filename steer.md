@@ -1,182 +1,273 @@
-# KV Rosetta research steer: production 27B checkpoint-contract gate
+# KV Rosetta research steer: close the hybrid fail-closed seam, then run production 27B
 
-Status basis: default-branch head 858731619bee54ab3cffcc4ea5cf00ca545d84e5.
+Status basis: default-branch head fff2b23f3ff04f5a8b5721aab7bcb7634c95791a.
 
-This steer supersedes 3cd8143. The retained restart harness and runtime protocol now exist. The next milestone is no longer “prove that some hybrid model can restart.” It is to prove, on the exact production Qwen3.5/Qwen3.6 27B, that the declared checkpoint contract survives a real restart, differs from an unpatched runtime, and is strong enough for the adapter to consume without guessing.
+This steer supersedes c40f71d. The runtime protocol and compound GGSQ+SCKP adapter path now exist, but the adapter was enabled before the required production-27B paired restart gate. The next work is a small fail-closed hardening experiment, followed immediately by the exact production Qwen3.5/Qwen3.6 27B matrix.
 
 ## Mission
 
-Persist the exact production Hermes/system/tool prefix across slot eviction and a complete llama-server restart, while failing closed on an unpatched runtime, incomplete SCKP state, dishonest metadata, or unproven MTP/speculative configuration.
-
-A short verified tail re-prefill is acceptable. Exact-prefix means exact token, model, runtime, cache-ABI, and checkpoint identity; it does not mean cache_n must equal the full prompt length.
+Persist the exact production Hermes/system/tool prefix across slot eviction and a complete llama-server restart, while refusing unpatched runtimes, sequence-only hybrid artifacts, incomplete checkpoint metadata, unsupported protocol tuples, and unproven active draft/speculative configurations.
 
 Primary upstream evidence remains:
 
 - https://github.com/ggml-org/llama.cpp/issues/25913
 - https://github.com/ggml-org/llama.cpp/pull/26004
 
-Do not post upstream or replace the pinned PR patch during this track.
+Both remain open as of 2026-08-29. The upstream evidence continues to support checkpoint persistence and bounded tail re-prefill; it does not substitute for the production 27B run.
 
-## Evidence now retained
+## Evidence added since the prior steer
 
-The repository now has:
+The default branch now contains:
 
-- a process-owning positive restart harness;
-- proof that the first PID exits, the port closes, the second PID differs, and the fresh process has cache_n=0 before restore;
-- patched hybrid restore on OpenMythos-Q6_K with a four-token tail and output/token parity;
-- an explicit patched/unpatched test classifier;
-- a second, digest-guarded local llama.cpp patch;
-- machine-readable /props fields for sckp/1 and sequence-state version;
-- save/restore checkpoint count, byte count, coverage, and position metadata;
-- an in-process comparison where declared checkpoint coverage 252 equals observed cache_n 252;
-- removal of the old artifact-size threshold.
+- compound artifact labels of the form ggsq/<sequence-version>+sckp/1;
+- manifest checkpoint coverage fields;
+- an import-time equality check between declared checkpoint_n_tokens and observed cache_n;
+- outer-container truncation refusal;
+- protocol separation between what SCKP serializes and what behavior has been proven;
+- target support true, draft/speculative support false;
+- offline malformed-protocol tests;
+- a fix that prevents setUpClass network I/O from turning wrong-runtime skips into errors.
 
-Keep these results. Do not reopen exact-boundary checkpoint work: the tail remained four tokens at 256, 1,024, and 4,096 tokens across large checkpoint-policy changes.
+The recorded live positive result remains OpenMythos-Q6_K with target-only behavior. No production-27B paired record or new benchmark record landed.
 
-## Audit corrections
+Keep exact-boundary checkpoint work closed. The measured four-token tail remains the correct working contract.
 
-Do not overstate what the new commits prove.
+## Audit findings that change priority
 
-1. tests/test_hybrid_restart_harness.py proves only the patched positive path. It calls _require_patched and skips any unpatched runtime. The unpatched negative control is retained separately and is in-process, not the same two-process experiment.
+### 1. Explicit unpatched OPAQUE export is not fail closed
 
-2. The restart harness checks n_restored > 0 but does not assert the new checkpoint metadata. The retained equality between checkpoint_n_tokens and cache_n is currently in-process. It has not yet been bound across the two owned process lifetimes.
+LlamaCppHTTPAdapter.export() checks only:
 
-3. The successful harness model is still OpenMythos-Q6_K, not the production 27B.
+- requested representation is OPAQUE;
+- slot_save_path exists.
 
-4. /props currently reports target, draft, and speculative checkpoint support as true unconditionally. Target-state behavior has evidence on the tested non-MTP path. Draft/speculative behavior does not. The source struct containing data_dft and data_spec, and PR #26004 serializing those fields, are source evidence—not behavioral proof.
+It does not require capabilities(), a complete checkpoint protocol, or reusable hybrid state.
 
-5. The KV Rosetta adapter still withholds hybrid opaque capability and still labels slot artifacts as plain ggsq/<sequence-version>. No production hybrid artifact is enabled yet. That is correct until the contract below passes.
+The retained unpatched test calls export with Representation.CANONICAL. That is rejected before runtime capability matters, so it does not prove that an explicit OPAQUE export is refused.
 
-6. SCKP magic scanning is acceptable as a test-only classifier for a build carrying upstream patch 0001 without protocol patch 0002. It must not become the adapter capability signal or a successful import criterion.
+Current consequence: a caller that bypasses capability discovery can request OPAQUE from an unpatched hybrid runtime and receive a plain sequence-state artifact that cannot provide hybrid reuse.
+
+This is the immediate red test and fix.
+
+### 2. Compound labeling still relies on an unbounded magic scan
+
+Export labels an artifact compound when has_checkpoint_appendix() finds the four bytes SCKP anywhere in the opaque slot file.
+
+That is acceptable for a test classifier. It is not sufficient format evidence for a production artifact: the same bytes can occur inside the GGSQ body, and the scan proves neither the appendix boundary nor that the reported checkpoint payload occupies the file tail.
+
+The save response already exposes total n_written and checkpoint_bytes. Extend the runtime protocol to expose checkpoint_offset or sequence_bytes, or derive the offset as:
+
+checkpoint_offset = n_written - checkpoint_bytes
+
+Then require SCKP exactly at that offset and require the payload bounds to agree with the whole file. Do not label a production artifact from an arbitrary magic occurrence.
+
+### 3. Export records metadata but does not validate it
+
+For a checkpoint-bearing hybrid export, require all of these before producing KVX:
+
+- complete supported protocol;
+- n_checkpoints_saved >= 1;
+- checkpoint_bytes > 0;
+- checkpoint_n_tokens > 0;
+- valid pos_min and pos_max;
+- exact appendix offset and magic;
+- compound format matching the live protocol.
+
+The current int(value or -1) conversion also turns a legitimate position 0 into -1. Preserve zero explicitly.
+
+### 4. Import does not bind restore metadata to the manifest
+
+Import currently compares observed cache_n with manifest checkpoint_n_tokens only when the declared value is nonzero.
+
+It does not require a nonzero declaration for a compound artifact and does not compare the restore response’s checkpoint count, bytes, n_tokens, pos_min, or pos_max with the manifest.
+
+For ggsq/N+sckp/1, zero or missing coverage must be refusal, not an optional contract. The restore response must exactly match the saved manifest metadata before the verification completion is credited.
+
+### 5. Protocol support must be an exact tuple
+
+The adapter currently accepts sequence versions 2 and 3 with sckp/1 because ordinary GGSQ versions 2 and 3 have been exercised somewhere in the project.
+
+The retained checkpoint-persistence proof is for the patched sequence-version-3 build. Plain ggsq/2 may remain supported for ordinary attention. Hybrid checkpoint capability must use an explicit tested tuple allowlist, currently:
+
+- ggsq/3+sckp/1 with proven target state.
+
+Do not infer that sckp/1 on sequence version 2 works from plain ggsq/2 support.
+
+### 6. Active draft/speculative configuration is not gated
+
+The protocol correctly reports draft/speculative behavioral support as false, but capabilities still enables hybrid opaque transfer whenever target support is true and merely adds a note.
+
+A note is not a gate. The live protocol must state which checkpoint state classes the current launch actually requires. If draft or speculative state is active and its behavioral support is false, export and import capabilities must be empty.
+
+Until the server exposes active required state, treat a configuration that cannot be proven target-only as unsupported.
+
+### 7. The production paired restart experiment is still outstanding
+
+The process-owning harness still proves the patched positive path only. The unpatched control remains a separate in-process test and may skip when connected to the wrong binary.
+
+There is still no single machine-readable production-27B record containing both required two-process legs.
 
 ## Steering decision
 
-Run one paired, process-owned, 256-token checkpoint-contract matrix on the exact production 27B before adding larger benchmarks.
+Do not run the expensive context ladder and do not widen capabilities further.
 
-The matrix must use the same GGUF, exact token IDs, launch flags, KV dtypes, checkpoint policy, slot number, and sampling settings for both binaries:
+First execute one small offline/live fail-closed slice that makes the current export hole red, fixes it, and binds compound metadata. Then run the paired production-27B 256-token matrix from the previous steer.
 
-- unpatched pinned llama-server;
-- patched pinned llama-server with patches 0001 and 0002.
+This is the smallest falsifiable sequence because the first failures require no large model and prevent an expensive 27B run from blessing an adapter contract that can still emit useless hybrid artifacts.
 
-Parameterize the existing harness rather than creating another manual script. Use a unique temporary slot directory and dynamically allocated port per leg.
+## P0: red-test the fail-closed boundary
 
-This is the next smallest falsifiable experiment because it can answer all of the immediate production questions with two short prompts and four process lifetimes. Do not run 2K or larger contexts until it passes.
+Add retained tests before changing behavior.
 
-## P0: make protocol claims honest before consuming them
+Required cases:
 
-Change the draft/speculative capability semantics before the adapter reads them.
+1. Unpatched hybrid props plus a requested OPAQUE export must raise AdapterError before any slot-save POST occurs.
+2. Patched props with persistence=false, unknown format, unsupported compound tuple, target=false, or incomplete checkpoint metadata must also refuse export before publishing an artifact.
+3. A sequence-state fixture containing incidental SCKP bytes inside its GGSQ body but no appendix at the declared offset must remain plain or be refused; it must never be labelled compound.
+4. A compound artifact with zero or missing checkpoint coverage must be refused before restore.
+5. Restore metadata differing from the manifest in any one of count, bytes, n_tokens, pos_min, or pos_max must produce ok=false.
+6. ggsq/2+sckp/1 must be refused until a retained checkpoint test proves that exact tuple.
+7. An active draft/speculative configuration with behavioral support false must advertise no hybrid import/export.
+8. checkpoint_pos_min=0 must survive export as 0.
 
-Accept either design:
+The unpatched test must request Representation.OPAQUE. Keep the existing CANONICAL rejection as a separate representation-contract test if useful, but do not call it proof of unpatched fail-closed behavior.
 
-- report separate “serialized” fields for data_tgt, data_dft, and data_spec, while behavioral support remains false or unknown until tested; or
-- keep the current support field names but report draft=false and speculative=false until a retained MTP/speculative restart test passes.
+## P1: make compound evidence exact
 
-Target support may be true only for the exact configuration covered by the positive test. Do not treat a compile-time struct member as a runtime capability.
+Keep upstream patch 0001 unchanged. Update local integration patch 0002 only as needed to report:
 
-Retain a unit/live test proving an absent, false, malformed, or unknown protocol never enables hybrid import.
+- sequence_bytes or checkpoint_offset;
+- total file bytes;
+- saved/restored checkpoint count;
+- checkpoint bytes;
+- newest checkpoint n_tokens;
+- pos_min and pos_max;
+- active required checkpoint state classes.
 
-## P1: production 27B paired restart matrix
+Export acceptance for a hybrid artifact:
 
-For each leg, record a machine-readable result containing:
+- capability protocol is complete for the active configuration;
+- the tested compound tuple is allowlisted;
+- save metadata is complete and self-consistent;
+- sequence_bytes + checkpoint_bytes equals total bytes;
+- SCKP magic occurs exactly at checkpoint_offset;
+- the full opaque payload digest covers both regions.
 
-- model path and full model digest;
-- tokenizer/prompt token digest and token count;
-- general.architecture and quantization;
-- binary digest, build_info, upstream base, and patch digests;
-- sequence-state and checkpoint-format versions;
-- K/V dtypes, n_ctx, checkpoint policy, GPU split/offload, MTP/draft/spec flags;
-- first and second PIDs;
-- slot artifact digest and exact bytes;
-- save and restore responses;
-- cache_n, prompt_n, generated token IDs, top probabilities, and timings.
+Import acceptance:
 
-The patched leg must prove:
+- outer KVX verification passes before staging;
+- exact model, prompt, cache ABI, compound tuple, and checkpoint metadata match;
+- restore response metadata equals manifest metadata;
+- observed cache_n equals declared checkpoint_n_tokens;
+- prompt_n equals the exact uncovered tail;
+- the uncovered tail is within the tested ceiling;
+- the verification probe is followed by a clean re-restore.
 
-1. /props advertises slot_checkpoint_persistence=true, sckp/1, and the exact sequence version.
-2. Save reports at least one checkpoint, positive checkpoint_bytes, valid positions, and positive checkpoint_n_tokens.
-3. The first process exits and its port closes.
-4. The second process has a different PID and cache_n=0 before restore.
-5. The restored file digest equals the file digest created by the first process.
-6. Restore metadata equals save metadata for checkpoint count, bytes, coverage, and positions.
-7. The exact prompt then reports cache_n equal to checkpoint_n_tokens.
-8. prompt_n equals token_count minus cache_n and the uncovered tail is within the declared experimental ceiling of eight.
-9. Persisted output tokens and probability vectors match native in-memory checkpoint reuse. Compare to cold output only when native reuse itself matches cold.
-10. If MTP/draft/speculative execution is enabled, its behavioral support must be separately proven; otherwise its capability remains withheld.
+Any disagreement returns ok=false and native prefill remains the fallback.
 
-The unpatched leg must prove:
+Do not use arbitrary magic scanning as adapter evidence. It may remain in tests/runtime_matrix.py solely to classify a patch-0001-only runtime for test selection.
 
-1. It advertises no checkpoint-persistence protocol.
-2. The same save/stop/start/restore lifecycle may restore sequence cells, but reports no usable checkpoint coverage.
-3. The post-restore exact prompt has cache_n=0 and prompt_n equal to the full token count.
-4. The adapter continues to advertise no hybrid opaque import/export.
-5. The test fails if the unpatched leg is accidentally pointed at a patched binary; do not silently skip the required negative half of the paired record.
+## P2: production 27B paired 256-token matrix
 
-Commit one JSON benchmark/evidence record only after both legs complete. A skipped leg is not a passing matrix.
+After P0 and P1 pass, parameterize the existing process-owning harness and run the exact production Qwen3.5/Qwen3.6 27B GGUF with its real Fred flags.
 
-## P2: consume the protocol fail closed
+One retained JSON record must contain both legs:
 
-Only after the production matrix passes, teach LlamaCppHTTPAdapter the hybrid compound format.
+- pinned unpatched llama-server;
+- pinned patched llama-server with 0001 and the current 0002.
 
-Required behavior:
+Both legs use the same model digest, exact token IDs, prompt digest, K/V dtypes, n_ctx, checkpoint policy, GPU split/offload, slot, and sampling settings.
 
-- Hybrid/recurrent opaque capability is enabled only when the live protocol is complete and exact: persistence true, format sckp/1, supported sequence version, and configuration-appropriate target/draft/spec evidence.
-- Label the artifact ggsq/<sequence-version>+sckp/1, never plain ggsq/N.
-- Bind exact prompt token digest/count, whole payload digest, checkpoint count/bytes/coverage/positions, runtime checkpoint policy, K/V dtypes, and any target/draft/spec identities into the manifest and cache ABI.
-- Export refuses if save metadata says zero checkpoints or is internally inconsistent.
-- Import requires outer KVX integrity before staging, an exact compound format and cache-ABI match, and restore metadata matching the artifact.
-- The verification completion must satisfy cache_n == declared checkpoint_n_tokens and prompt_n == exact uncovered tail within the tested bound.
-- Any missing appendix, truncated appendix, unknown version, zero restored checkpoints, metadata mismatch, or observed-reuse mismatch returns a failed ImportReport and falls back to native prefill.
-- HTTP 200 and n_restored alone are never success.
-- Keep ordinary-attention ggsq/N behavior and its one-token tail unchanged.
+Patched acceptance:
 
-Add corruption cases for a truncated SCKP appendix and a sequence-only hybrid slot. llama.cpp may accept both as sequence restores; KV Rosetta must reject both as hybrid checkpoint imports.
+- first process exits and port closes;
+- second PID differs;
+- second process has cache_n=0 before restore;
+- artifact digest is unchanged across the restart;
+- save and restore metadata match exactly;
+- cache_n equals checkpoint_n_tokens;
+- prompt_n equals token_count minus cache_n and tail <= 8;
+- persisted output tokens and probability vectors match native in-memory checkpoint reuse;
+- active target/draft/spec requirements are explicitly covered.
 
-## P3: economics after correctness
+Unpatched acceptance:
 
-After the production 256-token paired matrix and adapter round trip pass, run 2K, 8K, and 32K with at least three clean repetitions per rung.
+- no checkpoint protocol;
+- no hybrid OPAQUE capability;
+- explicit OPAQUE export is refused by the adapter;
+- direct runtime save/restore may report sequence cells, but after the full restart cache_n=0 and prompt_n equals the full prompt;
+- the required negative leg fails rather than skips if the wrong binary is supplied.
 
-Measure native cold prefill, native in-memory reuse, save, verification, restore, tail prefill, total user-visible restore, sequence bytes, checkpoint bytes, total bytes, cache_n/prompt_n, RSS, VRAM, and output parity. Test tmpfs and NVMe separately.
+A skipped leg is not a passing matrix.
 
-The decision criterion is:
+## P3: economics only after the gate
+
+After the paired production record and adapter round trip pass, run 2K, 8K, and 32K with at least three clean repetitions per rung.
+
+Measure:
+
+- native cold prefill;
+- native in-memory checkpoint reuse;
+- save;
+- outer verification;
+- restore;
+- tail prefill;
+- total user-visible restore;
+- sequence bytes;
+- checkpoint bytes;
+- total bytes;
+- cache_n and prompt_n;
+- RSS and VRAM;
+- output parity against native reuse;
+- tmpfs and NVMe separately.
+
+Decision criterion:
 
 total verified restore + tail prefill < native full prefill
 
-Do not infer 27B economics from the earlier 3B q4 ladder. Do not run 131K until 32K produces a credible size, latency, and memory projection.
+Do not run 131K until 32K provides a credible size, latency, and memory projection.
 
 ## MTP/speculative gate
 
-PR #26004 persisting data_tgt, data_dft, and data_spec is necessary but insufficient.
+Serialization is not behavioral support.
 
-Before claiming MTP/speculative support:
+Before enabling either state class:
 
-- run the process-owned production restart with the real feature enabled;
-- compare persisted restore with native in-memory reuse;
-- demonstrate a negative build or fixture with required draft/spec state omitted;
-- require refusal or a measured behavioral failure;
-- bind draft/spec model identities and settings into CacheABIIdentity.
+- expose that the current launch requires it;
+- run the process-owned restart with the real feature active;
+- compare persisted restore against native in-memory reuse;
+- remove or corrupt that required blob and require refusal or demonstrated behavioral failure;
+- bind draft/spec model identity and flags into CacheABIIdentity.
 
-Until then, report those behavioral capabilities as false or unknown.
+Until then, false means withheld, not “enabled with a warning.”
 
 ## Required execution order
 
-1. Correct draft/speculative protocol semantics so untested support is not advertised as true.
-2. Parameterize the existing harness into the mandatory patched/unpatched production-27B matrix.
-3. Run and retain the 256-token paired record.
-4. If either leg fails, stop and explain the smallest violated invariant; do not compensate with a larger prompt or looser tail bound.
-5. If it passes, enable the adapter only through ggsq/<version>+sckp/1 with metadata-bound fail-closed import.
-6. Add missing/truncated/unknown SCKP corruption tests.
-7. Prove or withhold MTP/speculative behavior.
-8. Run the 2K, 8K, and 32K economic ladder.
-9. Keep exact-boundary checkpoint work closed unless the production measurements falsify the bounded-tail result.
-10. Defer 131K, cross-backend, canonical extraction, vLLM, Transformers, and upstream submission.
+1. Add the explicit unpatched-hybrid OPAQUE-export red test.
+2. Gate export on the same complete, configuration-aware protocol used by capabilities.
+3. Replace arbitrary appendix scanning with exact offset/bounds evidence.
+4. Require complete save metadata and exact restore-metadata equality.
+5. Restrict hybrid support to tested compound tuples.
+6. Enforce active draft/speculative requirements.
+7. Run all offline tests and the existing OpenMythos live target-only suite.
+8. Run the paired production-27B 256-token matrix.
+9. Only after it passes, run 2K, 8K, and 32K economics.
+10. Keep exact-boundary, 131K, canonical, cross-backend, vLLM, Transformers, and upstream submission deferred.
 
 ## Definition of the next milestone
 
-The next milestone is complete only when one retained production-27B record contains both patched and unpatched two-process legs; the patched restore metadata survives the restart and equals observed reuse; the unpatched leg reuses zero; unproven draft/spec support is not advertised; and no adapter capability has been enabled by architecture, filename, strings output, artifact size, or SCKP magic alone.
+The next milestone is complete only when:
+
+- explicit OPAQUE export is impossible on an unpatched hybrid runtime;
+- a compound artifact cannot be created from incidental magic or incomplete metadata;
+- restore metadata is bound to the artifact and observed reuse;
+- only a tested protocol tuple can enable hybrid transfer;
+- active unproven draft/speculative state disables capability;
+- one production-27B record contains both patched and unpatched process-owned legs.
 
 ## Reporting discipline
 
-Classify every statement as one of:
+Classify every claim as:
 
 - proven by retained automated test;
 - measured once on Fred;
@@ -188,9 +279,11 @@ Classify every statement as one of:
 
 Current truthful status:
 
-- hybrid checkpoint persistence is proven by a retained two-process test on OpenMythos-Q6_K;
-- runtime checkpoint metadata is proven in-process on that model;
-- the exact production 27B paired restart contract is untested;
-- draft/speculative behavioral restoration is untested;
-- the adapter correctly continues to withhold hybrid opaque transfer;
+- target-only hybrid checkpoint restart is proven on OpenMythos-Q6_K;
+- compound adapter import works live on that tested path;
+- protocol serialization and behavioral support are now separated;
+- explicit unpatched-hybrid OPAQUE export is not yet proven fail closed;
+- exact appendix placement and full restore metadata are not yet bound;
+- production 27B remains untested;
+- draft/speculative behavioral restoration remains untested;
 - production economics remain unmeasured.
