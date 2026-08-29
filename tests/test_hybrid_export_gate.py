@@ -267,11 +267,12 @@ if __name__ == "__main__":
 
 
 class CapabilityProbeCostTest(unittest.TestCase):
-    """Capability discovery writes a slot file, and that must not be mistaken for export.
+    """Capability discovery must not write a slot file when the runtime states its version.
 
-    state_version() probes the emitted sequence version by saving a slot, because no
-    endpoint reports it. Any evidence that an export "refused before any save POST" has to
-    measure the export window, not the capability probe that ran before it.
+    state_version() used to discover the sequence version by saving a slot, because no
+    endpoint reported it. A complete protocol now states it exactly, so that full-artifact
+    write is gone from the request path - but only when the whole support predicate holds.
+    Anything less still probes, because a partial advertisement is not evidence.
     """
 
     def build(self, runtime_props):
@@ -281,11 +282,48 @@ class CapabilityProbeCostTest(unittest.TestCase):
         save, body = save_with_appendix()
         return StubAdapter(runtime_props, slots, save=save, body=body), directory
 
-    def test_capability_discovery_issues_a_save(self):
+    def test_a_complete_protocol_needs_no_version_probe(self):
         adapter, _ = self.build(props(active_checkpoint_state_classes=["target"]))
         adapter.capabilities()
-        self.assertTrue([p for p, _ in adapter.posts if "action=save" in p],
-                        "state_version() is documented to probe by saving a slot")
+        self.assertEqual([p for p, _ in adapter.posts if "action=save" in p], [],
+                         "saved a slot to learn a version the runtime already states")
+
+    def test_an_incomplete_protocol_still_probes(self):
+        for runtime in (
+            props(slot_checkpoint_format="sckp/9",
+                  active_checkpoint_state_classes=["target"]),
+            props(sequence_state_version=2, active_checkpoint_state_classes=["target"]),
+            props(active_checkpoint_state_classes=["target", "draft"]),
+            props(),                                   # active classes unreported
+        ):
+            with self.subTest(runtime=sorted(runtime)[:1]):
+                adapter, _ = self.build(runtime)
+                try:
+                    adapter.capabilities()
+                except Exception:
+                    pass
+                self.assertTrue([p for p, _ in adapter.posts if "action=save" in p],
+                                "an incomplete advertisement must not be trusted")
+
+    def test_a_missing_cache_dtype_still_probes(self):
+        runtime = props(active_checkpoint_state_classes=["target"])
+        del runtime["target_cache_type_k"]
+        adapter, _ = self.build(runtime)
+        adapter.capabilities()
+        self.assertTrue([p for p, _ in adapter.posts if "action=save" in p])
+
+    def test_an_advertisement_disagreeing_with_the_bytes_refuses_export(self):
+        # The runtime says version 3 but writes version 2. An advertisement that does not
+        # match what the runtime just wrote is not usable evidence about anything.
+        save, _ = save_with_appendix()
+        body = ggsq_body(version=2, trailer=sckp_appendix())
+        save = dict(save, n_written=len(body))
+        adapter, directory = self.build(props(active_checkpoint_state_classes=["target"]))
+        adapter._save, adapter._body = save, body
+        with self.assertRaises(AdapterError) as caught:
+            adapter.export(ExportRequest(model="", out_path=directory / "x.kvx",
+                                         representation=Representation.OPAQUE))
+        self.assertIn("does not match its own bytes", str(caught.exception))
 
     def test_export_itself_posts_nothing_when_it_refuses(self):
         adapter, directory = self.build(UNPATCHED)
@@ -296,8 +334,10 @@ class CapabilityProbeCostTest(unittest.TestCase):
         self.assertEqual([p for p, _ in adapter.posts], [],
                          "export refused only after contacting the runtime")
 
-    def test_the_probe_file_is_removed(self):
-        adapter, _ = self.build(props(active_checkpoint_state_classes=["target"]))
+    def test_any_probe_file_is_removed(self):
+        runtime = props(active_checkpoint_state_classes=["target"])
+        del runtime["target_cache_type_v"]        # forces the probe path
+        adapter, _ = self.build(runtime)
         adapter.capabilities()
         leftover = sorted(p.name for p in adapter.slot_save_path.glob("*probe*"))
         self.assertEqual(leftover, [], f"capability probe left {leftover} behind")

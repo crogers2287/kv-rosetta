@@ -147,3 +147,54 @@ class CacheDtypeIdentityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoVersionProbeTest(unittest.TestCase):
+    """A complete import must not save a slot to learn a version the runtime states."""
+
+    def artifact(self):
+        from tests.test_compound_format_agreement import genuine_artifact
+
+        directory = Path(tempfile.mkdtemp())
+        return (*genuine_artifact(directory), directory)
+
+    def test_a_complete_patched_import_makes_no_version_probe_save(self):
+        artifact, save, directory = self.artifact()
+        slots = directory / "slots-noprobe"
+        slots.mkdir()
+        restore = {"n_restored": 263,
+                   "n_checkpoints_restored": save["n_checkpoints_saved"],
+                   "checkpoint_bytes": save["checkpoint_bytes"],
+                   "checkpoint_n_tokens": save["checkpoint_n_tokens"],
+                   "checkpoint_pos_min": save["checkpoint_pos_min"],
+                   "checkpoint_pos_max": save["checkpoint_pos_max"]}
+        adapter = RestoreStub(props(**TARGET_ONLY), slots, save=dict(save),
+                              body=ggsq_body(trailer=b""), restore=restore)
+        adapter.posts.clear()
+        report = adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        saves = [p for p, _ in adapter.posts if "action=save" in p]
+        self.assertEqual(saves, [], f"import saved a slot to probe the version: {saves}")
+
+    def test_an_unpatched_hybrid_import_still_issues_no_save_or_restore(self):
+        artifact, save, directory = self.artifact()
+        slots = directory / "slots-unpatched"
+        slots.mkdir()
+        adapter = RestoreStub({"default_generation_settings": {"type_k": "f16"},
+                               "build_info": "b"}, slots, save=dict(save),
+                              body=ggsq_body(trailer=b""), restore={})
+        adapter.posts.clear()
+        report = adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertFalse(report.ok)
+        self.assertEqual([p for p, _ in adapter.posts], [],
+                         "an unpatched hybrid probed a format it may not use")
+
+    def test_the_cache_abi_is_unchanged_by_skipping_the_probe(self):
+        # The fast path must yield the same identity the probe produced, or artifacts
+        # written before and after this change would stop matching.
+        probing = props(**TARGET_ONLY)
+        del probing["target_cache_type_k"]        # forces the probe
+        stated = props(**TARGET_ONLY)
+        self.assertEqual(real_abi(stated).state_format, "ggsq/3+sckp/1")
+        self.assertEqual(build(stated)[0].state_version(), 3)
+        self.assertEqual(build(probing)[0].state_version(), 3)

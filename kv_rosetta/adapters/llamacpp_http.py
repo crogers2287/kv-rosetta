@@ -110,6 +110,13 @@ class LlamaCppHTTPAdapter(Adapter):
         """
         if self._state_version is not None:
             return self._state_version
+        advertised = self._advertised_state_version()
+        if advertised is not None:
+            # Saving a slot to discover a number the runtime already states exactly is a
+            # full-artifact write on the request path. Only trusted when the whole support
+            # predicate holds, so an incomplete or unrecognised advertisement still probes.
+            self._state_version = advertised
+            return advertised
         if not self.slot_save_path:
             raise AdapterError("cannot probe the state version without a slot_save_path")
         probe = "kvx-version-probe.bin"
@@ -475,6 +482,30 @@ class LlamaCppHTTPAdapter(Adapter):
                 f"label this artifact {protocol['format']}")
         return True
 
+    def _advertised_state_version(self) -> int | None:
+        """The sequence version the runtime states, when its whole story is complete.
+
+        Every condition that gates hybrid support must hold before an advertisement is
+        trusted in place of reading the bytes: a partial protocol, an untested tuple, an
+        unproven active state class, or a missing cache dtype all fall back to probing.
+        Export still derives the version from the emitted bytes and refuses on
+        disagreement, so a runtime cannot talk its way past what it actually writes.
+        """
+        protocol = self.checkpoint_protocol()
+        complete, _ = self._protocol_is_complete(protocol)
+        if not complete:
+            return None
+        version = protocol.get("sequence_state_version")
+        if (version, protocol.get("format")) not in self.supported_compound_tuples:
+            return None
+        active = self._active_state_classes()
+        if active is None or set(active) - self.proven_state_classes:
+            return None
+        k_dtype, v_dtype = self.cache_dtypes()
+        if not k_dtype or not v_dtype:
+            return None
+        return int(version)
+
     @staticmethod
     def _cache_dtype(props: dict[str, Any], axis: str) -> str:
         """The live target context's K or V cache type, or "" when not advertised.
@@ -533,8 +564,17 @@ class LlamaCppHTTPAdapter(Adapter):
             head += handle.read(ggsq_envelope.header_size(head) - len(head))
         ident = self.identity(req.model)
         model_ident = self.model_identity(req.model)
-        # Label with the version actually present in the bytes, not an assumed one.
+        # Label with the version actually present in the bytes, not an assumed one. When
+        # the runtime also advertises a version, the two must agree: an advertisement that
+        # disagrees with what the runtime just wrote is not usable evidence about anything.
         version = ggsq_envelope.peek_version(head)
+        advertised = self._advertised_state_version()
+        if advertised is not None and advertised != version:
+            state.unlink(missing_ok=True)
+            raise AdapterError(
+                f"runtime advertises sequence-state version {advertised} but emitted "
+                f"version {version}; refusing to label an artifact from a runtime whose "
+                f"advertisement does not match its own bytes")
         # Label from the BYTES, not from what the runtime says it can do. A file carrying
         # an SCKP appendix is not plain ggsq/N, and calling it that would let an importer
         # believe a sequence-only restore is sufficient.
@@ -623,6 +663,17 @@ class LlamaCppHTTPAdapter(Adapter):
             header = container.read_header(artifact)
             phases["preflight"] = (phases.get("preflight", 0.0)
                                    + time.time() - phase_started)
+            # Before anything that inspects the runtime's format. An unpatched hybrid must
+            # refuse from support evidence, not save a slot to discover a format it is not
+            # allowed to use - the identity and format checks below reach state_version(),
+            # which probes when the advertisement is incomplete.
+            supported, support_reason, _protocol = self.hybrid_support()
+            if not supported:
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=f"refusing to import into this runtime: {support_reason}",
+                    seconds=time.time() - started, phases=dict(phases))
             blob = header.get("blob", {})
             recorded = header.get("identity") or {}
             header_abi = recorded.get("cache_abi_digest", "")
@@ -662,16 +713,6 @@ class LlamaCppHTTPAdapter(Adapter):
                     representation=Representation.OPAQUE,
                     reason=(f"opaque format mismatch: artifact is {artifact_format!r}, "
                             f"this runtime emits and loads {live_format!r}"),
-                    seconds=time.time() - started)
-
-            # The same decision capabilities() and export() make, before the state is put
-            # anywhere near the runtime.
-            supported, support_reason, _protocol = self.hybrid_support()
-            if not supported:
-                return ImportReport(
-                    mode=StagingMode.HOST_STAGED, ok=False,
-                    representation=Representation.OPAQUE,
-                    reason=f"refusing to import into this runtime: {support_reason}",
                     seconds=time.time() - started)
 
             # A compound artifact declares checkpoint coverage. Zero or missing coverage
