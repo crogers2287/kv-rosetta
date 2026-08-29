@@ -46,6 +46,11 @@ OPAQUE_FORMAT_FAMILY = "ggsq"
 _TIMEOUT = 600
 
 
+def _position(value: object) -> int:
+    """A reported checkpoint position, preserving 0 and rejecting non-integers."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else -1
+
+
 class LlamaCppHTTPAdapter(Adapter):
     name = "llamacpp-http"
 
@@ -157,6 +162,15 @@ class LlamaCppHTTPAdapter(Adapter):
     supported_sequence_versions: frozenset[int] = frozenset({2, 3})
     #: Checkpoint formats this adapter understands.
     supported_checkpoint_formats: frozenset[str] = frozenset({"sckp/1"})
+
+    #: (sequence-state version, checkpoint format) pairs a retained test has actually
+    #: exercised end to end. The checkpoint-persistence proof is for sequence version 3;
+    #: plain ggsq/2 support says nothing about whether an appendix on a version-2 state
+    #: restores, so that tuple stays out until a test proves it.
+    supported_compound_tuples: frozenset[tuple[int, str]] = frozenset({(3, "sckp/1")})
+
+    #: Checkpoint state classes whose restoration this project has proven behaviourally.
+    proven_state_classes: frozenset[str] = frozenset({"target"})
 
     def _protocol_is_complete(self, protocol: dict[str, Any]) -> tuple[bool, str]:
         """Whether the advertised protocol is complete AND exact enough to act on.
@@ -374,6 +388,93 @@ class LlamaCppHTTPAdapter(Adapter):
         recorded = (container.read_header(artifact).get("artifact_key") or {})
         return recorded or None
 
+    def _require_exportable(self, model: str) -> dict[str, Any]:
+        """Refuse before asking the server to save anything it cannot make usable.
+
+        Capability discovery is advisory - a caller can skip it and request OPAQUE
+        directly. On an unpatched hybrid runtime that call used to reach the save POST and
+        return a plain sequence-state artifact, which restores successfully and reuses
+        nothing. The check belongs here, at the boundary that actually produces artifacts.
+
+        Returns the checkpoint protocol when one is required, or {} for an architecture
+        that reuses prefixes without checkpoints.
+        """
+        reusable, why = self.prefix_reuse_support()
+        if reusable:
+            return {}
+        protocol = self.checkpoint_protocol()
+        complete, reason = self._protocol_is_complete(protocol)
+        if not complete:
+            raise AdapterError(
+                f"refusing to export from this runtime: {why}, and {reason}. A sequence-only "
+                f"artifact from a hybrid model restores and then reuses nothing.")
+        version = protocol.get("sequence_state_version")
+        fmt = protocol.get("format")
+        if (version, fmt) not in self.supported_compound_tuples:
+            raise AdapterError(
+                f"compound tuple ggsq/{version}+{fmt} is not in the tested allowlist "
+                f"{sorted(self.supported_compound_tuples)}; refusing rather than assuming "
+                f"an appendix on this sequence version restores")
+        active = self._active_state_classes()
+        if active is None:
+            raise AdapterError(
+                "runtime does not report which checkpoint state classes its current launch "
+                "requires, so a target-only configuration cannot be proven; refusing "
+                "rather than assuming draft/speculative state is absent")
+        unproven = sorted(set(active) - self.proven_state_classes)
+        if unproven:
+            raise AdapterError(
+                f"this launch requires {unproven} checkpoint state, whose restoration is "
+                f"not behaviourally proven (advertised support: "
+                f"{ {k: protocol.get(k) for k in ('draft', 'speculative')} }); refusing")
+        return protocol
+
+    def _verify_checkpoint_appendix(self, state: Path, result: dict[str, Any],
+                                    coverage: dict[str, int],
+                                    protocol: dict[str, Any]) -> bool:
+        """Whether this artifact may be labelled compound, from the bytes and the metadata.
+
+        The runtime reports what it wrote, so the appendix boundary is known rather than
+        searched for: offset = n_written - checkpoint_bytes. Requiring the magic exactly
+        there, the appendix to run to EOF, and n_written to equal the file size is format
+        evidence. A magic found somewhere in the file is not - opaque KV data contains
+        those four bytes by chance, and labelling on that would tell an importer a hybrid
+        restore is available when none is.
+        """
+        if not protocol:
+            return False              # a prefix-reusing architecture needs no appendix
+        size = state.stat().st_size
+        n_written = int(result.get("n_written", 0) or 0)
+        checkpoint_bytes = coverage["checkpoint_bytes"]
+        missing = [name for name in ("n_checkpoints", "checkpoint_n_tokens")
+                   if coverage[name] <= 0]
+        if missing or checkpoint_bytes <= 0:
+            raise AdapterError(
+                f"runtime advertises {protocol['format']} but this save reported no usable "
+                f"checkpoint coverage ({dict(coverage)}); a sequence-only artifact from a "
+                f"hybrid model restores and then reuses nothing")
+        if coverage["checkpoint_pos_min"] < 0 or coverage["checkpoint_pos_max"] < 0:
+            raise AdapterError(
+                f"checkpoint positions are not valid: {dict(coverage)}")
+        if n_written != size:
+            raise AdapterError(
+                f"runtime reported writing {n_written} bytes but {state} is {size}; "
+                f"refusing to label an artifact whose declared bounds do not match it")
+        appendix = ggsq_envelope.checkpoint_appendix_at(state, n_written - checkpoint_bytes)
+        if not appendix.usable:
+            raise AdapterError(
+                f"no usable checkpoint appendix at the declared offset "
+                f"{n_written - checkpoint_bytes} ({appendix.status.value}); refusing to "
+                f"label this artifact {protocol['format']}")
+        return True
+
+    def _active_state_classes(self) -> list[str] | None:
+        """Which checkpoint state classes this launch actually requires, or None."""
+        value = self.props().get("active_checkpoint_state_classes")
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            return None
+        return value
+
     def export(self, req: ExportRequest) -> Path:
         if req.representation is not Representation.OPAQUE:
             raise AdapterError(
@@ -381,6 +482,7 @@ class LlamaCppHTTPAdapter(Adapter):
                 f"asked for {req.representation.value}")
         if not self.slot_save_path:
             raise AdapterError("no slot_save_path configured")
+        protocol = self._require_exportable(req.model)
         out = Path(req.out_path)
         filename = out.stem + ".bin"
         slot = self._slot(req.slot)
@@ -391,8 +493,10 @@ class LlamaCppHTTPAdapter(Adapter):
             "n_checkpoints": int(result.get("n_checkpoints_saved", 0) or 0),
             "checkpoint_bytes": int(result.get("checkpoint_bytes", 0) or 0),
             "checkpoint_n_tokens": int(result.get("checkpoint_n_tokens", 0) or 0),
-            "checkpoint_pos_min": int(result.get("checkpoint_pos_min", -1) or -1),
-            "checkpoint_pos_max": int(result.get("checkpoint_pos_max", -1) or -1),
+            # `x or -1` turns a legitimate position 0 into "absent". Position 0 is the
+            # first token of the prompt and is exactly what a full-prefix checkpoint reports.
+            "checkpoint_pos_min": _position(result.get("checkpoint_pos_min")),
+            "checkpoint_pos_max": _position(result.get("checkpoint_pos_max")),
         }
         state = self.slot_save_path / filename
         if not state.is_file():
@@ -410,7 +514,7 @@ class LlamaCppHTTPAdapter(Adapter):
         # Label from the BYTES, not from what the runtime says it can do. A file carrying
         # an SCKP appendix is not plain ggsq/N, and calling it that would let an importer
         # believe a sequence-only restore is sufficient.
-        has_ckpt = ggsq_envelope.has_checkpoint_appendix(state)
+        has_ckpt = self._verify_checkpoint_appendix(state, result, coverage, protocol)
         fmt_version = version
         # The prompt identity must carry the EXACT tokens this cache was built from.
         # Empty stand-ins would let an artifact be matched to a prompt it never saw.

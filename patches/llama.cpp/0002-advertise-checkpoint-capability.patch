@@ -10,13 +10,23 @@ strings(1) match, or an artifact size - all of which describe the build
 rather than the behaviour.
 
   /props           slot_checkpoint_persistence, slot_checkpoint_format,
-                   sequence_state_version, and per-blob support flags
+                   sequence_state_version, per-blob support flags, and
+                   active_checkpoint_state_classes
   save/restore     n_checkpoints, checkpoint_bytes, and the newest
                    checkpoint's n_tokens, pos_min and pos_max
 
+active_checkpoint_state_classes reports which state classes THIS launch
+actually requires, derived from the launch configuration rather than from
+what the format can hold. The support flags alone cannot distinguish an
+unproven class that is idle from one that is in use: a checkpoint stores
+target, draft and speculative state together, so a launch with a draft
+model produces checkpoints whose restoration has never been verified.
+Without this field a target-only configuration cannot be told apart from a
+speculative one, and a fail-closed consumer has to refuse both.
+
 The reported coverage lets an importer check declared coverage against
---- a/tools/server/server-task.h	2026-08-29 04:43:42.675963259 -0400
-+++ b/tools/server/server-task.h	2026-08-29 04:43:42.729370100 -0400
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
 @@ -526,6 +526,14 @@
      size_t n_bytes;
      double t_ms;
@@ -32,8 +42,8 @@ The reported coverage lets an importer check declared coverage against
      virtual json to_json() override;
  };
  
---- a/tools/server/server-task.cpp	2026-08-29 04:43:42.677963273 -0400
-+++ b/tools/server/server-task.cpp	2026-08-29 04:43:42.731777100 -0400
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
 @@ -1626,6 +1626,11 @@
              { "filename",  filename },
              { "n_saved",   n_tokens },
@@ -58,8 +68,8 @@ The reported coverage lets an importer check declared coverage against
          { "timings", {
              { "restore_ms", t_ms }
          }},
---- a/tools/server/server-context.cpp	2026-08-29 04:43:42.680963295 -0400
-+++ b/tools/server/server-context.cpp	2026-08-29 05:13:41.845835000 -0400
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
 @@ -2676,6 +2676,17 @@
                      res->n_tokens = slot->prompt.tokens.size();
                      res->n_bytes  = nwrite + nwrite_ckpt;
@@ -96,7 +106,25 @@ The reported coverage lets an importer check declared coverage against
                      queue_results.send(std::move(res));
                  } break;
              case SERVER_TASK_TYPE_SLOT_ERASE:
-@@ -4721,6 +4743,26 @@
+@@ -4686,6 +4708,17 @@
+ }
+ 
+ static json get_res_props(const server_context_meta & meta, const common_params & params, bool is_sleeping) {
++    // Derived from the launch configuration, not from what the checkpoint format can hold.
++    json active_checkpoint_state_classes = json::array({ "target" });
++    if (params.speculative.has_dft()) {
++        active_checkpoint_state_classes.push_back("draft");
++    }
++    for (const auto & type : params.speculative.types) {
++        if (type != COMMON_SPECULATIVE_TYPE_NONE) {
++            active_checkpoint_state_classes.push_back("speculative");
++            break;
++        }
++    }
+     // note: do NOT use ctx_server here, otherwise it's not possible to use this during sleep
+ 
+     task_params tparams;
+@@ -4721,6 +4754,33 @@
          { "eos_token",                   meta.eos_token_str },
          { "build_info",                  meta.build_info },
          { "is_sleeping",                 is_sleeping },
@@ -120,6 +148,13 @@ The reported coverage lets an importer check declared coverage against
 +        { "supports_target_checkpoint_state",    true },
 +        { "supports_draft_checkpoint_state",     false },
 +        { "supports_speculative_checkpoint_state", false },
++        // Which checkpoint state classes THIS launch actually requires. A consumer cannot
++        // tell from the flags above whether the unproven classes are merely unsupported or
++        // are actively in use: a checkpoint stores target, draft and speculative state
++        // together, so a launch with a draft model produces checkpoints whose restoration
++        // has never been verified. Without this, a target-only configuration cannot be
++        // distinguished from a speculative one and both have to be refused.
++        { "active_checkpoint_state_classes",     active_checkpoint_state_classes },
          { "cors_proxy_enabled",          params.ui_mcp_proxy },
      };
      if (params.use_jinja) {

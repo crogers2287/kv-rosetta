@@ -477,3 +477,31 @@ def has_checkpoint_appendix(path, chunk: int = 4 << 20) -> bool:
     reported as absent here. ``chunk`` is accepted for call compatibility and unused.
     """
     return parse_checkpoint_appendix(path).usable
+
+
+def checkpoint_appendix_at(path, offset: int) -> CheckpointAppendix:
+    """Validate the appendix the runtime says it wrote, at the offset it implies.
+
+    The runtime reports total bytes written and checkpoint bytes, so the appendix boundary
+    is known: ``offset = n_written - checkpoint_bytes``. Requiring the magic exactly there,
+    and requiring the appendix to run from there to EOF, is real format evidence. Finding
+    the magic somewhere is not - the same four bytes occur inside opaque KV data, and a
+    scan proves neither the boundary nor that the payload occupies the tail.
+    """
+    from pathlib import Path as _Path
+
+    path = _Path(path)
+    if not path.is_file():
+        return CheckpointAppendix(CheckpointStatus.ABSENT)
+    size = path.stat().st_size
+    if offset < 0 or offset + 12 > size:
+        return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=offset)
+    blob = path.read_bytes()
+    if blob[offset:offset + 4] != SCKP_MAGIC:
+        return CheckpointAppendix(CheckpointStatus.ABSENT, offset=offset)
+    parsed = _parse_at(blob, offset)
+    if parsed is None:
+        # Magic is there but the appendix does not end at EOF, so the declared boundary
+        # and the file disagree.
+        return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=offset)
+    return parsed
