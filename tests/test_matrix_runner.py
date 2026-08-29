@@ -227,3 +227,31 @@ class SpacePredictionTest(unittest.TestCase):
         self.assertAlmostEqual(actual, 295390.0, delta=1000.0,
                                msg="the default bytes-per-token no longer matches the "
                                    "record it was measured from")
+
+
+class ServerContextSizeTest(unittest.TestCase):
+    """The server's context must follow the requested prompt length.
+
+    A hardcoded -c 8192 makes an 8192-token prompt fail with HTTP 400 - "request (8192
+    tokens) exceeds the available context size (8192 tokens)" - because the generated tail
+    needs room too. This is a source assertion because building the argv requires a live
+    server, and the earlier fix silently matched nothing while passing ast.parse.
+    """
+
+    def test_the_argv_does_not_hardcode_a_context_size(self):
+        source = (REPO / "scripts" / "production_matrix.py").read_text()
+        self.assertNotIn('"-c", "8192"', source,
+                         "context size is hardcoded; a longer prompt will 400")
+        self.assertIn('"-c", str(self.n_ctx)', source)
+
+    def test_the_gate_derives_a_context_with_headroom(self):
+        source = (REPO / "scripts" / "admitted_store_gate.py").read_text()
+        self.assertIn("args.prompt_tokens + 1024", source)
+
+    def test_the_server_accepts_and_stores_a_context_size(self):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("pm", REPO / "scripts" / "production_matrix.py")
+        module = iu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        server = module.Server("/bin/true", "m", "/tmp", 1, Path("/tmp/x.log"), n_ctx=9216)
+        self.assertEqual(server.n_ctx, 9216)

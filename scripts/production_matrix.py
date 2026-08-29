@@ -230,7 +230,7 @@ class Server:
             raise RuntimeError(f"{self.url} already answers; refusing to attribute its "
                                f"behaviour to this run")
         self.argv = [self.binary, "--model", self.model, "--host", "127.0.0.1",
-                     "--port", str(self.port), "-ngl", "99", "-c", "8192",
+                     "--port", str(self.port), "-ngl", "99", "-c", str(self.n_ctx),
                      "--parallel", "1", "-fa", "on", "--split-mode", "layer",
                      "--tensor-split", "1,1",
                      "--slot-save-path", self.slots.rstrip("/") + "/", "--no-warmup"]
