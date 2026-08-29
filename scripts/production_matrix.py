@@ -441,8 +441,14 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         adapter_view["calls_during_export"] = list(adapter.calls)
         if adapter_view["export_refused"] and any(
                 "action=save" in call for call in adapter.calls):
-            raise RuntimeError(f"{name}: export refused only after a save POST: "
-                               f"{adapter.calls}")
+            raise RuntimeError(
+                f"{name}: export refused only after a save POST.\n"
+                f"  calls: {adapter.calls}\n"
+                f"  hybrid_support: {supported} ({support_reason})\n"
+                f"  capabilities export: {adapter_view['capabilities_export']}\n"
+                f"  refusal: {adapter_view['export_refused']}\n"
+                f"  props model_path: {first.props().get('model_path')!r}\n"
+                f"  prefix_reuse_support: {adapter.prefix_reuse_support()}")
 
         # Capability and the support predicate must agree on a live runtime as they do
         # offline. An artifact-level refusal - incomplete checkpoint coverage on this
