@@ -1,5 +1,5 @@
 {
-  "deployment_identity": "Qwen3.8-27B-UD-Q4_K_XL.gguf is the file loaded by the fleet's qwen38-27b llama.cpp entries (run-qwen38.sh, run-qwen38-w6800-4slot.sh, run-qwen38-dflash2.sh), so it is the deployed production SKU for llama.cpp serving. Architecture qwen35. No Qwen3.5-27B is served; Qwen3.6-27B variants exist under other fleet entries and were not tested.",
+  "deployment_identity": "Qwen3.8-27B-UD-Q4_K_XL.gguf is the file the fleet's qwen38-27b llama.cpp entries load, so it is the deployed production SKU. Architecture qwen35.",
   "kind": "production-27b-paired-restart-matrix",
   "legs": {
     "patched": {
@@ -7,6 +7,27 @@
       "active_checkpoint_state_classes": [
         "target"
       ],
+      "adapter": {
+        "active_checkpoint_state_classes": [
+          "target"
+        ],
+        "capabilities_export": [
+          "opaque"
+        ],
+        "capabilities_import": [
+          "opaque"
+        ],
+        "export_refused": null,
+        "export_seconds": 2.2748966217041016,
+        "hybrid_support": true,
+        "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
+        "import_ok": true,
+        "import_reason": "verified reuse on slot 0: cache_n=252 of 256 token(s), 4 reprocessed, matching declared coverage 252",
+        "import_reported_seconds": 3.6852447986602783,
+        "import_seconds_end_to_end": 3.7948861122131348,
+        "import_tokens_restored": 256,
+        "kvx_bytes": 330575504
+      },
       "architecture": "qwen35",
       "artifact_bytes": 487926936,
       "artifact_sha256": "391fcb54a5dd0f0fd748c24a4d2f547a29673512cc087ba8a8b3be732b559a49",
@@ -33,7 +54,7 @@
       "cold": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 327.84,
+        "prompt_ms": 318.609,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -45,14 +66,14 @@
           1007,
           220
         ],
-        "wall_s": 0.5541765689849854
+        "wall_s": 0.5402944087982178
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 256
       },
       "expect_patched": true,
-      "first_pid": 2935630,
+      "first_pid": 3809498,
       "launch_argv": [
         "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
         "--model",
@@ -60,7 +81,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "54967",
+        "49803",
         "-ngl",
         "99",
         "-c",
@@ -173,10 +194,10 @@
         "n_read": 487926936,
         "n_restored": 263,
         "timings": {
-          "restore_ms": 356.194
+          "restore_ms": 419.698
         }
       },
-      "restore_wall_s": 0.3576376438140869,
+      "restore_wall_s": 0.4213836193084717,
       "save_response": {
         "checkpoint_bytes": 313788820,
         "checkpoint_n_tokens": 252,
@@ -188,7 +209,7 @@
         "n_saved": 263,
         "n_written": 487926936,
         "timings": {
-          "save_ms": 383.494
+          "save_ms": 379.038
         }
       },
       "second_launch_argv": [
@@ -198,7 +219,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "55667",
+        "46305",
         "-ngl",
         "99",
         "-c",
@@ -215,13 +236,14 @@
         "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-matrix/",
         "--no-warmup"
       ],
-      "second_pid": 2938855,
+      "second_pid": 3813234,
+      "tail_completion_wall_s": 0.42635488510131836,
       "token_count": 256,
       "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
       "warm_after_restore": {
         "cache_n": 252,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 202.867,
+        "prompt_ms": 212.89,
         "prompt_n": 4,
         "tokens": [
           5629,
@@ -296,6 +318,17 @@
     "unpatched": {
       "acceptance_checked": true,
       "active_checkpoint_state_classes": null,
+      "adapter": {
+        "active_checkpoint_state_classes": null,
+        "capabilities_export": [],
+        "capabilities_import": [],
+        "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
+        "export_seconds": 0.5177621841430664,
+        "hybrid_support": false,
+        "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
+        "import_ok": null,
+        "import_reason": "no artifact: export was refused, as required"
+      },
       "architecture": "qwen35",
       "artifact_bytes": 174138116,
       "artifact_sha256": "a90a470456d366270ba07daea48a75855e845d4b808c0629d980d50dcae1c7d7",
@@ -322,7 +355,7 @@
       "cold": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 320.394,
+        "prompt_ms": 357.935,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -334,14 +367,14 @@
           1007,
           220
         ],
-        "wall_s": 0.5456514358520508
+        "wall_s": 0.5839071273803711
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 256
       },
       "expect_patched": false,
-      "first_pid": 2942088,
+      "first_pid": 3817694,
       "launch_argv": [
         "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
         "--model",
@@ -349,7 +382,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "59213",
+        "58819",
         "-ngl",
         "99",
         "-c",
@@ -451,17 +484,17 @@
         "n_read": 174138116,
         "n_restored": 263,
         "timings": {
-          "restore_ms": 59.219
+          "restore_ms": 67.677
         }
       },
-      "restore_wall_s": 0.06063437461853027,
+      "restore_wall_s": 0.06923031806945801,
       "save_response": {
         "filename": "matrix-unpatched.bin",
         "id_slot": 0,
         "n_saved": 263,
         "n_written": 174138116,
         "timings": {
-          "save_ms": 159.847
+          "save_ms": 153.306
         }
       },
       "second_launch_argv": [
@@ -471,7 +504,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "32909",
+        "49673",
         "-ngl",
         "99",
         "-c",
@@ -488,13 +521,14 @@
         "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-matrix/",
         "--no-warmup"
       ],
-      "second_pid": 2944828,
+      "second_pid": 3820436,
+      "tail_completion_wall_s": 0.5167708396911621,
       "token_count": 256,
       "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
       "warm_after_restore": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 308.134,
+        "prompt_ms": 302.285,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -572,8 +606,8 @@
     "0002-advertise-checkpoint-capability.patch": "132acd3e3013d90f634ccbcbcb7dcb7e168128a5157ae28378b2a598eca0491f"
   },
   "prompt_tokens": 256,
-  "repo_commit": "56600b98b0ac3e9584c8b04942310b46ef1ae560",
-  "runner_sha256": "1f8e36acc997bfdcf737096b059740ad3a034bda3bb817c603415517f4a7cf50",
+  "repo_commit": "a9e617e54200dc3159c1baa7efef76a31aa03a49",
+  "runner_sha256": "7b0465796f7ba7130fc4e75918ad8b3242ba16c3345bf41d092834af2644130d",
   "source_trees": {
     "patched": {
       "head": "ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc",

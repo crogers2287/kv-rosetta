@@ -346,3 +346,55 @@ the fixture sparse, since the subject is the reader, not the writer.
 
 Status: **proven by retained test** (24 tests in the file, 345 offline total) and
 **measured once on this host** (400 MiB -> 0.0 MiB).
+
+## REQ-023 — End-to-end KVX round trip, and a layout bug the offline suite could not see
+
+Steer cd2afb0, P2's remaining acceptance item.
+
+**A parser bug the tests were blind to.** The SCKP parser read 12-byte checkpoint records
+(three int32). The patch writes 16: `n_tokens` is `int64_t`, `pos_min`/`pos_max` are
+`llama_pos` (int32). Every fixture packed the same wrong shape, so 24 tests passed against
+a layout the writer never produces. It took the live export to expose it - the adapter
+refused its own artifact with *"no usable checkpoint appendix at the declared offset
+174138116 (malformed)"*. The derived offset was correct; the record size was not.
+
+This failed **closed**: a real appendix was rejected rather than a bad one accepted, so no
+artifact was ever wrongly blessed. But the gate refused every genuine hybrid export, and the
+tests asserting the parser worked were measuring their own assumption. The record size is now
+a named constant pinned against framing captured from a real slot file, with a test asserting
+the old 12-byte shape no longer validates.
+
+**The uncovered tail is not a constant.** The first round trip failed with `cache_n=252
+prompt_n=11` for 263 tokens. The artifact had been saved from a slot holding 256 prompt plus
+8 generated tokens, while the checkpoint still covers 252. The raw legs show a tail of 4 only
+because they replay a 256-token request. The tail is a function of how far the sequence ran
+past the last checkpoint, so the ceiling of 8 does not generalise. Rather than widen the
+bound, the matrix now exports what a prefix cache actually holds: prefill, then save before
+generating.
+
+**Result.** Both legs pass every P2 acceptance item:
+
+| | patched | control |
+|---|---|---|
+| hybrid_support | True | False |
+| capabilities export | `['opaque']` | `[]` |
+| active state classes | `['target']` | none reported |
+| adapter export | 315 MiB in 2.27s | refused, as required |
+| adapter import | ok, cache_n=252 of 256, 4 reprocessed | no artifact |
+| after restore | cache_n=252 prompt_n=4 | cache_n=0 prompt_n=256 |
+
+**Economics, stated plainly.** At 256 tokens this is a correctness gate and a clear loss:
+
+- native cold request: **0.540 s**
+- raw runtime restore: 0.421 s
+- tail completion after restore: 0.426 s
+- **end-to-end adapter import: 3.795 s**
+
+The end-to-end number is ~7x the cold request. It includes what a caller actually waits for:
+outer KVX verification over 315 MiB, staging that payload to the slot
+directory, the runtime restore, and the mandatory reuse probe. Save time is excluded, since
+it is not paid on the request path. Nothing here suggests a win at 256 tokens; whether the
+curve crosses is what the ladder is for.
+
+Status: **measured once on this host**, from a clean committed runner
+(`a9e617e54200`). The parser fix is **proven by retained test** (349 offline).
