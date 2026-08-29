@@ -160,3 +160,45 @@ Source: prior session (commit `7675906`, "feat: start portable KV Rosetta core")
 - `python3 -m unittest discover -s tests -v` — 4 tests, ok
 
 **REQ-001 status: COMPLETE.**
+
+## REQ-018 — Paired patched/unpatched restart matrix on the production 27B
+
+Steer item 2 and 3. The prior restart evidence had only a positive leg, so it could not
+separate "the patch persists checkpoints" from "this model reuses prefixes anyway". This
+runs both halves against the same model, the same 256 prompt tokens, and two builds of the
+same commit that differ only by the patches.
+
+Model    `/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf`
+         arch `qwen35` (hybrid), content digest `9bf3b07e1fb6531e91d970384cc3bdbc...`
+Builds   patched `b10665-ca3d5a3e1` / control `b151-ca3d5a3e1` - same base commit
+         impl .so `1ddfe67d0e3425ac` vs
+         `4b036b5259fc5ede`
+Record   `bench/production-27b-matrix.json`
+
+| | patched | control (unpatched, same commit) |
+|---|---|---|
+| advertises `slot_checkpoint_persistence` | yes, `sckp/1` | no |
+| patch marker strings in impl .so | 4 | 0 |
+| cold prefill | cache_n=0 prompt_n=256 | cache_n=0 prompt_n=256 |
+| native in-memory reuse | cache_n=252 prompt_n=4 | cache_n=252 prompt_n=4 |
+| fresh process, before restore | cache_n=0 prompt_n=256 | cache_n=0 prompt_n=256 |
+| **after restore into a fresh process** | **cache_n=252 prompt_n=4** | **cache_n=0 prompt_n=256** |
+| restore reports `n_restored` | 263 | 263 |
+| artifact size | 465 MiB | 166 MiB |
+
+**Both legs report `n_restored=263`. One reuses 252 tokens; the other reuses nothing and
+re-prefills all 256.** That is the measurement behind the rule that a restore is never
+called successful on `n_restored` alone - on this model the field is identical whether the
+reusable state survived or not.
+
+The 299 MiB difference between the artifacts is the checkpoint appendix; the
+patched leg's restore response carries `checkpoint_n_tokens=252`, matching the 252 tokens
+actually reused. The uncovered tail of 4 appears in native in-memory reuse on both builds,
+so it is a property of the runtime's prefix matching, not of restoring.
+
+Status: **proven by retained artifact** (`bench/production-27b-matrix.json`, one run on this
+host). The runner refuses to write a record unless both legs complete, and fails rather than
+skips if the control binary advertises checkpoint support.
+
+Caveat: measured once, on one host, at one prompt length (256 tokens). The economic
+question - whether restoring beats prefilling - is separate and not answered here.

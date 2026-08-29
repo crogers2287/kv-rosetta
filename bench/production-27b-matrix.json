@@ -1,0 +1,245 @@
+{
+  "kind": "production-27b-paired-restart-matrix",
+  "legs": {
+    "patched": {
+      "architecture": "qwen35",
+      "artifact_bytes": 487926936,
+      "artifact_sha256": "391fcb54a5dd0f0fd748c24a4d2f547a29673512cc087ba8a8b3be732b559a49",
+      "binary": "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
+      "binary_digests": {
+        "launcher_sha256": "785c69e1abd11906dd8889b1cd2546229972c787748b66eba04f88f616526870",
+        "libggml-base.so_sha256": "56f1f5e7b00a7d718615a00e8c8c4c9b9a7de076259bf44db98f408e706709df",
+        "libllama-server-impl.so_sha256": "1ddfe67d0e3425aca99edac3bf42be5de51dfe9b41ef34e7a79fcdf8adc2369b",
+        "libllama.so_sha256": "f1327e08bd47786072e94ba551ef19049ea4c35a0d58625391b1a5be429eca42",
+        "patch_markers": {
+          "context checkpoint appendix": 2,
+          "sckp/1": 1,
+          "slot_checkpoint_persistence": 1
+        }
+      },
+      "build_info": "b10665-ca3d5a3e1",
+      "cold": {
+        "cache_n": 0,
+        "content": " naturalist recorded. In the year ",
+        "prompt_ms": 334.737,
+        "prompt_n": 256,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ],
+        "wall_s": 0.5603196620941162
+      },
+      "control_after_restart": {
+        "cache_n": 0,
+        "prompt_n": 256
+      },
+      "expect_patched": true,
+      "first_pid": 2103459,
+      "leg": "patched",
+      "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+      "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "n_ctx": 8192,
+      "native_reuse": {
+        "cache_n": 252,
+        "content": " naturalist recorded. In the year ",
+        "prompt_n": 4,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ]
+      },
+      "protocol": {
+        "format": "sckp/1",
+        "sequence_state_version": 3,
+        "supports_draft": false,
+        "supports_speculative": false,
+        "supports_target": true
+      },
+      "restore_response": {
+        "checkpoint_bytes": 313788820,
+        "checkpoint_n_tokens": 252,
+        "checkpoint_pos_max": 251,
+        "checkpoint_pos_min": 251,
+        "filename": "matrix-patched.bin",
+        "id_slot": 0,
+        "n_checkpoints_restored": 2,
+        "n_read": 487926936,
+        "n_restored": 263,
+        "timings": {
+          "restore_ms": 413.975
+        }
+      },
+      "restore_wall_s": 0.41675591468811035,
+      "save_response": {
+        "checkpoint_bytes": 313788820,
+        "checkpoint_n_tokens": 252,
+        "checkpoint_pos_max": 251,
+        "checkpoint_pos_min": 251,
+        "filename": "matrix-patched.bin",
+        "id_slot": 0,
+        "n_checkpoints_saved": 2,
+        "n_saved": 263,
+        "n_written": 487926936,
+        "timings": {
+          "save_ms": 419.13
+        }
+      },
+      "second_pid": 2107794,
+      "token_count": 256,
+      "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
+      "warm_after_restore": {
+        "cache_n": 252,
+        "content": " naturalist recorded. In the year ",
+        "prompt_ms": 205.885,
+        "prompt_n": 4,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ],
+        "top_probs": [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
+        ]
+      }
+    },
+    "unpatched": {
+      "architecture": "qwen35",
+      "artifact_bytes": 174138116,
+      "artifact_sha256": "a90a470456d366270ba07daea48a75855e845d4b808c0629d980d50dcae1c7d7",
+      "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
+      "binary_digests": {
+        "launcher_sha256": "06941ef6cec01e26751864b5439c2b865fccd6fe11b5e982b911cab5427f8849",
+        "libggml-base.so_sha256": "258329d71c2a5ff0e105790bca4c77953528c9067a2904693b38a8c716fa4c4c",
+        "libllama-server-impl.so_sha256": "4b036b5259fc5edeb16cad77f64660a785e63569dffa815289072fefed6c6292",
+        "libllama.so_sha256": "75f36bda0c495d7b4b1ae5661b11416bf7b9a0febc507492fa218eb975e885b1",
+        "patch_markers": {
+          "context checkpoint appendix": 0,
+          "sckp/1": 0,
+          "slot_checkpoint_persistence": 0
+        }
+      },
+      "build_info": "b151-ca3d5a3e1",
+      "cold": {
+        "cache_n": 0,
+        "content": " naturalist recorded. In the year ",
+        "prompt_ms": 336.314,
+        "prompt_n": 256,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ],
+        "wall_s": 0.558908224105835
+      },
+      "control_after_restart": {
+        "cache_n": 0,
+        "prompt_n": 256
+      },
+      "expect_patched": false,
+      "first_pid": 2111293,
+      "leg": "unpatched",
+      "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+      "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "n_ctx": 8192,
+      "native_reuse": {
+        "cache_n": 252,
+        "content": " naturalist recorded. In the year ",
+        "prompt_n": 4,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ]
+      },
+      "protocol": {},
+      "restore_response": {
+        "filename": "matrix-unpatched.bin",
+        "id_slot": 0,
+        "n_read": 174138116,
+        "n_restored": 263,
+        "timings": {
+          "restore_ms": 76.657
+        }
+      },
+      "restore_wall_s": 0.07772588729858398,
+      "save_response": {
+        "filename": "matrix-unpatched.bin",
+        "id_slot": 0,
+        "n_saved": 263,
+        "n_written": 174138116,
+        "timings": {
+          "save_ms": 163.511
+        }
+      },
+      "second_pid": 2114407,
+      "token_count": 256,
+      "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
+      "warm_after_restore": {
+        "cache_n": 0,
+        "content": " naturalist recorded. In the year ",
+        "prompt_ms": 304.516,
+        "prompt_n": 256,
+        "tokens": [
+          5629,
+          375,
+          12076,
+          13,
+          733,
+          279,
+          1007,
+          220
+        ],
+        "top_probs": [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {}
+        ]
+      }
+    }
+  },
+  "patches": {
+    "0001-persist-slot-prompt-checkpoints.patch": "baf44e7c06f1a8b16bcc7de1019c2a36e8147b0b32a61b33bff4160e445fc22f",
+    "0002-advertise-checkpoint-capability.patch": "45ce8f9287493cd87477fb40b49170243d2b0ac6c6b3d38f8bd1563d7e10ec4b"
+  },
+  "prompt_tokens": 256,
+  "repo_commit": "cdd698e693c01e483e1172a25f1832a1c20a17f7"
+}

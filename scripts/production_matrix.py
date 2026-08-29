@@ -64,6 +64,17 @@ def binary_digests(binary: Path) -> dict:
         sibling = binary.parent / name
         if sibling.exists():
             out[name + "_sha256"] = sha256_file(sibling)
+    impl = binary.parent / "libllama-server-impl.so"
+    if impl.exists():
+        # Source-side evidence, independent of what the server advertises at runtime.
+        # The SCKP magic is a constexpr uint32, not a string, so it never appears in the
+        # binary - these are the strings the patch actually emits.
+        blob = impl.read_bytes()
+        out["patch_markers"] = {
+            marker: blob.count(marker.encode())
+            for marker in ("sckp/1", "slot_checkpoint_persistence",
+                           "context checkpoint appendix")
+        }
     if len(out) == 1:
         raise RuntimeError(f"no implementation library found beside {binary}; "
                            f"a launcher digest alone cannot identify the build")
