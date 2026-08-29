@@ -151,35 +151,40 @@ class AdmittedPath:
         # so an unsupported runtime never opens or links state.
         mark = time.time()
         supported, reason, _protocol = self.adapter.hybrid_support()
+        phases["resolve_support"] = time.time() - mark
         if not supported:
-            phases["resolve"] = time.time() - mark
             return refuse(f"refusing to restore into this runtime: {reason}")
+        mark = time.time()
         try:
             obj = self.store.resolve(digest)
         except AdmissionError as exc:
-            phases["resolve"] = time.time() - mark
+            phases["resolve_store"] = time.time() - mark
             return refuse(str(exc))
+        phases["resolve_store"] = time.time() - mark
+        mark = time.time()
         manifest = obj.manifest
         reads.metadata_bytes += len(json.dumps(manifest))
         reads.notes.append("manifest read; payload not opened by kv-rosetta")
 
         abi = self.adapter.cache_abi_identity(model)
+        phases["resolve_abi"] = time.time() - mark
+        mark = time.time()
         if manifest.get("cache_abi_digest") != abi.digest():
-            phases["resolve"] = time.time() - mark
+            phases["resolve_identity"] = time.time() - mark
             return refuse(
                 f"cache ABI mismatch: admitted {str(manifest.get('cache_abi_digest'))[:12]} "
                 f"vs live {abi.digest()[:12]}")
         prompt_digest = hashlib.sha256(
             json.dumps(list(token_ids), separators=(",", ":")).encode()).hexdigest()
         if manifest.get("prompt_token_digest") != prompt_digest:
-            phases["resolve"] = time.time() - mark
+            phases["resolve_identity"] = time.time() - mark
             return refuse("prompt identity mismatch between the admitted state and the "
                           "tokens being restored")
         if model and manifest.get("model_content_digest") not in (
                 "", weights.model_content_digest(model)):
-            phases["resolve"] = time.time() - mark
+            phases["resolve_identity"] = time.time() - mark
             return refuse("model identity mismatch")
-        phases["resolve"] = time.time() - mark
+        phases["resolve_identity"] = time.time() - mark
 
         mark = time.time()
         calls.append(f"/slots/{slot}?action=restore")
