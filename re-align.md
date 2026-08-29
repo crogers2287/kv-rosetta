@@ -111,6 +111,47 @@ speaks to the actual use case, and where should the 32K artifact live given the 
 
 ---
 
+## RA-003 — Artifact size is affine in tokens, not linear; the 32K refusal may be wrong · **open** · 2026-08-29
+
+RA-002 was answered with "do not generate a 32K artifact on the current NVMe", accepting my
+estimate of ~9.7 GiB. **That estimate assumed the artifact scales linearly with tokens. Two
+measured points say it does not.**
+
+| prompt | artifact bytes | bytes/token |
+|---|---:|---:|
+| 2,048 | 604,958,676 | 295,390 |
+| 8,192 | 1,007,783,892 | 123,020 |
+
+Fitting the two points as `fixed + per_token x n`:
+
+- per-token slope ≈ **65,564 bytes**
+- fixed component ≈ **449 MiB**
+
+The fixed part is the recurrent/checkpoint state, which is per-layer rather than per-token —
+consistent with the layout inventory, where R/S tensors are sized by `n_embd_r()` and layer
+count, not by cell count.
+
+**Consequence for the 32K refusal:** an affine fit predicts a 32K object near **2.6 GB**, not
+9.7 GB — so peak transient ≈ 5.2 GB and ≈ 6.3 GB with the 20% margin, against **16.25 GiB
+free**. On this arithmetic 32K would fit comfortably on the current NVMe.
+
+I am **not** acting on that. Two points fitted to a two-parameter model is not a
+measurement, it is a line drawn through every point available, and the space guard still
+uses the conservative 295,390 rate so nothing can be generated on the strength of it.
+
+It also explains why 8K beat cold by 60.7% while 2K managed 14.2%: the fixed cost amortises
+as the prefix grows, which is the same direction the product goal points.
+
+**Questions for the steer:**
+
+1. Should the space predictor take a measured rate per prompt length, or an affine fit, or
+   stay conservative-linear? The current default silently over-predicts by 2.4x at 8K.
+2. Does the 32K refusal still hold given the affine reading? If the intent was "do not
+   generate 9.7 GB", the premise may no longer be true. If the intent was "do not scale
+   until 8K passes three repetitions", it holds regardless and I will withdraw this entry.
+
+---
+
 ## Answered
 
 ### RA-001 — answered in steer 7ded4e1, 2026-08-29
