@@ -22,6 +22,9 @@ import urllib.request
 
 from kv_rosetta import container
 
+from kv_rosetta import weights
+from kv_rosetta.store import ArtifactStore
+from kv_rosetta.adapters.base import AdapterError
 from kv_rosetta.adapters.base import ExportRequest, ImportRequest, Representation
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
 
@@ -230,3 +233,70 @@ class SlotBindingAndFullPrefixReuse(unittest.TestCase):
                          f"ggsq/{self.adapter.state_version()}")
         self.assertIn(header["blob"]["opaque_format"],
                       self.adapter.capabilities().opaque_formats)
+
+
+@unittest.skipUnless(_URL and _SLOTS, "set KVX_LLAMA_URL and KVX_LLAMA_SLOTS to run")
+class IdentityBindingTests(unittest.TestCase):
+    """Artifacts must carry, and reproduce, the identity they are stored under."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
+        text = "In the year 1892 the naturalist wrote. " * 30
+        cls.ids = cls.adapter._post("/tokenize", {"content": text})["tokens"][:150]
+
+    def _artifact(self):
+        self.adapter.erase(0)
+        self.adapter._post("/completion", {"prompt": self.ids, "n_predict": 1,
+                                           "temperature": 0.0, "cache_prompt": True,
+                                           "id_slot": 0})
+        out = Path(tempfile.mkdtemp()) / "identity.kvx"
+        return Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=0)))
+
+    def test_prompt_identity_is_not_a_stand_in(self):
+        header = container.read_header(self._artifact())["prompt"]
+        self.assertTrue(header["tokenizer_id"], "empty tokenizer id")
+        self.assertRegex(header["token_ids_sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertEqual(header["token_count"], len(self.ids))
+
+    def test_model_identity_is_content_derived(self):
+        identity = container.read_header(self._artifact())["identity"]
+        self.assertRegex(identity["weights_sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertRegex(identity["model_digest"], r"\A[0-9a-f]{64}\Z")
+        # The weights digest must be the file's contents, not anything path-derived.
+        props = self.adapter.props()
+        expected = weights.model_content_digest(props["model_path"])
+        self.assertEqual(identity["weights_sha256"], expected)
+
+    def test_artifact_carries_a_reproducible_composite_key(self):
+        artifact = self._artifact()
+        recorded = container.read_header(artifact)["artifact_key"]
+        self.assertRegex(recorded["digest"], r"\A[0-9a-f]{64}\Z")
+        store = ArtifactStore(Path(tempfile.mkdtemp()) / "store")
+        record = self.adapter.publish(artifact, store)
+        self.assertEqual(record.artifact_digest, recorded["digest"])
+
+    def test_published_artifact_is_keyed_on_the_full_composite_digest(self):
+        store = ArtifactStore(Path(tempfile.mkdtemp()) / "store")
+        record = self.adapter.publish(self._artifact(), store)
+        self.assertEqual(Path(record.path).stem, record.artifact_digest)
+        self.assertEqual(len(record.artifact_digest), 64)
+        self.assertIsNotNone(store.get(record.artifact_digest))
+        self.assertEqual(len(store.find(prompt_digest=record.prompt_digest)), 1)
+
+    def test_publishing_an_unverifiable_artifact_is_refused(self):
+        store = ArtifactStore(Path(tempfile.mkdtemp()) / "store")
+        with self.assertRaises(AdapterError):
+            self.adapter.publish(Path(tempfile.mkdtemp()) / "absent.kvx", store)
+
+    def test_publishing_a_corrupted_artifact_is_refused(self):
+        artifact = self._artifact()
+        raw = bytearray(artifact.read_bytes())
+        offset = container.read_header(artifact)["blob"]["offset"]
+        raw[offset] ^= 0xFF
+        broken = artifact.with_name("broken.kvx")
+        broken.write_bytes(bytes(raw))
+        store = ArtifactStore(Path(tempfile.mkdtemp()) / "store")
+        with self.assertRaises(AdapterError):
+            self.adapter.publish(broken, store)

@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from kv_rosetta import container, weights
-from kv_rosetta.identity import CacheABIIdentity, ModelIdentity, PromptIdentity
+from kv_rosetta.store import ArtifactStore
+from kv_rosetta.identity import ArtifactKey, CacheABIIdentity, ModelIdentity, PromptIdentity
 from kv_rosetta.adapters import ggsq_envelope
 from kv_rosetta.adapters.base import (
     Adapter,
@@ -211,6 +212,49 @@ class LlamaCppHTTPAdapter(Adapter):
 
     # -- export / import --------------------------------------------------------
 
+    def publish(self, artifact: Path | str, store: "ArtifactStore") -> object:
+        """Store an artifact under its own composite key.
+
+        Lookup keyed on the proxy prefix fingerprint alone cannot distinguish a CUDA
+        opaque state from a HIP one, a canonical representation, or a translation - they
+        share a prompt and nothing else. The key recorded in the artifact is recomputed
+        here so a mislabelled file cannot be filed under an identity it does not have.
+        """
+        artifact = Path(artifact)
+        ok, reason = container.verify(artifact)
+        if not ok:
+            raise AdapterError(f"refusing to publish an unverifiable artifact: {reason}")
+        header = container.read_header(artifact)
+        recorded = header.get("artifact_key") or {}
+        if not recorded.get("digest"):
+            raise AdapterError("artifact carries no composite key; refusing to publish")
+        prompt = header.get("prompt", {})
+        identity = header.get("identity", {})
+        key = ArtifactKey(
+            prompt=PromptIdentity(
+                tokenizer_id=prompt.get("tokenizer_id", ""),
+                token_ids_sha256=prompt.get("token_ids_sha256", ""),
+                token_count=int(prompt.get("token_count", 0)),
+                corpus_fingerprint=str((header.get("corpus") or {}).get("fingerprint", "")),
+            ),
+            model=self.model_identity(),
+            cache_abi=self.cache_abi_identity(),
+            encoding="opaque",
+            format_version=str(header.get("blob", {}).get("opaque_format", "")),
+            representation_digest=str(recorded.get("representation_digest", "")),
+            mapper_id=str(recorded.get("mapper_id", "")),
+        )
+        if key.digest() != recorded["digest"]:
+            raise AdapterError(
+                f"artifact key does not reproduce: recorded {recorded['digest'][:12]}, "
+                f"recomputed {key.digest()[:12]}")
+        return store.put(key, artifact)
+
+    def artifact_key(self, artifact: Path | str) -> ArtifactKey | None:
+        """Recompute the composite key recorded in an artifact, or None when absent."""
+        recorded = (container.read_header(artifact).get("artifact_key") or {})
+        return recorded or None
+
     def export(self, req: ExportRequest) -> Path:
         if req.representation is not Representation.OPAQUE:
             raise AdapterError(
@@ -230,13 +274,31 @@ class LlamaCppHTTPAdapter(Adapter):
         with open(state, "rb") as handle:
             head = handle.read(4096)
         ident = self.identity(req.model)
+        model_ident = self.model_identity(req.model)
+        # Label with the version actually present in the bytes, not an assumed one.
+        version = ggsq_envelope.peek_version(head)
+        fmt_version = version
+        # The prompt identity must carry the EXACT tokens this cache was built from.
+        # Empty stand-ins would let an artifact be matched to a prompt it never saw.
+        packed = ggsq_envelope.parse_file_envelope(head).token_ids
+        prompt_tokens = ggsq_envelope.decode_prompt_tokens(packed)
+        prompt_ident = PromptIdentity(
+            tokenizer_id=model_ident.tokenizer_sha256,
+            token_ids_sha256=hashlib.sha256(
+                json.dumps(list(prompt_tokens), separators=(",", ":")).encode()).hexdigest(),
+            token_count=len(prompt_tokens),
+            corpus_fingerprint=str((req.corpus or {}).get("fingerprint", "")),
+        )
+
+        abi_ident = self.cache_abi_identity(req.model)
         props = self.props()
         settings = props.get("default_generation_settings", {}) or {}
         manifest = {
             "schema": "kvx/0.3",
             "model": {"architecture": "", "weights_id": ident["model_digest"], "dtype": ""},
-            "prompt": {"tokenizer_id": "", "token_ids_sha256": "", "token_count":
-                       int(result.get("n_saved", 0))},
+            "prompt": {"tokenizer_id": prompt_ident.tokenizer_id,
+                       "token_ids_sha256": prompt_ident.token_ids_sha256,
+                       "token_count": prompt_ident.token_count},
             "kv": {"layers": 0, "heads": 0, "head_dim": 0,
                    "dtype": str(settings.get("type_k", "f16")),
                    "layout": "opaque", "byte_order": "little",
@@ -245,14 +307,24 @@ class LlamaCppHTTPAdapter(Adapter):
             "producer": {"runtime": "llama.cpp", "backend": "",
                          "device_arch": "", "library_version": ident["build_info"]},
             "identity": {"model_digest": ident["model_digest"],
-                         "cache_abi_digest": ident["cache_abi_digest"]},
+                         "cache_abi_digest": ident["cache_abi_digest"],
+                         "weights_sha256": model_ident.weights_sha256,
+                         "prompt_digest": prompt_ident.digest()},
             "corpus": req.corpus or {},
         }
-        # Label with the version actually present in the bytes, not an assumed one.
-        version = ggsq_envelope.peek_version(head)
         fmt = f"{OPAQUE_FORMAT_FAMILY}/{version}"
         self._state_version = version
         manifest["identity"]["state_version"] = version
+        # The composite key is what the store is keyed on, so it is embedded in the
+        # artifact and recomputed from the file on import. An artifact that cannot
+        # reproduce its own key is not the artifact the store thinks it is.
+        key = ArtifactKey(
+            prompt=prompt_ident, model=model_ident, cache_abi=abi_ident,
+            encoding="opaque", format_version=fmt,
+            representation_digest=hashlib.sha256(head[:12]).hexdigest(),
+        )
+        manifest["artifact_key"] = key.as_dict()
+        manifest["artifact_key"]["digest"] = key.digest()
         try:
             return container.write_opaque_from_file(out, manifest, state, fmt)
         finally:
@@ -274,8 +346,21 @@ class LlamaCppHTTPAdapter(Adapter):
                                     reason=f"artifact failed verification: {reason}")
             header = container.read_header(artifact)
             blob = header.get("blob", {})
-            header_abi = (header.get("identity") or {}).get("cache_abi_digest", "")
-            live_abi = self.identity(req.model).get("cache_abi_digest", "")
+            recorded = header.get("identity") or {}
+            header_abi = recorded.get("cache_abi_digest", "")
+            live = self.identity(req.model)
+            live_abi = live.get("cache_abi_digest", "")
+            # Weights identity is checked separately from the cache ABI: the same runtime
+            # configuration can be serving entirely different weights, and a cache restored
+            # against the wrong weights is silently wrong rather than loudly broken.
+            header_model = recorded.get("model_digest", "")
+            if header_model and header_model != live.get("model_digest", ""):
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=(f"model identity mismatch: artifact {header_model[:12]} vs "
+                            f"live {live.get('model_digest', '')[:12]}"),
+                    seconds=time.time() - started)
             expected = req.expected_cache_abi_digest or live_abi
             # An opaque blob is only readable by the configuration that wrote it. There is
             # deliberately no override: a mismatched restore fails silently, not loudly.
