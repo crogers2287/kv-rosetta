@@ -415,3 +415,46 @@ Two servers failed to start during this work with `couldn't bind HTTP server soc
 8787 and 8788, both held by unrelated services on this host. Each failure read exactly like
 a leaked server of our own. Fixed ports make a harness fail for reasons that have nothing to
 do with what it tests; the harness and these probes now ask the OS for a free port.
+
+## A runtime protocol, so support is stated rather than inferred
+
+The build script's `strings` search shows that SCKP code compiled into a shared library.
+That describes the build, not the behaviour, and it must not enable a capability. Neither
+may an architecture name, a commit, a filename, or an artifact size.
+
+`patches/llama.cpp/0002-advertise-checkpoint-capability.patch` (53 added lines) is kept
+separate from upstream PR #26004 so that provenance stays auditable and 0001 can be
+refreshed without disturbing local additions.
+
+**`/props` now states the capability:**
+
+```
+slot_checkpoint_persistence            true
+slot_checkpoint_format                 sckp/1
+sequence_state_version                 3
+supports_target_checkpoint_state       true
+supports_draft_checkpoint_state        true
+supports_speculative_checkpoint_state  true
+```
+
+**Save and restore now report what actually happened:**
+
+```
+save     n_checkpoints_saved=1     checkpoint_bytes=156,894,416
+         checkpoint_n_tokens=252   pos_min=251  pos_max=251
+restore  n_checkpoints_restored=1  same metadata echoed back
+reuse    cache_n=252  prompt_n=4
+```
+
+The line that matters: **declared coverage 252 equals observed reuse 252.** An importer can
+now compare what the runtime says it restored against what it then reuses, and fail closed
+when they disagree, instead of trusting a count or a file size.
+
+`tests/runtime_matrix.py` prefers this protocol and classifies a server without saving a slot
+at all; the SCKP file scan remains only as a fallback for a build carrying upstream 0001
+alone. An unreachable server still classifies as `unknown`, never as supported.
+
+The three per-blob flags are reported because `common_prompt_checkpoint` carries `data_tgt`,
+`data_dft` and `data_spec`, and a claim of MTP or draft support has to name which of those
+actually survive. They are currently all true because PR #26004 persists all three; that is
+the runtime's claim, and it is not yet independently tested here.

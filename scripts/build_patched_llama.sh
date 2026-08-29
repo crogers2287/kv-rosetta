@@ -19,8 +19,15 @@ EXPECTED_BASE="ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc"
 # Its own stated base is adb55e5148dc93bcdca7212a2d1df3ccc422959a, which differs from
 # EXPECTED_BASE - hence the three-way apply below rather than a direct one.
 PR_NUMBER="26004"
-PATCH_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch"
-EXPECTED_PATCH_SHA256="baf44e7c06f1a8b16bcc7de1019c2a36e8147b0b32a61b33bff4160e445fc22f"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Applied in order. 0001 is upstream PR #26004 verbatim; 0002 is the local KV Rosetta
+# integration. Kept separate so upstream provenance stays auditable and 0001 can be
+# refreshed from upstream without disturbing our additions.
+PATCHES=(
+  "$REPO_ROOT/patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch:baf44e7c06f1a8b16bcc7de1019c2a36e8147b0b32a61b33bff4160e445fc22f"
+  "$REPO_ROOT/patches/llama.cpp/0002-advertise-checkpoint-capability.patch:53b83688894c239d8a0066415dd201b1e2e47d9686e2e51babc690305e02599c"
+)
 
 TARGET="${1:-$HOME/llama.cpp-kvx-patched}"
 
@@ -42,15 +49,19 @@ die() { printf 'REFUSING: %s\n' "$*" >&2; exit 1; }
 
 # --- verify the patch is the one we committed --------------------------------------------
 
-[ -f "$PATCH_FILE" ] || die "patch not found: $PATCH_FILE"
-actual_sha="$(sha256sum "$PATCH_FILE" | cut -d' ' -f1)"
-[ "$actual_sha" = "$EXPECTED_PATCH_SHA256" ] || die \
-  "patch sha256 mismatch
-     expected $EXPECTED_PATCH_SHA256
+for entry in "${PATCHES[@]}"; do
+  file="${entry%%:*}"
+  want="${entry##*:}"
+  [ -f "$file" ] || die "patch not found: $file"
+  actual_sha="$(sha256sum "$file" | cut -d' ' -f1)"
+  [ "$actual_sha" = "$want" ] || die \
+    "patch sha256 mismatch for $(basename "$file")
+     expected $want
      actual   $actual_sha
-   The committed patch has been modified. Update EXPECTED_PATCH_SHA256 deliberately, or
-   restore the file - do not build from an unverified patch."
-say "patch sha256 ok: ${actual_sha:0:16}..."
+   The committed patch has been modified. Update its digest deliberately, or restore the
+   file - do not build from an unverified patch."
+  say "patch ok: $(basename "$file") ${actual_sha:0:16}..."
+done
 
 # --- obtain the exact upstream revision --------------------------------------------------
 
@@ -82,16 +93,20 @@ say "upstream pinned at ${EXPECTED_BASE:0:9}"
 
 git -C "$TARGET" fetch --quiet origin "pull/${PR_NUMBER}/head:pr${PR_NUMBER}" 2>/dev/null || true
 
-if git -C "$TARGET" apply --check "$PATCH_FILE" 2>/dev/null; then
-  git -C "$TARGET" apply "$PATCH_FILE"
-  say "patch applied directly"
-elif git -C "$TARGET" apply -3 --check "$PATCH_FILE" 2>/dev/null; then
-  git -C "$TARGET" apply -3 "$PATCH_FILE"
-  say "patch applied by three-way merge (PR base differs from EXPECTED_BASE)"
-else
-  die "patch does not apply to $EXPECTED_BASE, directly or by three-way merge.
-   Rebase it deliberately and update EXPECTED_PATCH_SHA256 - never apply with fuzz."
-fi
+for entry in "${PATCHES[@]}"; do
+  file="${entry%%:*}"
+  name="$(basename "$file")"
+  if git -C "$TARGET" apply --check "$file" 2>/dev/null; then
+    git -C "$TARGET" apply "$file"
+    say "applied $name directly"
+  elif git -C "$TARGET" apply -3 --check "$file" 2>/dev/null; then
+    git -C "$TARGET" apply -3 "$file"
+    say "applied $name by three-way merge"
+  else
+    die "$name does not apply to $EXPECTED_BASE, directly or by three-way merge.
+   Rebase it deliberately and update its digest - never apply with fuzz."
+  fi
+done
 
 # --- build -------------------------------------------------------------------------------
 
@@ -107,7 +122,7 @@ BIN="$TARGET/build/bin/llama-server"
 
 say "built: $BIN"
 say "upstream base:  $EXPECTED_BASE"
-say "patch sha256:   $EXPECTED_PATCH_SHA256"
+say "patches:        $(printf '%s ' "${PATCHES[@]%%:*}" | xargs -n1 basename | tr '\n' ' ')"
 say "state seq ver:  $(grep -oE '#define LLAMA_STATE_SEQ_VERSION +[0-9]+' "$TARGET/include/llama.h" | grep -oE '[0-9]+$')"
 # The server implementation lives in libllama-server-impl.so; llama-server itself is a thin
 # launcher (~18 KB), so probing the executable for the magic finds nothing and proves nothing.

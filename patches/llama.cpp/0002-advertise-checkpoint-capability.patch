@@ -1,0 +1,117 @@
+From: KV Rosetta <noreply@localhost>
+Subject: [PATCH 2/2] server: advertise slot checkpoint persistence and report coverage
+
+Local KV Rosetta integration patch, applied on top of upstream PR #26004.
+Kept separate so upstream provenance stays auditable.
+
+Adds a machine-readable runtime protocol so a client never has to infer
+checkpoint support from an architecture name, a commit, a filename, a
+strings(1) match, or an artifact size - all of which describe the build
+rather than the behaviour.
+
+  /props           slot_checkpoint_persistence, slot_checkpoint_format,
+                   sequence_state_version, and per-blob support flags
+  save/restore     n_checkpoints, checkpoint_bytes, and the newest
+                   checkpoint's n_tokens, pos_min and pos_max
+
+The reported coverage lets an importer check declared coverage against
+observed reuse and fail closed when they disagree.
+---
+--- a/b/tools/server/server-task.h	2026-08-29 04:43:42.675963259 -0400
++++ b/tools/server/server-task.h	2026-08-29 04:43:42.729370100 -0400
+@@ -526,6 +526,14 @@
+     size_t n_bytes;
+     double t_ms;
+ 
++    // KV Rosetta: checkpoint metadata, so a client can verify what it actually got
++    // instead of inferring it from the file size or from the architecture name.
++    size_t    n_checkpoints    = 0;
++    size_t    checkpoint_bytes = 0;
++    int64_t   ckpt_n_tokens    = 0;
++    llama_pos ckpt_pos_min     = -1;
++    llama_pos ckpt_pos_max     = -1;
++
+     virtual json to_json() override;
+ };
+ 
+--- a/b/tools/server/server-task.cpp	2026-08-29 04:43:42.677963273 -0400
++++ b/tools/server/server-task.cpp	2026-08-29 04:43:42.731777100 -0400
+@@ -1626,6 +1626,11 @@
+             { "filename",  filename },
+             { "n_saved",   n_tokens },
+             { "n_written", n_bytes },
++            { "n_checkpoints_saved", n_checkpoints },
++            { "checkpoint_bytes",    checkpoint_bytes },
++            { "checkpoint_n_tokens", ckpt_n_tokens },
++            { "checkpoint_pos_min",  ckpt_pos_min },
++            { "checkpoint_pos_max",  ckpt_pos_max },
+             { "timings", {
+                 { "save_ms", t_ms }
+             }},
+@@ -1637,6 +1642,11 @@
+         { "filename",   filename },
+         { "n_restored", n_tokens },
+         { "n_read",     n_bytes },
++        { "n_checkpoints_restored", n_checkpoints },
++        { "checkpoint_bytes",       checkpoint_bytes },
++        { "checkpoint_n_tokens",    ckpt_n_tokens },
++        { "checkpoint_pos_min",     ckpt_pos_min },
++        { "checkpoint_pos_max",     ckpt_pos_max },
+         { "timings", {
+             { "restore_ms", t_ms }
+         }},
+--- a/b/tools/server/server-context.cpp	2026-08-29 04:43:42.680963295 -0400
++++ b/tools/server/server-context.cpp	2026-08-29 04:44:04.471340200 -0400
+@@ -2676,6 +2676,17 @@
+                     res->n_tokens = slot->prompt.tokens.size();
+                     res->n_bytes  = nwrite + nwrite_ckpt;
+                     res->t_ms     = t_save_ms;
++                    // KV Rosetta: report what was actually persisted/restored, so a
++                    // client verifies coverage from the runtime rather than inferring it.
++                    res->n_checkpoints    = slot->prompt.checkpoints.size();
++                    res->checkpoint_bytes = nwrite_ckpt;
++                    if (!slot->prompt.checkpoints.empty()) {
++                        const auto & newest = slot->prompt.checkpoints.back();
++                        res->ckpt_n_tokens = newest.n_tokens;
++                        res->ckpt_pos_min  = newest.pos_min;
++                        res->ckpt_pos_max  = newest.pos_max;
++                    }
++
+                     queue_results.send(std::move(res));
+                 } break;
+             case SERVER_TASK_TYPE_SLOT_RESTORE:
+@@ -2744,6 +2755,17 @@
+                     res->n_tokens = slot->prompt.tokens.size();
+                     res->n_bytes  = nread + nread_ckpt;
+                     res->t_ms     = t_restore_ms;
++                    // KV Rosetta: report what was actually persisted/restored, so a
++                    // client verifies coverage from the runtime rather than inferring it.
++                    res->n_checkpoints    = slot->prompt.checkpoints.size();
++                    res->checkpoint_bytes = nread_ckpt;
++                    if (!slot->prompt.checkpoints.empty()) {
++                        const auto & newest = slot->prompt.checkpoints.back();
++                        res->ckpt_n_tokens = newest.n_tokens;
++                        res->ckpt_pos_min  = newest.pos_min;
++                        res->ckpt_pos_max  = newest.pos_max;
++                    }
++
+                     queue_results.send(std::move(res));
+                 } break;
+             case SERVER_TASK_TYPE_SLOT_ERASE:
+@@ -4721,6 +4743,16 @@
+         { "eos_token",                   meta.eos_token_str },
+         { "build_info",                  meta.build_info },
+         { "is_sleeping",                 is_sleeping },
++        // KV Rosetta: machine-readable checkpoint-persistence protocol. A client must not
++        // enable hybrid restoration from an architecture name, a commit, a filename, a
++        // strings(1) match or an artifact size - all of those describe the build, not the
++        // behaviour. These fields describe the behaviour.
++        { "slot_checkpoint_persistence",         true },
++        { "slot_checkpoint_format",              "sckp/1" },
++        { "sequence_state_version",              LLAMA_STATE_SEQ_VERSION },
++        { "supports_target_checkpoint_state",    true },
++        { "supports_draft_checkpoint_state",     true },
++        { "supports_speculative_checkpoint_state", true },
+         { "cors_proxy_enabled",          params.ui_mcp_proxy },
+     };
+     if (params.use_jinja) {

@@ -116,3 +116,57 @@ class PatchedHybridCheckpointReuse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(_URL and _SLOTS, "set KVX_CKPT_URL and KVX_CKPT_SLOTS to run")
+class CheckpointProtocolTests(unittest.TestCase):
+    """The runtime must STATE its capability, not have it inferred.
+
+    A capability may not be enabled from an architecture name, a commit, a filename, a
+    strings(1) match, or an artifact size - each describes the build rather than the
+    behaviour. These assert the machine-readable protocol instead.
+    """
+
+    def setUp(self):
+        require_runtime(self, _URL, _SLOTS, PATCHED)
+        self.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
+
+    def test_props_advertises_the_protocol(self):
+        from runtime_matrix import checkpoint_protocol
+        protocol = checkpoint_protocol(_URL)
+        self.assertTrue(protocol, "runtime advertises no checkpoint persistence")
+        self.assertEqual(protocol["format"], "sckp/1")
+        self.assertIsInstance(protocol["sequence_state_version"], int)
+        for blob in ("target", "draft", "speculative"):
+            self.assertIn(blob, protocol, f"{blob} checkpoint state support not stated")
+
+    def test_save_reports_what_it_persisted(self):
+        self.adapter.erase(0)
+        self._prime()
+        saved = self.adapter._post("/slots/0?action=save", {"filename": "proto-save.bin"})
+        self.assertGreaterEqual(saved["n_checkpoints_saved"], 1,
+                                "no checkpoint reported as saved")
+        self.assertGreater(saved["checkpoint_bytes"], 0)
+        self.assertGreater(saved["checkpoint_n_tokens"], 0)
+        self.assertGreaterEqual(saved["checkpoint_pos_max"], saved["checkpoint_pos_min"])
+
+    def test_declared_coverage_matches_observed_reuse(self):
+        """The check that lets an importer fail closed: if what the runtime says it
+        restored disagrees with what it then reuses, the artifact is not trustworthy."""
+        self.adapter.erase(0)
+        self._prime()
+        self.adapter._post("/slots/0?action=save", {"filename": "proto-cov.bin"})
+        self.adapter.erase(0)
+        restored = self.adapter._post("/slots/0?action=restore", {"filename": "proto-cov.bin"})
+        self.assertGreaterEqual(restored["n_checkpoints_restored"], 1)
+        declared = restored["checkpoint_n_tokens"]
+        observed = self._prime()["timings"]["cache_n"]
+        self.assertEqual(declared, observed,
+                         f"runtime declared coverage {declared} but reused {observed}")
+
+    def _prime(self):
+        text = "In the year 1892 the naturalist recorded. " * 30
+        ids = self.adapter._post("/tokenize", {"content": text})["tokens"][:256]
+        return self.adapter._post("/completion", {
+            "prompt": ids, "n_predict": 1, "temperature": 0.0,
+            "cache_prompt": True, "id_slot": 0})

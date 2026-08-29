@@ -60,14 +60,40 @@ def slot_file_has_checkpoints(path: Path | str) -> bool:
     return found
 
 
+def checkpoint_protocol(url: str) -> dict:
+    """The runtime's advertised checkpoint-persistence protocol, or {} when absent.
+
+    This is the authoritative signal: a machine-readable statement of BEHAVIOUR from the
+    running server. An architecture name, a commit, a filename, a strings(1) match or an
+    artifact size all describe the build instead, and none of them may enable a capability.
+    """
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/props", timeout=30) as response:
+            props = json.loads(response.read())
+    except Exception:
+        return {}
+    if not props.get("slot_checkpoint_persistence"):
+        return {}
+    return {
+        "format": props.get("slot_checkpoint_format", ""),
+        "sequence_state_version": props.get("sequence_state_version"),
+        "target": bool(props.get("supports_target_checkpoint_state")),
+        "draft": bool(props.get("supports_draft_checkpoint_state")),
+        "speculative": bool(props.get("supports_speculative_checkpoint_state")),
+    }
+
+
 def detect_runtime(url: str, slots: Path | str, slot: int = 0,
                    probe_tokens: int = 64) -> str:
-    """Classify the connected runtime by saving a slot and inspecting the bytes.
+    """Classify the connected runtime.
 
-    Returns PATCHED, UNPATCHED, or UNKNOWN. UNKNOWN is returned rather than guessed when
-    the server cannot be probed - a test that cannot establish which binary it is talking
-    to must skip, not assume.
+    Prefers the advertised protocol; falls back to scanning a saved slot for the SCKP magic
+    only when the runtime advertises nothing, which is the case for a build carrying the
+    upstream patch alone. UNKNOWN is returned rather than guessed when the server cannot be
+    probed - a test that cannot establish which binary it is talking to must skip.
     """
+    if checkpoint_protocol(url):
+        return PATCHED
     try:
         text = "In the year 1892 the naturalist recorded. " * 20
         ids = _post(url, "/tokenize", {"content": text})["tokens"][:probe_tokens]
