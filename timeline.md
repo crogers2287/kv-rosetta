@@ -720,3 +720,48 @@ Still not cheaper at 256 tokens. Staging remains the dominant phase.
 
 Status: **proven by retained test** (413 offline). **Measured once on this host**: this gate.
 **Untested**: the direct-raw 2K lower bound, NVMe, 8K, 32K.
+
+## REQ-030 — The direct-raw 2K lower bound is cheaper than cold prefill
+
+Steer f081b53, P2. **The first economic win measured on this host.**
+
+The public adapter loses because it copies and hashes the payload. This measures what
+remains if that copy were gone: the raw `ggsq/3+sckp/1` state is fully validated *outside*
+the timed window, stored under its content digest inside the slot directory, and restored in
+place — no extraction, no byte copy.
+
+| rep | runtime restore | reuse probe | pristine re-restore | tail | total | native cold | verdict |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 1 | 0.414 | 0.216 | 0.452 | 0.434 | **1.516** | 1.731 | 12.4% faster |
+| 2 | 0.418 | 0.212 | 0.460 | 0.437 | **1.526** | 1.788 | 14.6% faster |
+
+Two independent repetitions, both cheaper, with the margin well outside the ~3.5% spread
+seen across every 2K cold measurement so far (1.71–1.79 s). The steer inferred a bound near
+1.54 s and said the margin was small enough that it had to be measured rather than
+projected. Measured: 1.516 s and 1.526 s.
+
+For contrast, the public adapter on the same rung after one-pass staging landed:
+4.371 s against 1.734 s cold,
+2.52x. Removing the copy is worth about 2.9 s at 2K.
+
+**Correctness is not weakened by restoring in place.** `cache_n=2044 prompt_n=4`; restore
+metadata equal to the admitted coverage field by field; token, content and
+probability-vector parity against native in-memory reuse; timed phases reconcile to 0.000 s.
+The admitted 604,958,676-byte file is byte-identical afterwards — device, inode, size,
+mtime_ns, ctime_ns and digest all unchanged — and no temporary file remains. The unpatched
+control refuses from support evidence.
+
+**Admission cost 3.1–3.3 s and is excluded from the verdict by design.** It is what makes
+restoring in place safe — support predicate, tested tuple, proven active state classes,
+present K/V dtypes, sequence framing, the exact prompt tokens the state carries, the SCKP
+appendix at the *declared* offset rather than one found by scanning, and a digest over every
+payload byte — and it happens once, off the request path. A filename or a prior hash alone
+is not proof that the bytes restored are the bytes admitted, which is why the digest is
+recomputed after the timed window rather than trusted.
+
+This is a lower bound, not a design. Per the steer's branch it justifies designing the
+smallest admitted raw-artifact contract; it is not itself that contract, and nothing here is
+production.
+
+Status: **measured twice on this host**. **Proven by retained test**: 413 offline.
+**Untested**: NVMe, 8K, 32K, and any admitted-artifact contract.
