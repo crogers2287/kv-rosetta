@@ -278,3 +278,42 @@ prompt_n=256`.
 Status: **measured once on this host**, from a clean committed runner.
 Still outstanding from this steer: P0 (one predicate across capability/export/import),
 P1 (streaming appendix validation), P2 acceptance items not yet covered, P3 ladder.
+
+## REQ-021 — One support predicate across capability, export and import
+
+Steer cd2afb0, P0. Audited each assertion against the code first; all held.
+
+Three surfaces answered "is this runtime supported" independently and disagreed.
+`capabilities()` advertised OPAQUE for any complete protocol and only *appended a note*
+about draft/speculative; `export()` additionally required a tested compound tuple and a
+provably target-only launch; `import_()` checked neither. A caller who trusted
+`capabilities()` and then exported got a refusal, and one who imported got no check at all.
+
+`hybrid_support()` is now the single decision, called by all three. A note is not a gate:
+an unproven active state class, an unreported set of active classes, or an untested compound
+tuple now yields empty capabilities rather than an advertised one with a warning attached.
+A retained test asserts capability and export agree across six configurations.
+
+Also closed on the import side:
+
+- The same predicate refuses before any restore POST, so unusable state never reaches the
+  runtime.
+- A compound artifact declaring zero or missing checkpoint coverage is refused before
+  restore.
+- Every checkpoint metadata field - count, bytes, n_tokens, pos_min, pos_max - must match
+  between the manifest and the restore response; each mismatch is covered independently.
+- `verify_reuse=False` can no longer bless a compound import. The whole claim is that a
+  checkpoint survived, and only a probe shows that, so verification is forced on for this
+  path.
+- `_restore_pristine()` swallowed a failed re-restore with `except AdapterError: pass`. The
+  verification probe appends its own token to the slot, so on failure the slot held the
+  prefix *plus* that token while the caller was handed `ok=true` - the cache described was
+  not the cache present. It now erases the slot and returns `ok=false`.
+
+The launch's active state classes and the protocol tuple are bound into `CacheABIIdentity`
+flags, so a cache written by a draft-carrying launch no longer shares an identity with a
+target-only one.
+
+Status: **proven by retained test** — 14 new tests in `tests/test_hybrid_support_predicate.py`,
+342 offline total. Not yet done from this steer: P1 (streaming appendix validation),
+remaining P2 acceptance items, P3 ladder.

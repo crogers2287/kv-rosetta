@@ -266,6 +266,12 @@ class LlamaCppHTTPAdapter(Adapter):
         for blob in ("target", "draft", "speculative"):
             if protocol.get(blob):
                 flags.append(f"sckp-blob:{blob}")
+        # Which classes THIS launch requires is part of cache identity: a cache written by
+        # a launch that also stores draft state is not interchangeable with one that does
+        # not, even at the same sequence version and format.
+        active = self._active_state_classes()
+        flags.extend(f"active:{name}" for name in sorted(active)) if active is not None \
+            else flags.append("active:unreported")
         settings = props.get("default_generation_settings", {}) or {}
         for key in ("n_ctx_checkpoints", "checkpoint_min_step"):
             if settings.get(key) is not None:
@@ -308,25 +314,12 @@ class LlamaCppHTTPAdapter(Adapter):
         # reuses none of it, because a recurrent state is a function of the whole sequence
         # and has no prompt-prefix semantics. Advertising a capability the runtime accepts
         # but cannot honour is exactly the fail-open shape this project exists to avoid.
-        reusable, why = self.prefix_reuse_support()
-        if can_slot and not reusable:
-            # A hybrid model is supportable only when the RUNTIME advertises checkpoint
-            # persistence. Architecture alone decides nothing in either direction.
-            protocol = self.checkpoint_protocol()
-            complete, protocol_reason = self._protocol_is_complete(protocol)
-            if complete:
-                notes.append(
-                    f"hybrid architecture supported via advertised {protocol['format']} "
-                    f"checkpoint persistence (target state proven; "
-                    f"draft={protocol['draft']} speculative={protocol['speculative']})")
-                reusable = True
-                if not protocol["draft"] or not protocol["speculative"]:
-                    notes.append(
-                        "draft/speculative checkpoint restoration is not advertised as "
-                        "proven; a configuration using them is not covered")
-            else:
-                notes.append(f"opaque transfer withheld: {protocol_reason or why}")
-                can_slot = False
+        if can_slot:
+            # The same decision export() and import_() make. A note is not a gate: a
+            # configuration whose restoration is unproven must not be advertised at all.
+            supported, reason, _protocol = self.hybrid_support()
+            notes.append(reason if supported else f"opaque transfer withheld: {reason}")
+            can_slot = supported
         reps = frozenset({Representation.OPAQUE}) if can_slot else frozenset()
         return Capabilities(
             runtime="llama.cpp",
@@ -388,45 +381,53 @@ class LlamaCppHTTPAdapter(Adapter):
         recorded = (container.read_header(artifact).get("artifact_key") or {})
         return recorded or None
 
+    def hybrid_support(self) -> tuple[bool, str, dict[str, Any]]:
+        """The single support decision for a hybrid runtime, used by all three surfaces.
+
+        capabilities(), export() and import_() answered this independently and disagreed:
+        capabilities advertised OPAQUE for any complete protocol, while export additionally
+        required a tested compound tuple and a provably target-only launch. A caller who
+        trusted capabilities and then exported got a refusal. There is one answer now.
+
+        Returns (supported, reason, protocol). An empty protocol with supported=True means
+        the architecture reuses prefixes and needs no checkpoints.
+        """
+        reusable, why = self.prefix_reuse_support()
+        if reusable:
+            return True, "architecture reuses restored prefixes", {}
+        protocol = self.checkpoint_protocol()
+        complete, reason = self._protocol_is_complete(protocol)
+        if not complete:
+            return False, (f"{why}, and {reason}. A sequence-only artifact from a hybrid "
+                           f"model restores and then reuses nothing."), protocol
+        version = protocol.get("sequence_state_version")
+        fmt = protocol.get("format")
+        if (version, fmt) not in self.supported_compound_tuples:
+            return False, (f"compound tuple ggsq/{version}+{fmt} is not in the tested "
+                           f"allowlist {sorted(self.supported_compound_tuples)}; refusing "
+                           f"rather than assuming an appendix on this sequence version "
+                           f"restores"), protocol
+        active = self._active_state_classes()
+        if active is None:
+            return False, ("runtime does not report which checkpoint state classes its "
+                           "current launch requires, so a target-only configuration cannot "
+                           "be proven; refusing rather than assuming draft/speculative "
+                           "state is absent"), protocol
+        unproven = sorted(set(active) - self.proven_state_classes)
+        if unproven:
+            return False, (f"this launch requires {unproven} checkpoint state, whose "
+                           f"restoration is not behaviourally proven; refusing"), protocol
+        return True, f"target-only {fmt} on sequence version {version}", protocol
+
     def _require_exportable(self, model: str) -> dict[str, Any]:
         """Refuse before asking the server to save anything it cannot make usable.
 
         Capability discovery is advisory - a caller can skip it and request OPAQUE
-        directly. On an unpatched hybrid runtime that call used to reach the save POST and
-        return a plain sequence-state artifact, which restores successfully and reuses
-        nothing. The check belongs here, at the boundary that actually produces artifacts.
-
-        Returns the checkpoint protocol when one is required, or {} for an architecture
-        that reuses prefixes without checkpoints.
+        directly. The check belongs here, at the boundary that produces artifacts.
         """
-        reusable, why = self.prefix_reuse_support()
-        if reusable:
-            return {}
-        protocol = self.checkpoint_protocol()
-        complete, reason = self._protocol_is_complete(protocol)
-        if not complete:
-            raise AdapterError(
-                f"refusing to export from this runtime: {why}, and {reason}. A sequence-only "
-                f"artifact from a hybrid model restores and then reuses nothing.")
-        version = protocol.get("sequence_state_version")
-        fmt = protocol.get("format")
-        if (version, fmt) not in self.supported_compound_tuples:
-            raise AdapterError(
-                f"compound tuple ggsq/{version}+{fmt} is not in the tested allowlist "
-                f"{sorted(self.supported_compound_tuples)}; refusing rather than assuming "
-                f"an appendix on this sequence version restores")
-        active = self._active_state_classes()
-        if active is None:
-            raise AdapterError(
-                "runtime does not report which checkpoint state classes its current launch "
-                "requires, so a target-only configuration cannot be proven; refusing "
-                "rather than assuming draft/speculative state is absent")
-        unproven = sorted(set(active) - self.proven_state_classes)
-        if unproven:
-            raise AdapterError(
-                f"this launch requires {unproven} checkpoint state, whose restoration is "
-                f"not behaviourally proven (advertised support: "
-                f"{ {k: protocol.get(k) for k in ('draft', 'speculative')} }); refusing")
+        supported, reason, protocol = self.hybrid_support()
+        if not supported:
+            raise AdapterError(f"refusing to export from this runtime: {reason}")
         return protocol
 
     def _verify_checkpoint_appendix(self, state: Path, result: dict[str, Any],
@@ -454,8 +455,7 @@ class LlamaCppHTTPAdapter(Adapter):
                 f"checkpoint coverage ({dict(coverage)}); a sequence-only artifact from a "
                 f"hybrid model restores and then reuses nothing")
         if coverage["checkpoint_pos_min"] < 0 or coverage["checkpoint_pos_max"] < 0:
-            raise AdapterError(
-                f"checkpoint positions are not valid: {dict(coverage)}")
+            raise AdapterError(f"checkpoint positions are not valid: {dict(coverage)}")
         if n_written != size:
             raise AdapterError(
                 f"runtime reported writing {n_written} bytes but {state} is {size}; "
@@ -623,6 +623,34 @@ class LlamaCppHTTPAdapter(Adapter):
                             f"this runtime emits and loads {live_format!r}"),
                     seconds=time.time() - started)
 
+            # The same decision capabilities() and export() make, before the state is put
+            # anywhere near the runtime.
+            supported, support_reason, _protocol = self.hybrid_support()
+            if not supported:
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=f"refusing to import into this runtime: {support_reason}",
+                    seconds=time.time() - started)
+
+            # A compound artifact declares checkpoint coverage. Zero or missing coverage
+            # means the appendix carries nothing reusable, so there is nothing to import
+            # that a plain prefill would not do better.
+            coverage = dict(header.get("coverage") or {})
+            is_compound = str(coverage.get("format", "")).find("+") != -1
+            if is_compound:
+                declared_n = int(coverage.get("checkpoint_n_tokens", 0) or 0)
+                if declared_n <= 0 or int(coverage.get("n_checkpoints", 0) or 0) <= 0:
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"compound artifact declares no checkpoint coverage "
+                                f"({coverage}); refusing before restore"),
+                        seconds=time.time() - started)
+                # Reuse verification is not optional for a compound artifact: the whole
+                # claim is that a checkpoint survived, and only a probe shows that.
+                verify_reuse = True
+
             slot = self._slot(req.slot)
             artifact_name = f"{artifact.stem}.{os.getpid()}.restore.bin"
             staged = self.slot_save_path / artifact_name
@@ -630,6 +658,26 @@ class LlamaCppHTTPAdapter(Adapter):
             container.extract_payload(artifact, staged)
             result = self._post(f"/slots/{slot}?action=restore", {"filename": artifact_name})
             restored = int(result.get("n_restored", 0))
+            if is_compound:
+                pairs = (("n_checkpoints", "n_checkpoints_restored"),
+                         ("checkpoint_bytes", "checkpoint_bytes"),
+                         ("checkpoint_n_tokens", "checkpoint_n_tokens"),
+                         ("checkpoint_pos_min", "checkpoint_pos_min"),
+                         ("checkpoint_pos_max", "checkpoint_pos_max"))
+                differing = [
+                    f"{manifest_key}: manifest {coverage.get(manifest_key)!r} vs restore "
+                    f"{result.get(response_key)!r}"
+                    for manifest_key, response_key in pairs
+                    if coverage.get(manifest_key) != result.get(response_key)
+                ]
+                if differing:
+                    self._erase(slot)
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=("restore metadata does not match the manifest: "
+                                + "; ".join(differing)),
+                        seconds=time.time() - started, tokens_restored=restored)
             if restored <= 0:
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
@@ -695,8 +743,18 @@ class LlamaCppHTTPAdapter(Adapter):
                         nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                         seconds=time.time() - started, tokens_restored=restored)
                 # The probe generated a token into the slot. Put the slot back to the exact
-                # imported prefix so a caller never inherits a mutated cache.
-                self._restore_pristine(artifact_name, slot)
+                # imported prefix so a caller never inherits a mutated cache. If that fails
+                # the slot holds the prefix plus the probe's token, which is not the cache
+                # the caller would be told it has.
+                if not self._restore_pristine(artifact_name, slot):
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=("reuse verified, but restoring the pristine prefix "
+                                "afterwards failed; the slot was erased rather than left "
+                                "holding the verification probe's token"),
+                        nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
+                        seconds=time.time() - started, tokens_restored=restored)
                 reuse_note = (f"verified reuse on slot {slot}: cache_n={cache_n} of "
                               f"{len(token_ids)} token(s), {uncovered} reprocessed"
                               + (f", matching declared coverage {declared}" if declared else ""))
@@ -720,13 +778,28 @@ class LlamaCppHTTPAdapter(Adapter):
                 path.unlink(missing_ok=True)
             self._staged.clear()
 
-    def _restore_pristine(self, filename: str, slot: int) -> None:
-        """Re-restore so the slot holds exactly the imported prefix, nothing appended."""
+    def _erase(self, slot: int) -> None:
+        """Best-effort slot clear. Used when returning ok=false after a restore."""
+        try:
+            self._post(f"/slots/{slot}?action=erase", {})
+        except AdapterError:
+            pass
+
+    def _restore_pristine(self, filename: str, slot: int) -> bool:
+        """Re-restore so the slot holds exactly the imported prefix, nothing appended.
+
+        The verification probe appends its own token to the slot. If putting the pristine
+        prefix back fails, the slot holds the prefix plus that token - so the cache the
+        caller is about to be told it has is not the cache in the slot. Swallowing the
+        failure handed back ok=true over exactly that state.
+        """
         try:
             self._post(f"/slots/{slot}?action=erase", {})
             self._post(f"/slots/{slot}?action=restore", {"filename": filename})
+            return True
         except AdapterError:
-            pass
+            self._erase(slot)
+            return False
 
     def _artifact_token_ids(self, artifact: Path) -> tuple[int, ...]:
         """Recover the prompt token IDs from the engine-native blob.
