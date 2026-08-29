@@ -189,3 +189,41 @@ class StorageEvidenceTest(unittest.TestCase):
                     "rotational", "same_mount_as_model"):
             self.assertIn(key, found)
         self.assertTrue(found["mount_source"], "no mount source identified")
+
+
+class SpacePredictionTest(unittest.TestCase):
+    """Space is predicted before generation, not discovered during it.
+
+    Admission copies the raw state into the store before removing the source, so peak use is
+    about twice the object. Running out mid-admission leaves a partial object and a useless
+    record.
+    """
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "admitted_store_gate", REPO / "scripts" / "admitted_store_gate.py")
+        self.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate)
+
+    def test_peak_is_twice_the_object_plus_a_margin(self):
+        found = self.gate.predict_space(1000, 1000.0, free_bytes=10_000_000)
+        self.assertEqual(found["predicted_object_bytes"], 1_000_000)
+        self.assertEqual(found["predicted_peak_transient_bytes"], 2_000_000)
+        self.assertEqual(found["required_with_margin_bytes"], 2_400_000)
+        self.assertTrue(found["fits"])
+
+    def test_an_object_that_does_not_fit_is_reported_as_such(self):
+        found = self.gate.predict_space(32768, 295390.0, free_bytes=int(16.6 * 2**30))
+        self.assertFalse(found["fits"], "32K must not fit in 16.6 GiB")
+        self.assertLess(found["headroom_bytes"], 0)
+
+    def test_the_8k_rung_fits_the_measured_free_space(self):
+        found = self.gate.predict_space(8192, 295390.0, free_bytes=int(16.6 * 2**30))
+        self.assertTrue(found["fits"])
+
+    def test_the_rate_matches_the_retained_2k_record(self):
+        record = json.loads((REPO / "bench" / "admitted-store-2k-nvme.json").read_text())
+        actual = record["admission"]["manifest"]["raw_size"] / record["prompt_tokens"]
+        self.assertAlmostEqual(actual, 295390.0, delta=1000.0,
+                               msg="the default bytes-per-token no longer matches the "
+                                   "record it was measured from")

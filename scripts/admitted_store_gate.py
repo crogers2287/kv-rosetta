@@ -182,6 +182,30 @@ def evict_file(path: Path) -> dict:
     }
 
 
+def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
+                  margin: float = 0.20) -> dict:
+    """Predict the object size and peak transient use, and say whether it fits.
+
+    Admission copies the raw state into the store before the source is removed, so peak
+    usage is roughly twice the object. Running out of space mid-admission would leave a
+    partial object and a useless record, so this is checked before anything is generated
+    rather than discovered during the run.
+    """
+    predicted = int(prompt_tokens * bytes_per_token)
+    peak = predicted * 2
+    required = int(peak * (1 + margin))
+    return {
+        "bytes_per_token": bytes_per_token,
+        "predicted_object_bytes": predicted,
+        "predicted_peak_transient_bytes": peak,
+        "required_with_margin_bytes": required,
+        "safety_margin": margin,
+        "free_bytes": free_bytes,
+        "fits": free_bytes >= required,
+        "headroom_bytes": free_bytes - required,
+    }
+
+
 def require_persistent(evidence: dict) -> None:
     """Refuse to produce a persistent-storage record on memory-backed storage."""
     fs = evidence.get("filesystem", "")
@@ -205,6 +229,9 @@ def main() -> int:
     ap.add_argument("--prompt-tokens", type=int, default=2048)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--storage-note", default="")
+    ap.add_argument("--bytes-per-token", type=float, default=295390.0,
+                    help="predicted artifact bytes per prompt token; the default is "
+                         "measured from the retained 2K record (604,958,676 / 2048)")
     ap.add_argument("--require-persistent", action="store_true",
                     help="refuse to run when the store is on memory-backed storage")
     ap.add_argument("--evict-state-before-restore", action="store_true",
@@ -227,6 +254,20 @@ def main() -> int:
     evidence = storage_evidence(slots, Path(args.model))
     if args.require_persistent:
         require_persistent(evidence)
+    space = predict_space(args.prompt_tokens, args.bytes_per_token,
+                          evidence["available_bytes"])
+    print(f"  predicted object {space['predicted_object_bytes']/2**30:.2f} GiB, peak "
+          f"{space['predicted_peak_transient_bytes']/2**30:.2f} GiB, need "
+          f"{space['required_with_margin_bytes']/2**30:.2f} GiB with margin, free "
+          f"{space['free_bytes']/2**30:.2f} GiB -> fits={space['fits']}", flush=True)
+    if not space["fits"]:
+        raise SystemExit(
+            f"refusing to generate: predicted peak transient "
+            f"{space['predicted_peak_transient_bytes']/2**30:.2f} GiB plus a "
+            f"{space['safety_margin']:.0%} margin needs "
+            f"{space['required_with_margin_bytes']/2**30:.2f} GiB, but only "
+            f"{space['free_bytes']/2**30:.2f} GiB is free on "
+            f"{evidence['mount_target']}")
     store = AdmittedStore(slots)
 
     # ---- admission, once, off the request path ---------------------------------------
@@ -383,6 +424,7 @@ def main() -> int:
         "storage_note": args.storage_note,
         "slots_path": str(slots),
         "storage": evidence,
+        "space_prediction": space,
         "page_cache_policy": args.page_cache_policy,
         "filesystem": evidence["filesystem"],
         "prompt_tokens": args.prompt_tokens,
