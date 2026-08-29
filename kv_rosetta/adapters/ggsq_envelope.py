@@ -349,3 +349,31 @@ def header_size(prefix: bytes) -> int:
         raise EnvelopeError(
             f"prompt array claims {count} words, above the {_MAX_PROMPT_WORDS} sanity bound")
     return 12 + 4 * count
+
+
+#: SLOT_CKPT_MAGIC from the checkpoint-persistence patch, little-endian, which spells the
+#: ASCII it was chosen for. Appended after the llama state when checkpoints are persisted.
+SCKP_MAGIC = (0x504B4353).to_bytes(4, "little")   # b"SCKP"
+SCKP_FORMAT = "sckp/1"
+
+
+def has_checkpoint_appendix(path, chunk: int = 4 << 20) -> bool:
+    """True when a slot state file carries an appended checkpoint payload.
+
+    Scans for the magic rather than trusting an offset: the appendix follows the llama
+    state, whose length depends on the model and the prompt. Three bytes are carried across
+    chunk boundaries so a magic straddling a read is not missed.
+    """
+    from pathlib import Path as _Path
+    path = _Path(path)
+    if not path.is_file():
+        return False
+    tail = b""
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(chunk)
+            if not block:
+                return False
+            if SCKP_MAGIC in tail + block:
+                return True
+            tail = block[-3:]

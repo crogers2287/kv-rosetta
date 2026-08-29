@@ -25,6 +25,7 @@ import urllib.request
 from runtime_matrix import PATCHED, require_runtime, slot_file_has_checkpoints
 
 from kv_rosetta import gguf
+from kv_rosetta.adapters.base import Representation
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
 
 _URL = os.environ.get("KVX_CKPT_URL", "")
@@ -105,13 +106,62 @@ class PatchedHybridCheckpointReuse(unittest.TestCase):
         self.assertEqual(warm["content"], cold["content"])
         self.assertEqual([c["id"] for c in warm.get("completion_probabilities", [])], reference)
 
-    def test_the_adapter_still_withholds_the_capability(self):
-        """Deliberate: the static refusal is only replaced once the runtime ADVERTISES a
-        checkpoint-persistence format. A patched binary that cannot be detected is still
-        unsafe to assume, so capability probing must not be loosened by this file passing."""
+    def test_capability_is_enabled_only_by_the_advertised_protocol(self):
+        """The refusal is lifted by evidence, never by architecture.
+
+        A hybrid model is supportable exactly when the runtime advertises checkpoint
+        persistence. The same model on an unpatched binary must still be refused - which
+        tests/test_hybrid_negative_control.py asserts from the other side.
+        """
         caps = self.adapter.capabilities()
-        self.assertEqual(caps.export, frozenset())
-        self.assertEqual(caps.import_, frozenset())
+        protocol = self.adapter.checkpoint_protocol()
+        self.assertTrue(protocol, "this class requires a runtime that advertises sckp")
+        self.assertIn(Representation.OPAQUE, caps.export)
+        self.assertIn(Representation.OPAQUE, caps.import_)
+        self.assertTrue(any("advertised" in note for note in caps.notes), caps.notes)
+
+    def test_the_artifact_is_labelled_compound_not_plain_ggsq(self):
+        """Calling a checkpoint-bearing file plain ggsq/N would let an importer believe a
+        sequence-only restore is sufficient. The label comes from the bytes."""
+        from pathlib import Path
+        import tempfile as _tempfile
+        from kv_rosetta import container
+        from kv_rosetta.adapters.base import ExportRequest
+        self.adapter.erase(0)
+        self._complete()
+        out = Path(_tempfile.mkdtemp()) / "label.kvx"
+        artifact = Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=0)))
+        header = container.read_header(artifact)
+        fmt = header["blob"]["opaque_format"]
+        self.assertRegex(fmt, r"\Aggsq/\d+\+sckp/1\Z", f"artifact mislabelled as {fmt!r}")
+        coverage = header.get("coverage") or {}
+        self.assertGreater(coverage.get("checkpoint_n_tokens", 0), 0)
+        self.assertGreater(coverage.get("checkpoint_bytes", 0), 0)
+        self.assertGreaterEqual(coverage.get("n_checkpoints", 0), 1)
+
+    def test_a_truncated_checkpoint_appendix_is_refused(self):
+        """llama.cpp degrades a truncated appendix to a sequence-only restore, which is
+        backward compatible for it and unacceptable as a successful hybrid import here."""
+        from pathlib import Path
+        import tempfile as _tempfile
+        from kv_rosetta import container
+        from kv_rosetta.adapters.base import AdapterError, ExportRequest, ImportRequest
+        from kv_rosetta.adapters import ggsq_envelope
+        self.adapter.erase(0)
+        self._complete()
+        out = Path(_tempfile.mkdtemp()) / "trunc.kvx"
+        artifact = Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=0)))
+        raw = artifact.read_bytes()
+        self.assertTrue(ggsq_envelope.has_checkpoint_appendix(artifact))
+        cut = artifact.with_name("cut.kvx")
+        cut.write_bytes(raw[: len(raw) - 1_000_000])
+        ok, reason = container.verify(cut)
+        self.assertFalse(ok, "a truncated artifact verified as intact")
+        report = self.adapter.import_(cut, ImportRequest(model="", slot=0))
+        self.assertFalse(report.ok)
+        self.assertIn("verification", report.reason)
 
 
 if __name__ == "__main__":

@@ -458,3 +458,57 @@ The three per-blob flags are reported because `common_prompt_checkpoint` carries
 `data_dft` and `data_spec`, and a claim of MTP or draft support has to name which of those
 actually survive. They are currently all true because PR #26004 persists all three; that is
 the runtime's claim, and it is not yet independently tested here.
+
+## The compound format and the coverage contract
+
+PR #26004 produces one file, not a sidecar pair, so the earlier two-segment plan is obsolete.
+The slot file stays a single opaque KVX payload whose digest covers the GGSQ state and the
+SCKP appendix together.
+
+**Labelled from the bytes, not from the runtime's claim.** Export scans the saved file for
+the SCKP magic and labels it `ggsq/<sequence-version>+sckp/1` when present. Calling a
+checkpoint-bearing file plain `ggsq/3` would let an importer believe a sequence-only restore
+is sufficient.
+
+The first attempt got this wrong in a useful way: export labelled `ggsq/3` while capabilities
+advertised `ggsq/3+sckp/1`, and import refused with an opaque-format mismatch. The
+fail-closed check caught an inconsistency in my own code before it could become a silently
+wrong restore.
+
+**Coverage is recorded and then enforced.** The manifest carries what the runtime reported:
+
+```
+coverage: n_checkpoints=1  checkpoint_bytes=156,894,416
+          checkpoint_n_tokens=252  pos_min=251  pos_max=251
+```
+
+and import refuses when declared coverage and observed reuse disagree:
+
+```
+verified reuse on slot 0: cache_n=252 of 256 token(s), 4 reprocessed,
+matching declared coverage 252
+```
+
+Credit for more cache than the artifact declared is refused as loudly as credit for less -
+the first would mean reusing state the artifact never carried.
+
+**CacheABIIdentity carries the checkpoint contract** as flags: `sckp:sckp/1`, `seqver:3`,
+`sckp-blob:target`, `sckp-blob:draft`, `sckp-blob:speculative`, plus checkpoint policy when
+the server reports it. An artifact written by a build that persists draft state is not
+interchangeable with one that does not, even at the same sequence-state version.
+
+**Truncation is refused, not degraded.** llama.cpp treats a truncated appendix as a
+sequence-only restore - backward compatible for it, unacceptable as a successful hybrid
+import here. The outer KVX digest covers every byte, so:
+
+```
+container.verify(truncated) -> (False, 'file is shorter than the declared payload')
+import(truncated)           -> ok=False, "artifact failed verification"
+```
+
+### The refusal is now lifted by evidence
+
+`capabilities()` advertises opaque transfer for a hybrid model exactly when the runtime
+advertises checkpoint persistence. Architecture decides nothing in either direction: the same
+model on an unpatched binary is still refused, which the negative control asserts from the
+other side. Both directions are retained tests.

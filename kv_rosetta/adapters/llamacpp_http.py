@@ -128,8 +128,33 @@ class LlamaCppHTTPAdapter(Adapter):
         self._state_version = envelope.version
         return self._state_version
 
+    def checkpoint_protocol(self) -> dict[str, Any]:
+        """The runtime's advertised checkpoint-persistence protocol, or {} when absent.
+
+        A machine-readable statement of behaviour. Support is never inferred from an
+        architecture name, a build id, a filename or an artifact size.
+        """
+        props = self.props()
+        if not props.get("slot_checkpoint_persistence"):
+            return {}
+        return {
+            "format": str(props.get("slot_checkpoint_format", "")),
+            "sequence_state_version": props.get("sequence_state_version"),
+            "target": bool(props.get("supports_target_checkpoint_state")),
+            "draft": bool(props.get("supports_draft_checkpoint_state")),
+            "speculative": bool(props.get("supports_speculative_checkpoint_state")),
+        }
+
     def opaque_format(self) -> str:
-        return f"{OPAQUE_FORMAT_FAMILY}/{self.state_version()}"
+        """The artifact's representation label.
+
+        When the runtime persists checkpoints the file is a GGSQ sequence state with an
+        SCKP appendix, and calling that plain ggsq/N would misdescribe it: an importer
+        would believe a sequence-only restore is sufficient. One file, one compound label.
+        """
+        base = f"{OPAQUE_FORMAT_FAMILY}/{self.state_version()}"
+        protocol = self.checkpoint_protocol()
+        return f"{base}+{protocol['format']}" if protocol.get("format") else base
 
     # -- identity ---------------------------------------------------------------
 
@@ -177,7 +202,25 @@ class LlamaCppHTTPAdapter(Adapter):
             v_dtype=str(props.get("type_v", settings.get("type_v", ""))),
             context_kind=str(settings.get("n_ctx", "")),
             byte_order="little",
+            # The checkpoint contract is part of cache identity: an artifact written by a
+            # build that persists draft state is not interchangeable with one that does
+            # not, even at the same sequence-state version.
+            flags=tuple(sorted(self._checkpoint_flags(props))),
         )
+
+    def _checkpoint_flags(self, props: dict[str, Any]) -> list[str]:
+        protocol = self.checkpoint_protocol()
+        if not protocol:
+            return ["sckp:none"]
+        flags = [f"sckp:{protocol['format']}", f"seqver:{protocol['sequence_state_version']}"]
+        for blob in ("target", "draft", "speculative"):
+            if protocol.get(blob):
+                flags.append(f"sckp-blob:{blob}")
+        settings = props.get("default_generation_settings", {}) or {}
+        for key in ("n_ctx_checkpoints", "checkpoint_min_step"):
+            if settings.get(key) is not None:
+                flags.append(f"policy:{key}={settings[key]}")
+        return flags
 
     def identity(self, model: str = "") -> dict[str, str]:
         """Identity read from the running server, never assumed from configuration."""
@@ -217,8 +260,17 @@ class LlamaCppHTTPAdapter(Adapter):
         # but cannot honour is exactly the fail-open shape this project exists to avoid.
         reusable, why = self.prefix_reuse_support()
         if can_slot and not reusable:
-            notes.append(f"opaque transfer withheld: {why}")
-            can_slot = False
+            # A hybrid model is supportable only when the RUNTIME advertises checkpoint
+            # persistence. Architecture alone decides nothing in either direction.
+            protocol = self.checkpoint_protocol()
+            if protocol and protocol.get("target"):
+                notes.append(
+                    f"hybrid architecture supported via advertised {protocol['format']} "
+                    f"checkpoint persistence")
+                reusable = True
+            else:
+                notes.append(f"opaque transfer withheld: {why}")
+                can_slot = False
         reps = frozenset({Representation.OPAQUE}) if can_slot else frozenset()
         return Capabilities(
             runtime="llama.cpp",
@@ -291,6 +343,15 @@ class LlamaCppHTTPAdapter(Adapter):
         filename = out.stem + ".bin"
         slot = self._slot(req.slot)
         result = self._post(f"/slots/{slot}?action=save", {"filename": filename})
+        # What the runtime says it persisted. Recorded so import can compare declared
+        # coverage against observed reuse instead of trusting either alone.
+        coverage = {
+            "n_checkpoints": int(result.get("n_checkpoints_saved", 0) or 0),
+            "checkpoint_bytes": int(result.get("checkpoint_bytes", 0) or 0),
+            "checkpoint_n_tokens": int(result.get("checkpoint_n_tokens", 0) or 0),
+            "checkpoint_pos_min": int(result.get("checkpoint_pos_min", -1) or -1),
+            "checkpoint_pos_max": int(result.get("checkpoint_pos_max", -1) or -1),
+        }
         state = self.slot_save_path / filename
         if not state.is_file():
             raise AdapterError(f"server reported a save but {state} does not exist")
@@ -304,6 +365,10 @@ class LlamaCppHTTPAdapter(Adapter):
         model_ident = self.model_identity(req.model)
         # Label with the version actually present in the bytes, not an assumed one.
         version = ggsq_envelope.peek_version(head)
+        # Label from the BYTES, not from what the runtime says it can do. A file carrying
+        # an SCKP appendix is not plain ggsq/N, and calling it that would let an importer
+        # believe a sequence-only restore is sufficient.
+        has_ckpt = ggsq_envelope.has_checkpoint_appendix(state)
         fmt_version = version
         # The prompt identity must carry the EXACT tokens this cache was built from.
         # Empty stand-ins would let an artifact be matched to a prompt it never saw.
@@ -340,6 +405,8 @@ class LlamaCppHTTPAdapter(Adapter):
             "corpus": req.corpus or {},
         }
         fmt = f"{OPAQUE_FORMAT_FAMILY}/{version}"
+        if has_ckpt:
+            fmt = f"{fmt}+{ggsq_envelope.SCKP_FORMAT}"
         self._state_version = version
         manifest["identity"]["state_version"] = version
         # The composite key is what the store is keyed on, so it is embedded in the
@@ -350,6 +417,7 @@ class LlamaCppHTTPAdapter(Adapter):
             encoding="opaque", format_version=fmt,
             representation_digest=hashlib.sha256(head[:12]).hexdigest(),
         )
+        manifest["coverage"] = dict(coverage, format=fmt)
         manifest["artifact_key"] = key.as_dict()
         manifest["artifact_key"]["digest"] = key.digest()
         try:
@@ -454,6 +522,20 @@ class LlamaCppHTTPAdapter(Adapter):
                 # cache_n > 0 alone would accept partial reuse of a merely-shared prefix;
                 # requiring cache_n == L-1 would reject a correct hybrid restore.
                 uncovered = len(token_ids) - cache_n
+                declared = int((header.get("coverage") or {}).get("checkpoint_n_tokens", 0) or 0)
+                # When the artifact declares checkpoint coverage, the runtime must reuse
+                # exactly that much. More would mean credit for cache the artifact never
+                # carried; less means the checkpoint did not survive.
+                if declared and cache_n != declared:
+                    self._restore_pristine(artifact_name, slot)
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"declared checkpoint coverage {declared} does not match "
+                                f"observed reuse cache_n={cache_n}; refusing rather than "
+                                f"trusting either number alone"),
+                        nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
+                        seconds=time.time() - started, tokens_restored=restored)
                 if uncovered < 1 or uncovered > self.max_uncovered_tail or prompt_n != uncovered:
                     self._restore_pristine(artifact_name, slot)
                     return ImportReport(
@@ -470,7 +552,8 @@ class LlamaCppHTTPAdapter(Adapter):
                 # imported prefix so a caller never inherits a mutated cache.
                 self._restore_pristine(artifact_name, slot)
                 reuse_note = (f"verified reuse on slot {slot}: cache_n={cache_n} of "
-                              f"{len(token_ids)} token(s), {uncovered} reprocessed")
+                              f"{len(token_ids)} token(s), {uncovered} reprocessed"
+                              + (f", matching declared coverage {declared}" if declared else ""))
 
             return ImportReport(
                 mode=StagingMode.HOST_STAGED,
