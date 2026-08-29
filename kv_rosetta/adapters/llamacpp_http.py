@@ -702,7 +702,6 @@ class LlamaCppHTTPAdapter(Adapter):
             # Refuse a version this runtime cannot load, before touching the restore
             # endpoint. Relabelling a version-2 artifact as version 3 would be a lie the
             # loader discovers only after the state is already in flight.
-            phase_started = time.time()
             live_format = self.opaque_format()
             phases["preflight"] = (phases.get("preflight", 0.0)
                                    + time.time() - phase_started)
