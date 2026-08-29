@@ -117,7 +117,7 @@ the conclusion that hybrid architectures are a dead end.
 | R3. Reproducible patch + guarded build script | 🟡 partial | `patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch` (sha256 `baf44e7c…`) + `scripts/build_patched_llama.sh`, which refuses a tampered patch or an unexpected base, unshallows before verifying, and applies three-way. Not yet built |
 | R3. Build the patched runtime | ✅ done | `/mnt/storage/llama-kvx-patched`, patch verified and applied three-way; `-DGGML_CCACHE=OFF` after a root-owned ccache dir broke the build; probe corrected to check `libllama-server-impl.so` |
 | R6. Restart persistence proof | ✅ **PROVEN** | Save, full server stop, fresh start, restore -> `cache_n=252 prompt_n=4`, output and token IDs match the pre-restart cold run. `tests/test_hybrid_checkpoint_restart.py` |
-| R2. Exact-boundary checkpoint | 🔴 open | Reuse is 252/256; bounded by checkpoint granularity as upstream predicts |
+| R2. Exact-boundary checkpoint | ✅ resolved without a patch | Uncovered tail measured **constant at 4** across prompts 256/1024/4096 and checkpoint settings min-step 128/8, ctx-checkpoints 8/32 - not a granularity artifact, so forcing a boundary checkpoint would not help. Adapter invariant generalised to a bounded, self-consistent tail |
 | R3. Runtime capability advertisement | 🔴 outstanding | PR #26004 adds no `slot_checkpoint_persistence` field; support must not be inferred from a version string |
 | Binary provenance verified | ✅ proven | Running binary = commit `3e7344670` (seq version 2); HEAD `ca3d5a3` is 150 commits ahead (version 3); `~/llama.cpp` is a shallow clone, which fails ancestry checks silently |
 | R2–R10 | 🔴 outstanding | Gated behind R1 |

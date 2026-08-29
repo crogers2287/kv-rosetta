@@ -304,3 +304,48 @@ after a full server restart, with output and token IDs matching a cold prefill.
 - **Capability advertisement.** The patched binary reports nothing machine-readable, so the
   adapter deliberately still withholds the capability. A test asserts that it does: a
   patched binary that cannot be detected is still unsafe to assume.
+
+## R2: the uncovered tail is constant, so there is no boundary to force
+
+The steer's R2 assumed reuse would be bounded by checkpoint granularity, and preferred
+forcing a real checkpoint at the exact stable-prefix boundary before serializing. Measured
+first, on the patched runtime with a hybrid `qwen35` model:
+
+| `--checkpoint-min-step` | `--ctx-checkpoints` | prompt | `cache_n` | `prompt_n` | uncovered |
+|---|---|---|---|---|---|
+| 128 | 8 | 256 | 252 | 4 | **4** |
+| 128 | 8 | 1024 | 1020 | 4 | **4** |
+| 128 | 8 | 4096 | 4092 | 4 | **4** |
+| 8 | 32 | 256 | 252 | 4 | **4** |
+| 8 | 32 | 1024 | 1020 | 4 | **4** |
+| 8 | 32 | 4096 | 4092 | 4 | **4** |
+
+The tail is **constant at 4 tokens** across a 16x range of prompt lengths and across a 16x
+change in checkpoint density. It is therefore not a granularity artifact, and forcing a
+checkpoint at the save boundary would not recover those four tokens.
+
+That is the hybrid analogue of behaviour already measured on ordinary attention, where
+exactly **1** token is always reprocessed. Both runtimes reuse everything except a short
+fixed tail; only the size of the tail differs by architecture.
+
+### Consequence for the adapter, and the C++ patch not written
+
+The reuse invariant was `cache_n == L-1 and prompt_n == 1`. Correct for ordinary attention,
+and it would reject every correct hybrid restore. The invariant is now:
+
+    uncovered = L - cache_n
+    1 <= uncovered <= max_uncovered_tail   and   prompt_n == uncovered
+
+`prompt_n == uncovered` is what keeps this from degrading: it requires the runtime to have
+reprocessed *exactly* the uncovered tokens and nothing more. `max_uncovered_tail` defaults
+to 8 - large enough for the measured 1 and 4, small enough that "reuse" cannot quietly
+become "reprocessed most of the prompt". A test shrinks the bound to 0 and confirms a good
+restore is then refused, so the bound is enforced rather than decorative.
+
+No llama.cpp patch was written for R2. The measurement showed the preferred option would not
+help, and the steer's alternative - accept declared coverage and account for the tail - is
+both smaller and sufficient. Recorded here because "we chose not to patch" is only defensible
+with the numbers that made it the right choice.
+
+**Caveat:** 4 is what this model and build do. The adapter measures the tail per restore and
+bounds it; it does not hardcode 4 anywhere.

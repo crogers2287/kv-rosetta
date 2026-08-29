@@ -49,6 +49,12 @@ _TIMEOUT = 600
 class LlamaCppHTTPAdapter(Adapter):
     name = "llamacpp-http"
 
+    #: Largest tail of the prefix a runtime may reprocess and still count as reuse.
+    #: Measured on this host: 1 token for ordinary attention, 4 for a hybrid model with
+    #: persisted checkpoints. The bound exists so that "reuse" cannot quietly degrade into
+    #: reprocessing an arbitrary fraction of the prompt.
+    max_uncovered_tail: int = 8
+
     def __init__(self, base_url: str = "http://127.0.0.1:8080",
                  slot_save_path: Path | str | None = None, slot: int = 0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -436,27 +442,35 @@ class LlamaCppHTTPAdapter(Adapter):
                 timings = probe.get("timings", {})
                 cache_n = int(timings.get("cache_n", 0))
                 prompt_n = int(timings.get("prompt_n", 0))
-                # llama.cpp always reprocesses the final token, so full reuse of an L-token
-                # prefix is exactly cache_n == L-1 and prompt_n == 1. Accepting cache_n > 0
-                # would accept PARTIAL reuse: probing a 200-token cache with a 100-token
-                # prefix returns cache_n=99, which is a different prompt sharing a prefix.
-                expected_cache_n = len(token_ids) - 1
-                if cache_n != expected_cache_n or prompt_n != 1:
+                # A runtime always reprocesses a short tail of the prefix, and how short
+                # depends on the architecture: measured here, ordinary attention reprocesses
+                # exactly 1 token, while a hybrid model with persisted checkpoints
+                # reprocesses exactly 4 - constant across 256/1024/4096-token prompts and
+                # across --checkpoint-min-step and --ctx-checkpoints settings, so it is
+                # structural rather than a granularity artifact.
+                #
+                # The invariant that holds for both: everything except a small tail is
+                # reused, and the tokens reprocessed are EXACTLY that tail. Requiring
+                # cache_n > 0 alone would accept partial reuse of a merely-shared prefix;
+                # requiring cache_n == L-1 would reject a correct hybrid restore.
+                uncovered = len(token_ids) - cache_n
+                if uncovered < 1 or uncovered > self.max_uncovered_tail or prompt_n != uncovered:
                     self._restore_pristine(artifact_name, slot)
                     return ImportReport(
                         mode=StagingMode.HOST_STAGED, ok=False,
                         representation=Representation.OPAQUE,
-                        reason=(f"slot {slot} did not reuse the full prefix: "
-                                f"cache_n={cache_n} prompt_n={prompt_n}, expected "
-                                f"cache_n={expected_cache_n} prompt_n=1 for "
-                                f"{len(token_ids)} token(s)"),
+                        reason=(f"slot {slot} did not reuse the prefix as declared: "
+                                f"cache_n={cache_n} prompt_n={prompt_n} for "
+                                f"{len(token_ids)} token(s) leaves {uncovered} uncovered; "
+                                f"require 1..{self.max_uncovered_tail} uncovered and "
+                                f"prompt_n == uncovered"),
                         nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                         seconds=time.time() - started, tokens_restored=restored)
                 # The probe generated a token into the slot. Put the slot back to the exact
                 # imported prefix so a caller never inherits a mutated cache.
                 self._restore_pristine(artifact_name, slot)
-                reuse_note = (f"verified full-prefix reuse on slot {slot}: "
-                              f"cache_n={cache_n}/{expected_cache_n} prompt_n={prompt_n}")
+                reuse_note = (f"verified reuse on slot {slot}: cache_n={cache_n} of "
+                              f"{len(token_ids)} token(s), {uncovered} reprocessed")
 
             return ImportReport(
                 mode=StagingMode.HOST_STAGED,

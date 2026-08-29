@@ -323,3 +323,58 @@ class IdentityBindingTests(unittest.TestCase):
         store = ArtifactStore(Path(tempfile.mkdtemp()) / "store")
         with self.assertRaises(AdapterError):
             self.adapter.publish(broken, store)
+
+
+@unittest.skipUnless(_URL and _SLOTS, "set KVX_LLAMA_URL and KVX_LLAMA_SLOTS to run")
+class BoundedTailInvariantTests(unittest.TestCase):
+    """Reuse is 'everything but a small tail', and the tail is bounded and self-consistent.
+
+    Measured on this host: ordinary attention reprocesses exactly 1 token; a hybrid model
+    with persisted checkpoints reprocesses exactly 4, constant across 256/1024/4096-token
+    prompts and across --checkpoint-min-step and --ctx-checkpoints. Hardcoding 1 would
+    reject a correct hybrid restore; accepting any cache_n > 0 would accept a merely-shared
+    prefix as a restore.
+    """
+
+    def setUp(self):
+        self.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
+
+    def test_the_bound_exists_and_is_small(self):
+        self.assertGreaterEqual(self.adapter.max_uncovered_tail, 1)
+        self.assertLessEqual(self.adapter.max_uncovered_tail, 16,
+                             "a large bound would let reuse degrade into reprocessing")
+
+    def test_a_real_round_trip_lands_inside_the_bound(self):
+        text = "In the year 1892 the naturalist recorded observations. " * 30
+        ids = self.adapter._post("/tokenize", {"content": text})["tokens"][:200]
+        self.adapter.erase(0)
+        self.adapter._post("/completion", {"prompt": ids, "n_predict": 1, "temperature": 0.0,
+                                           "cache_prompt": True, "id_slot": 0})
+        out = Path(tempfile.mkdtemp()) / "tail.kvx"
+        artifact = Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=0)))
+        self.adapter.erase(0)
+        report = self.adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        self.assertIn("reprocessed", report.reason)
+
+    def test_an_oversized_tail_is_refused(self):
+        """Shrinking the bound below the runtime's real tail must turn a good restore into
+        a refusal - proving the bound is enforced rather than decorative."""
+        text = "In the year 1892 the naturalist recorded observations. " * 30
+        ids = self.adapter._post("/tokenize", {"content": text})["tokens"][:200]
+        self.adapter.erase(0)
+        self.adapter._post("/completion", {"prompt": ids, "n_predict": 1, "temperature": 0.0,
+                                           "cache_prompt": True, "id_slot": 0})
+        out = Path(tempfile.mkdtemp()) / "tight.kvx"
+        artifact = Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=0)))
+        self.adapter.erase(0)
+        original = self.adapter.max_uncovered_tail
+        try:
+            self.adapter.max_uncovered_tail = 0      # nothing may be reprocessed
+            report = self.adapter.import_(artifact, ImportRequest(model="", slot=0))
+            self.assertFalse(report.ok)
+            self.assertIn("uncovered", report.reason)
+        finally:
+            self.adapter.max_uncovered_tail = original
