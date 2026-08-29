@@ -445,3 +445,80 @@ def materialise(handle: BinaryIO, span: TensorSpan, *, n_head: int, head_dim: in
                         f"says {width}")
     values = dequantise(raw, span.type_id, width * cell_count)
     return values.reshape(width, cell_count).T.reshape(cell_count, n_head, head_dim)
+
+
+def quantise(values: "np.ndarray", type_id: int) -> bytes:
+    """Float32 to a ggml block format, mirroring ggml's reference quantisers exactly.
+
+    Faithfulness matters more than elegance here. ggml computes the reciprocal scale from
+    the float32 `d` but stores `d` as fp16, so quantisation and dequantisation use slightly
+    different scales. That asymmetry is reproduced rather than corrected: the target runtime
+    will dequantise with the fp16 value, so matching ggml's own output is the requirement,
+    and "improving" it would produce blocks llama.cpp did not expect.
+
+    Lossy by construction. Nothing here establishes that a converted cache is behaviourally
+    usable - that requires the divergence gate against the target runtime's native reuse.
+    """
+    np = _require_numpy()
+    if type_id not in GGML_TYPES:
+        raise GGSQError(f"unsupported ggml type id {type_id}")
+    name, block, per_block = GGML_TYPES[type_id]
+    flat = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+    if flat.size % block:
+        raise GGSQError(f"{flat.size} values is not a multiple of the {block}-element "
+                        f"block for {name}")
+
+    if block == 1:
+        if name == "f32":
+            return flat.tobytes()
+        if name == "f16":
+            return flat.astype("<f2").tobytes()
+        if name == "bf16":
+            # Round-to-nearest-even on the discarded low half, as ggml does; truncation
+            # would bias every value toward zero.
+            bits = flat.view(np.uint32)
+            rounded = ((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16).astype("<u2")
+            return rounded.tobytes()
+        raise GGSQError(f"unhandled unblocked type {name}")
+
+    blocks = flat.reshape(-1, block)
+    if name == "q8_0":
+        amax = np.abs(blocks).max(axis=1)
+        d = (amax / 127.0).astype(np.float32)
+        inverse = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0).astype(np.float32)
+        quants = np.rint(blocks * inverse[:, None]).astype(np.int8)
+        out = np.empty((blocks.shape[0], per_block), dtype=np.uint8)
+        out[:, :2] = d.astype("<f2").view(np.uint8).reshape(-1, 2)
+        out[:, 2:] = quants.view(np.uint8)
+        return out.tobytes()
+    if name == "q4_0":
+        absolute = np.abs(blocks)
+        chosen = absolute.argmax(axis=1)
+        signed_max = blocks[np.arange(blocks.shape[0]), chosen].astype(np.float32)
+        d = (signed_max / -8.0).astype(np.float32)
+        inverse = np.where(d != 0, 1.0 / np.where(d != 0, d, 1.0), 0.0).astype(np.float32)
+        scaled = blocks * inverse[:, None]
+        # ggml casts to int8 after adding 8.5, which truncates toward zero.
+        nibbles = np.minimum(15, (scaled + 8.5).astype(np.int8)).astype(np.uint8)
+        half = block // 2
+        packed = (nibbles[:, :half] | (nibbles[:, half:] << 4)).astype(np.uint8)
+        out = np.empty((blocks.shape[0], per_block), dtype=np.uint8)
+        out[:, :2] = d.astype("<f2").view(np.uint8).reshape(-1, 2)
+        out[:, 2:] = packed
+        return out.tobytes()
+    raise GGSQError(f"quantisation to {name} is not implemented; refusing to emit blocks "
+                    f"whose layout has not been verified against ggml")
+
+
+def convert_dtype(values: "np.ndarray", target_type_id: int) -> tuple[bytes, int]:
+    """Canonical float32 to target-native bytes. Returns (payload, row stride).
+
+    This is the conversion the opaque path must never perform. An opaque artifact written
+    under one cache dtype stays refused by a runtime using another, because its bytes are
+    only meaningful to the configuration that wrote them. Converting is the canonical
+    route's job, and its output still has to pass the behavioural gate before use.
+    """
+    np = _require_numpy()
+    flat = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+    payload = quantise(flat, target_type_id)
+    return payload, row_size(target_type_id, flat.size)
