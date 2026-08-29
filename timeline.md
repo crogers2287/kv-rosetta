@@ -604,3 +604,58 @@ fail-closed behaviour.
 
 Status: **measured once on this host** (one repetition, by design - this was the
 break-first run). **Untested**: NVMe, 8K, 32K, and the one-pass staging hypothesis.
+
+## REQ-028 — One-pass verified staging
+
+Steer 0315e90, following its measured 2K branch: ratio above 1.25x, so attack the largest
+linear I/O pass rather than run repetitions or 8K.
+
+The import made **two full passes over the same payload**: `container.verify()` hashed it,
+then `extract_payload()` hashed it again while writing the staged copy. The second pass
+already provided the guarantee — extraction compares the digest before publishing the file —
+so the first was learning the same fact twice.
+
+`verify_header()` now does everything `verify()` does except the payload read: structure,
+header digest, blob fields, payload alignment, and that the file is long enough for what it
+declares. Import calls it and relies on extraction's in-pass comparison, which happens before
+any restore POST. Segmented artifacts are refused by `verify_header` and fall back to the
+full check, since extraction does not cover per-segment digests.
+
+Removing a check is only safe if nothing it caught gets through, so the tests assert the
+refusals, not the speedup: a corrupted payload byte, a corrupted header byte and a truncated
+artifact are each still refused with **no restore POST issued**, no staged copy or temp file
+left behind, and a report returned rather than a `ContainerError` escaping the adapter
+boundary — which it would have before, since `import_` only caught `AdapterError`.
+
+**Measured, same model / prompt / hardware, tmpfs, one repetition each:**
+
+| phase | two-pass | one-pass | delta |
+|---|---:|---:|---:|
+| container verification | 1.986 | **0.000** | −1.986 |
+| staging | 2.404 | 2.222 | −0.182 |
+| preflight | 0.542 | 0.525 | −0.016 |
+| runtime restore | 0.515 | 0.438 | −0.077 |
+| pristine re-restore | 0.477 | 0.443 | −0.034 |
+| reuse probe | 0.207 | 0.232 | +0.024 |
+| **adapter import + tail** | **6.664** | **4.371** | **-2.293** |
+| *native cold prefill* | *1.772* | *1.734* | |
+| ratio to cold | 3.76x | **2.52x** | |
+
+Correctness unchanged: `cache_n=2044 prompt_n=4` patched, `cache_n=0 prompt_n=2048`
+unpatched, full parity against native reuse. Phases reconcile to
+0.0039 s unclassified.
+
+**Still not cheaper**, at 2.52x. The remaining dominant phase is staging
+at 2.222 s — 58% of the import — which is the
+577 MiB payload being copied from the container into the slot
+directory and hashed, both on tmpfs. The runtime restore is 0.438 s
+against a 1.734 s cold prefill.
+
+The options the steer parked "until the one-pass verified staging result is measured" —
+direct-from-container restore, raw artifact plus sidecar manifests, reflinks, format
+redesign — are now unblocked by measurement. Not started: choosing among them is the next
+steer's call, not mine.
+
+Status: **measured once on this host** (one repetition, matching the break-first design).
+**Proven by retained test**: the refusals survive removal of the pass (8 tests, 395 total).
+**Untested**: NVMe, 8K, 32K.
