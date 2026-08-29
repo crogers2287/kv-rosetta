@@ -324,6 +324,14 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         }
         # A distinct stem: export() derives its slot filename from the artifact stem and
         # unlinks that file afterwards, which would delete the raw artifact under test.
+        # Export the PREFIX, not the prefix plus this run's generation. The raw legs save
+        # a slot holding 256 prompt + 8 generated tokens and then replay a 256-token
+        # request, so their uncovered tail is 256 - 252 = 4. An artifact carrying all 263
+        # tokens has a tail of 11, because the checkpoint still covers 252: the tail is a
+        # function of how far the sequence ran past the last checkpoint, not a constant.
+        # A prefix cache holds the prefix, so that is what the adapter exports.
+        first.post("/slots/0?action=erase", {})
+        first.post("/completion", dict(request, n_predict=0))
         kvx_path = Path(slots) / f"matrix-{name}-adapter.kvx"
         export_started = time.time()
         try:
