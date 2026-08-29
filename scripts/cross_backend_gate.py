@@ -179,8 +179,16 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
                           extra_args=writer.get("args", ()))
     first.start()
     try:
-        text = "The naturalist recorded the following observations in detail. " * 24
+        # The source text has to be long enough to actually reach the requested length.
+        # It was a fixed 24 repetitions, which tokenizes to a few hundred tokens: any run
+        # asking for more would have silently measured a shorter prefix than it named.
+        sentence = "The naturalist recorded the following observations in detail. "
+        text = sentence * max(24, prompt_tokens // 4)
         ids = first.post("/tokenize", {"content": text})["tokens"][:prompt_tokens]
+        if len(ids) != prompt_tokens:
+            raise RuntimeError(f"{name}: asked for {prompt_tokens} prompt tokens and the "
+                               f"source text yields only {len(ids)}; a short prefix would "
+                               f"be reported under the requested length")
         request = {"prompt": ids, "n_predict": 8, "temperature": 0.0, "top_k": 1,
                    "n_probs": N_PROBS, "cache_prompt": True, "id_slot": 0}
         first.post("/slots/0?action=erase", {})
