@@ -37,6 +37,7 @@ SUPPORTED_VERSIONS = frozenset({1, 2})
 ALIGNMENT = 64
 _PREAMBLE = 12
 _MAX_OFFSET_PASSES = 5
+_CHUNK = 4 << 20   # 4 MiB: bounded staging for artifacts that reach gigabytes
 _ZERO_DIGEST = "0" * 64
 _DIGEST_KEY = b'"header_sha256":"'
 
@@ -175,6 +176,103 @@ def write_raw(path: Path | str, manifest: dict[str, Any], tensor: np.ndarray) ->
     return _write(path, manifest, payload)
 
 
+def _hash_file(src: Path, chunk: int = _CHUNK) -> tuple[str, int]:
+    """sha256 and size of a file without holding it in memory."""
+    digest = hashlib.sha256()
+    total = 0
+    with open(src, "rb") as handle:
+        while True:
+            block = handle.read(chunk)
+            if not block:
+                break
+            digest.update(block)
+            total += len(block)
+    return digest.hexdigest(), total
+
+
+def write_opaque_from_file(path: Path | str, manifest: dict[str, Any], src: Path | str,
+                           opaque_format: str, chunk: int = _CHUNK) -> Path:
+    """Wrap an engine-native state file without materialising it in memory.
+
+    A 32K llama.cpp slot state is over a gigabyte; reading it with read_bytes and then
+    joining it into the container payload holds two full copies of it in the Python heap
+    at once. This streams src into the artifact and hashes it incrementally.
+    """
+    if not isinstance(opaque_format, str) or not opaque_format.strip():
+        raise ContainerError("opaque_format must be a non-empty string")
+    src = Path(src)
+    if not src.is_file():
+        raise ContainerError(f"source state file does not exist: {src}")
+    sha256, nbytes = _hash_file(src, chunk)
+
+    path = Path(path)
+    manifest = dict(manifest)
+    manifest["blob"] = {
+        "encoding": "opaque", "offset": 0, "nbytes": nbytes, "sha256": sha256,
+        "shape": None, "opaque_format": opaque_format,
+    }
+    manifest["integrity"] = {"header_sha256": _ZERO_DIGEST}
+    header, offset = _resolve_offset(manifest)
+    zeroed, value_at = _digest_placeholder(header)
+    header = header[:value_at] + hashlib.sha256(zeroed).hexdigest().encode() + header[value_at + 64:]
+    padding = offset - (_PREAMBLE + len(header))
+
+    # A unique temporary name: two exports of the same artifact must not race on one path.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{id(manifest):x}.tmp")
+    try:
+        with open(tmp, "wb") as out, open(src, "rb") as handle:
+            out.write(MAGIC)
+            out.write(CONTAINER_VERSION.to_bytes(4, "little"))
+            out.write(len(header).to_bytes(4, "little"))
+            out.write(header)
+            out.write(b"\x20" * padding)
+            while True:
+                block = handle.read(chunk)
+                if not block:
+                    break
+                out.write(block)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def extract_payload(path: Path | str, dest: Path | str, chunk: int = _CHUNK) -> int:
+    """Stream an artifact's payload to a file. Returns the byte count written.
+
+    Used instead of `.opaque` when handing a blob back to a runtime, so a gigabyte-scale
+    cache never becomes a single Python bytes object.
+    """
+    path, dest = Path(path), Path(dest)
+    with open(path, "rb") as handle:
+        header, _ = _read_header(handle)
+        blob = header["blob"]
+        offset, nbytes = int(blob["offset"]), int(blob["nbytes"])
+        handle.seek(offset)
+        tmp = dest.with_name(f"{dest.name}.{os.getpid()}.tmp")
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            with open(tmp, "wb") as out:
+                remaining = nbytes
+                while remaining:
+                    block = handle.read(min(chunk, remaining))
+                    if not block:
+                        raise ContainerError("payload truncated while extracting")
+                    digest.update(block)
+                    out.write(block)
+                    remaining -= len(block)
+                    written += len(block)
+            if digest.hexdigest() != blob["sha256"]:
+                raise ContainerError("payload sha256 mismatch while extracting")
+            os.replace(tmp, dest)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    return written
+
+
 def write_opaque(path: Path | str, manifest: dict[str, Any], blob: bytes,
                  opaque_format: str) -> Path:
     if not isinstance(opaque_format, str) or not opaque_format.strip():
@@ -239,6 +337,19 @@ class KVXArtifact:
                 return raw.view(np.dtype(dtypes.NUMPY_DTYPE[seg.dtype])).reshape(seg.shape)
         raise ContainerError(f"no segment named {name!r}")
 
+    def header_bytes(self, limit: int) -> bytes:
+        """Read at most `limit` bytes from the start of the payload.
+
+        Lets a caller parse an engine envelope header without materialising a payload
+        that may be gigabytes.
+        """
+        if self.path is None:
+            return bytes(np.asarray(self.buffer, dtype=np.uint8)[:limit].tobytes())
+        offset = int(self.blob["offset"])
+        with open(self.path, "rb") as handle:
+            handle.seek(offset)
+            return handle.read(min(limit, int(self.blob["nbytes"])))
+
     @property
     def opaque(self) -> bytes:
         if self.encoding != "opaque":
@@ -268,6 +379,22 @@ def _read_header(handle) -> tuple[dict[str, Any], int]:
     if not isinstance(header.get("blob"), dict):
         raise ContainerError("header is missing a 'blob' object")
     return header, header_len
+
+
+def read_header(path: Path | str) -> dict[str, Any]:
+    """Parse only the header. Never touches the payload, which may be gigabytes."""
+    with open(Path(path), "rb") as handle:
+        header, _ = _read_header(handle)
+    return header
+
+
+def read_payload_prefix(path: Path | str, limit: int) -> bytes:
+    """Read at most `limit` bytes of the payload, for parsing an engine envelope header."""
+    with open(Path(path), "rb") as handle:
+        header, _ = _read_header(handle)
+        blob = header["blob"]
+        handle.seek(int(blob["offset"]))
+        return handle.read(min(limit, int(blob["nbytes"])))
 
 
 def read(path: Path | str, mmap: bool = True) -> KVXArtifact:

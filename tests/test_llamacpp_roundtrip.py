@@ -39,8 +39,11 @@ class LlamaCppSameBackendRoundTrip(unittest.TestCase):
         text = "In the year 1892, the naturalist recorded the following observations. " * 40
         ids = cls.adapter._post("/tokenize", {"content": text})["tokens"][:_PROMPT_TOKENS]
         cls.ids = ids
+        # Pin the slot: on a multi-slot server an unpinned completion can land on a slot
+        # that still holds a cache, and a "cold" control run would silently be warm.
         cls.request = {"prompt": ids, "n_predict": _PREDICT, "temperature": 0.0,
-                       "top_k": 1, "n_probs": 5, "cache_prompt": True, "seed": 1}
+                       "top_k": 1, "n_probs": 5, "cache_prompt": True, "seed": 1,
+                       "id_slot": 0}
 
     def _tokens(self, response):
         return [c["id"] for c in response.get("completion_probabilities", [])]
@@ -61,7 +64,9 @@ class LlamaCppSameBackendRoundTrip(unittest.TestCase):
         self.assertTrue(caps.runtime_revision, "build info must come from the server")
         self.assertIn(Representation.OPAQUE, caps.export)
         self.assertIn(Representation.OPAQUE, caps.import_)
-        self.assertIn("ggsq/3", caps.opaque_formats)
+        # The format must be the version the runtime emits, not a constant. This server
+        # writes 2 while the checked-out header declares 3.
+        self.assertEqual(caps.opaque_formats, frozenset({f"ggsq/{self.adapter.state_version()}"}))
         self.assertRegex(caps.cache_abi_digest, r"\A[0-9a-f]{64}\Z")
 
     def test_round_trip_restores_the_cache_with_token_for_token_parity(self):
@@ -194,7 +199,7 @@ class SlotBindingAndFullPrefixReuse(unittest.TestCase):
     def test_verification_leaves_the_slot_at_the_imported_prefix(self):
         """The probe generates a token; the slot must not be handed back mutated."""
         artifact = self._artifact(slot=0)
-        expected = len(self.adapter._artifact_token_ids(container.read(artifact, mmap=False)))
+        expected = len(self.adapter._artifact_token_ids(artifact))
         self.adapter.erase(0)
         self.assertTrue(self.adapter.import_(artifact, ImportRequest(model="", slot=0)).ok)
         slots = json.loads(

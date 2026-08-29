@@ -315,3 +315,17 @@ def decode_prompt_tokens(packed: tuple[int, ...] | list[int]) -> tuple[int, ...]
     if media:
         return ()                                   # multimodal: not a pure text prompt
     return tokens
+
+
+def peek_version(head: bytes) -> int:
+    """Read the sequence-state version from the first 8 bytes, refusing a foreign magic."""
+    if len(head) < 8:
+        raise EnvelopeError(f"need 8 bytes to read the version, got {len(head)}")
+    if head[:4] != GGSQ_MAGIC:
+        raise EnvelopeError(f"bad magic at offset 0: found {head[:4]!r}, expected {GGSQ_MAGIC!r}")
+    version = struct.unpack_from("<I", head, 4)[0]
+    if version not in SUPPORTED_VERSIONS:
+        raise EnvelopeError(
+            f"unsupported version at offset 4: {version}; "
+            f"supported versions are {sorted(SUPPORTED_VERSIONS)}")
+    return version

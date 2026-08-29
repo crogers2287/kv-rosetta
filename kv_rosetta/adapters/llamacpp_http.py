@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -53,6 +54,7 @@ class LlamaCppHTTPAdapter(Adapter):
         self.slot = slot
         self._props: dict[str, Any] | None = None
         self._state_version: int | None = None
+        self._staged: list[Path] = []
 
     def _slot(self, req_slot: int | None = None) -> int:
         """Resolve the slot every call must name explicitly.
@@ -189,7 +191,10 @@ class LlamaCppHTTPAdapter(Adapter):
         state = self.slot_save_path / filename
         if not state.is_file():
             raise AdapterError(f"server reported a save but {state} does not exist")
-        blob = state.read_bytes()
+        # Read only the envelope header; the body can be gigabytes and never needs to be
+        # in the Python heap.
+        with open(state, "rb") as handle:
+            head = handle.read(4096)
         ident = self.identity(req.model)
         props = self.props()
         settings = props.get("default_generation_settings", {}) or {}
@@ -210,11 +215,14 @@ class LlamaCppHTTPAdapter(Adapter):
             "corpus": req.corpus or {},
         }
         # Label with the version actually present in the bytes, not an assumed one.
-        envelope = ggsq_envelope.parse_file_envelope(blob)
-        fmt = f"{OPAQUE_FORMAT_FAMILY}/{envelope.version}"
-        self._state_version = envelope.version
-        manifest["identity"]["state_version"] = envelope.version
-        return container.write_opaque(out, manifest, blob, fmt)
+        version = ggsq_envelope.peek_version(head)
+        fmt = f"{OPAQUE_FORMAT_FAMILY}/{version}"
+        self._state_version = version
+        manifest["identity"]["state_version"] = version
+        try:
+            return container.write_opaque_from_file(out, manifest, state, fmt)
+        finally:
+            state.unlink(missing_ok=True)   # do not leave the server's copy behind
 
     def import_(self, artifact: Path | str, req: ImportRequest,
                 verify_reuse: bool = True) -> ImportReport:
@@ -230,8 +238,9 @@ class LlamaCppHTTPAdapter(Adapter):
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
                                     reason=f"artifact failed verification: {reason}")
-            art = container.read(artifact, mmap=False)
-            header_abi = (art.header.get("identity") or {}).get("cache_abi_digest", "")
+            header = container.read_header(artifact)
+            blob = header.get("blob", {})
+            header_abi = (header.get("identity") or {}).get("cache_abi_digest", "")
             live_abi = self.identity(req.model).get("cache_abi_digest", "")
             expected = req.expected_cache_abi_digest or live_abi
             # An opaque blob is only readable by the configuration that wrote it. There is
@@ -245,7 +254,7 @@ class LlamaCppHTTPAdapter(Adapter):
             # endpoint. Relabelling a version-2 artifact as version 3 would be a lie the
             # loader discovers only after the state is already in flight.
             live_format = self.opaque_format()
-            artifact_format = art.blob.get("opaque_format")
+            artifact_format = blob.get("opaque_format")
             if artifact_format != live_format:
                 return ImportReport(
                     mode=StagingMode.HOST_STAGED, ok=False,
@@ -255,8 +264,10 @@ class LlamaCppHTTPAdapter(Adapter):
                     seconds=time.time() - started)
 
             slot = self._slot(req.slot)
-            artifact_name = artifact.stem + ".restore.bin"
-            (self.slot_save_path / artifact_name).write_bytes(art.opaque)
+            artifact_name = f"{artifact.stem}.{os.getpid()}.restore.bin"
+            staged = self.slot_save_path / artifact_name
+            self._staged.append(staged)
+            container.extract_payload(artifact, staged)
             result = self._post(f"/slots/{slot}?action=restore", {"filename": artifact_name})
             restored = int(result.get("n_restored", 0))
             if restored <= 0:
@@ -271,13 +282,13 @@ class LlamaCppHTTPAdapter(Adapter):
             # the server's own count would hand the caller a cache that does not exist.
             reuse_note = ""
             if verify_reuse:
-                token_ids = self._artifact_token_ids(art)
+                token_ids = self._artifact_token_ids(artifact)
                 if not token_ids:
                     return ImportReport(
                         mode=StagingMode.HOST_STAGED, ok=False,
                         representation=Representation.OPAQUE,
                         reason="cannot verify reuse: artifact carries no token IDs",
-                        nbytes=int(result.get("n_read", len(art.opaque))),
+                        nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                         seconds=time.time() - started, tokens_restored=restored)
                 probe = self._post("/completion", {
                     "prompt": list(token_ids), "n_predict": 1, "temperature": 0.0,
@@ -299,7 +310,7 @@ class LlamaCppHTTPAdapter(Adapter):
                                 f"cache_n={cache_n} prompt_n={prompt_n}, expected "
                                 f"cache_n={expected_cache_n} prompt_n=1 for "
                                 f"{len(token_ids)} token(s)"),
-                        nbytes=int(result.get("n_read", len(art.opaque))),
+                        nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                         seconds=time.time() - started, tokens_restored=restored)
                 # The probe generated a token into the slot. Put the slot back to the exact
                 # imported prefix so a caller never inherits a mutated cache.
@@ -312,7 +323,7 @@ class LlamaCppHTTPAdapter(Adapter):
                 ok=True,
                 representation=Representation.OPAQUE,
                 reason=reuse_note,
-                nbytes=int(result.get("n_read", len(art.opaque))),
+                nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                 seconds=time.time() - started,
                 tokens_restored=restored,
             )
@@ -320,6 +331,11 @@ class LlamaCppHTTPAdapter(Adapter):
             return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                 representation=Representation.OPAQUE, reason=str(exc),
                                 seconds=time.time() - started)
+        finally:
+            # Staged copies are the size of the cache; leaving them behind fills the disk.
+            for path in self._staged:
+                path.unlink(missing_ok=True)
+            self._staged.clear()
 
     def _restore_pristine(self, filename: str, slot: int) -> None:
         """Re-restore so the slot holds exactly the imported prefix, nothing appended."""
@@ -329,15 +345,15 @@ class LlamaCppHTTPAdapter(Adapter):
         except AdapterError:
             pass
 
-    def _artifact_token_ids(self, art: "container.KVXArtifact") -> tuple[int, ...]:
+    def _artifact_token_ids(self, artifact: Path) -> tuple[int, ...]:
         """Recover the prompt token IDs from the engine-native blob.
 
         llama-server writes a sequence-state file, whose envelope carries the exact token
         IDs. Reusing them is what makes reuse verifiable rather than assumed.
         """
         try:
-            blob = art.opaque
-            packed = ggsq_envelope.parse_file_envelope(blob).token_ids
+            head = container.read_payload_prefix(artifact, 65536)
+            packed = ggsq_envelope.parse_file_envelope(head).token_ids
             return ggsq_envelope.decode_prompt_tokens(packed)
         except (ggsq_envelope.EnvelopeError, container.ContainerError):
             return ()
