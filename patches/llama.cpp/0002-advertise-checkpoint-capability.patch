@@ -15,9 +15,7 @@ rather than the behaviour.
                    checkpoint's n_tokens, pos_min and pos_max
 
 The reported coverage lets an importer check declared coverage against
-observed reuse and fail closed when they disagree.
----
---- a/b/tools/server/server-task.h	2026-08-29 04:43:42.675963259 -0400
+--- a/tools/server/server-task.h	2026-08-29 04:43:42.675963259 -0400
 +++ b/tools/server/server-task.h	2026-08-29 04:43:42.729370100 -0400
 @@ -526,6 +526,14 @@
      size_t n_bytes;
@@ -34,7 +32,7 @@ observed reuse and fail closed when they disagree.
      virtual json to_json() override;
  };
  
---- a/b/tools/server/server-task.cpp	2026-08-29 04:43:42.677963273 -0400
+--- a/tools/server/server-task.cpp	2026-08-29 04:43:42.677963273 -0400
 +++ b/tools/server/server-task.cpp	2026-08-29 04:43:42.731777100 -0400
 @@ -1626,6 +1626,11 @@
              { "filename",  filename },
@@ -60,8 +58,8 @@ observed reuse and fail closed when they disagree.
          { "timings", {
              { "restore_ms", t_ms }
          }},
---- a/b/tools/server/server-context.cpp	2026-08-29 04:43:42.680963295 -0400
-+++ b/tools/server/server-context.cpp	2026-08-29 04:44:04.471340200 -0400
+--- a/tools/server/server-context.cpp	2026-08-29 04:43:42.680963295 -0400
++++ b/tools/server/server-context.cpp	2026-08-29 05:13:41.845835000 -0400
 @@ -2676,6 +2676,17 @@
                      res->n_tokens = slot->prompt.tokens.size();
                      res->n_bytes  = nwrite + nwrite_ckpt;
@@ -98,7 +96,7 @@ observed reuse and fail closed when they disagree.
                      queue_results.send(std::move(res));
                  } break;
              case SERVER_TASK_TYPE_SLOT_ERASE:
-@@ -4721,6 +4743,16 @@
+@@ -4721,6 +4743,26 @@
          { "eos_token",                   meta.eos_token_str },
          { "build_info",                  meta.build_info },
          { "is_sleeping",                 is_sleeping },
@@ -109,9 +107,19 @@ observed reuse and fail closed when they disagree.
 +        { "slot_checkpoint_persistence",         true },
 +        { "slot_checkpoint_format",              "sckp/1" },
 +        { "sequence_state_version",              LLAMA_STATE_SEQ_VERSION },
++        // SERIALIZATION is what the format writes; SUPPORT is what has been shown to work.
++        // A compile-time struct member is not a runtime capability, so these are reported
++        // separately and a consumer must not conflate them.
++        { "sckp_serializes_target_state",        true },
++        { "sckp_serializes_draft_state",         true },
++        { "sckp_serializes_speculative_state",   true },
++        // Behavioural support. Target state has a passing restart test on the non-MTP
++        // path. Draft and speculative restoration have never been exercised here, so they
++        // are reported false until a retained test proves them - advertising them as true
++        // would let a consumer enable a configuration nothing has verified.
 +        { "supports_target_checkpoint_state",    true },
-+        { "supports_draft_checkpoint_state",     true },
-+        { "supports_speculative_checkpoint_state", true },
++        { "supports_draft_checkpoint_state",     false },
++        { "supports_speculative_checkpoint_state", false },
          { "cors_proxy_enabled",          params.ui_mcp_proxy },
      };
      if (params.use_jinja) {

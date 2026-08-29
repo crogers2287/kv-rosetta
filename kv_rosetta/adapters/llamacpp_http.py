@@ -140,10 +140,46 @@ class LlamaCppHTTPAdapter(Adapter):
         return {
             "format": str(props.get("slot_checkpoint_format", "")),
             "sequence_state_version": props.get("sequence_state_version"),
+            # PROVEN behaviour, not what the format happens to serialize.
             "target": bool(props.get("supports_target_checkpoint_state")),
             "draft": bool(props.get("supports_draft_checkpoint_state")),
             "speculative": bool(props.get("supports_speculative_checkpoint_state")),
+            # What the on-disk format carries, reported separately because a struct member
+            # is source evidence and never a runtime capability.
+            "serializes": {
+                "target": bool(props.get("sckp_serializes_target_state")),
+                "draft": bool(props.get("sckp_serializes_draft_state")),
+                "speculative": bool(props.get("sckp_serializes_speculative_state")),
+            },
         }
+
+    #: Sequence-state versions this adapter has been exercised against.
+    supported_sequence_versions: frozenset[int] = frozenset({2, 3})
+    #: Checkpoint formats this adapter understands.
+    supported_checkpoint_formats: frozenset[str] = frozenset({"sckp/1"})
+
+    def _protocol_is_complete(self, protocol: dict[str, Any]) -> tuple[bool, str]:
+        """Whether the advertised protocol is complete AND exact enough to act on.
+
+        Absent, partial, malformed or unrecognised protocols all fail closed. Support is
+        never enabled by an architecture name, a filename, a strings match, an artifact
+        size, or the mere presence of the SCKP magic.
+        """
+        if not protocol:
+            return False, "runtime advertises no checkpoint-persistence protocol"
+        fmt = protocol.get("format") or ""
+        if fmt not in self.supported_checkpoint_formats:
+            return False, (f"unrecognised checkpoint format {fmt!r}; this adapter "
+                           f"understands {sorted(self.supported_checkpoint_formats)}")
+        version = protocol.get("sequence_state_version")
+        if not isinstance(version, int) or version not in self.supported_sequence_versions:
+            return False, (f"unsupported sequence-state version {version!r}; this adapter "
+                           f"has been exercised against "
+                           f"{sorted(self.supported_sequence_versions)}")
+        if not protocol.get("target"):
+            return False, ("runtime does not advertise PROVEN target checkpoint state; "
+                           "serialization alone is not a capability")
+        return True, ""
 
     def opaque_format(self) -> str:
         """The artifact's representation label.
@@ -263,13 +299,19 @@ class LlamaCppHTTPAdapter(Adapter):
             # A hybrid model is supportable only when the RUNTIME advertises checkpoint
             # persistence. Architecture alone decides nothing in either direction.
             protocol = self.checkpoint_protocol()
-            if protocol and protocol.get("target"):
+            complete, protocol_reason = self._protocol_is_complete(protocol)
+            if complete:
                 notes.append(
                     f"hybrid architecture supported via advertised {protocol['format']} "
-                    f"checkpoint persistence")
+                    f"checkpoint persistence (target state proven; "
+                    f"draft={protocol['draft']} speculative={protocol['speculative']})")
                 reusable = True
+                if not protocol["draft"] or not protocol["speculative"]:
+                    notes.append(
+                        "draft/speculative checkpoint restoration is not advertised as "
+                        "proven; a configuration using them is not covered")
             else:
-                notes.append(f"opaque transfer withheld: {why}")
+                notes.append(f"opaque transfer withheld: {protocol_reason or why}")
                 can_slot = False
         reps = frozenset({Representation.OPAQUE}) if can_slot else frozenset()
         return Capabilities(

@@ -40,10 +40,18 @@ class UnpatchedHybridFailsClosed(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # No server contact here: setUpClass precedes setUp, so a request would turn a
+        # wrong-binary runtime into an ERROR rather than the intended skip.
         cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
-        cls.arch = gguf.architecture(cls.adapter.props().get("model_path", ""))
+
+    @property
+    def arch(self):
+        return gguf.architecture(self.adapter.props().get("model_path", ""))
+
+    @property
+    def ids(self):
         text = "In the year 1892 the naturalist recorded. " * 30
-        cls.ids = cls.adapter._post("/tokenize", {"content": text})["tokens"][:_PROMPT_TOKENS]
+        return self.adapter._post("/tokenize", {"content": text})["tokens"][:_PROMPT_TOKENS]
 
     def _complete(self, slot=0):
         return self.adapter._post("/completion", {

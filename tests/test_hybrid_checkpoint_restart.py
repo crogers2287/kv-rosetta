@@ -40,10 +40,19 @@ class PatchedHybridCheckpointReuse(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Deliberately does not contact the server. setUpClass runs before setUp, so any
+        # request here turns an unreachable or wrong-binary runtime into an ERROR instead
+        # of the skip the matrix is supposed to produce.
         cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
-        cls.arch = gguf.architecture(cls.adapter.props().get("model_path", ""))
+
+    @property
+    def arch(self):
+        return gguf.architecture(self.adapter.props().get("model_path", ""))
+
+    @property
+    def ids(self):
         text = "In the year 1892 the naturalist recorded. " * 30
-        cls.ids = cls.adapter._post("/tokenize", {"content": text})["tokens"][:_PROMPT_TOKENS]
+        return self.adapter._post("/tokenize", {"content": text})["tokens"][:_PROMPT_TOKENS]
 
     def _complete(self, n_predict=1):
         return self.adapter._post("/completion", {

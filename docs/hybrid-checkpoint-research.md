@@ -512,3 +512,49 @@ import(truncated)           -> ok=False, "artifact failed verification"
 advertises checkpoint persistence. Architecture decides nothing in either direction: the same
 model on an unpatched binary is still refused, which the negative control asserts from the
 other side. Both directions are retained tests.
+
+## Honest protocol semantics: serialization is not support
+
+The first version of patch 0002 reported `supports_draft_checkpoint_state` and
+`supports_speculative_checkpoint_state` as **true**, on the grounds that PR #26004 serializes
+`data_dft` and `data_spec`. That conflated two different claims. A struct member and a
+serializer are *source evidence*; a capability is *behavioural evidence*. Draft and
+speculative restoration have never been exercised on this host.
+
+The protocol now reports them separately:
+
+```
+sckp_serializes_target_state           true    <- what the format writes
+sckp_serializes_draft_state            true
+sckp_serializes_speculative_state      true
+
+supports_target_checkpoint_state       true    <- what has been shown to work
+supports_draft_checkpoint_state        false
+supports_speculative_checkpoint_state  false
+```
+
+The adapter consumes only the `supports_*` fields, and says so in its notes:
+
+```
+hybrid architecture supported via advertised sckp/1 checkpoint persistence
+  (target state proven; draft=False speculative=False)
+draft/speculative checkpoint restoration is not advertised as proven;
+  a configuration using them is not covered
+```
+
+### Fail-closed gating, tested offline
+
+`_protocol_is_complete()` requires a recognised format, a sequence-state version this adapter
+has been exercised against, and *proven* target support. `tests/test_protocol_gating.py`
+covers the shapes that must never enable hybrid import, using a stubbed `/props` so every
+case runs without a GPU: absent protocol, `persistence=false`, unknown format `sckp/9`,
+empty format, unsupported version 99, a version that is `"3"` or `None` or `3.5` or `[3]`,
+and - the case this split exists for - `serializes_target=true` with
+`supports_target=false`, which is refused with *"serialization alone is not a capability"*.
+
+### A test-harness bug this surfaced
+
+`setUpClass` contacted the server to fetch the architecture and tokenize a prompt. Because
+`setUpClass` runs before `setUp`, an unreachable or wrong-binary runtime produced an **error**
+instead of the skip the matrix exists to produce. Both hybrid test classes now do no I/O in
+`setUpClass`; an unreachable runtime skips all ten tests cleanly.
