@@ -420,10 +420,16 @@ bailingmoe3, kimi-k3, qwen4exp, deepseek4 and minimax-01. These are hybrid atten
 recurrent (SSM) models, which is also why the per-token state is roughly 2.6x what plain
 attention KV of that geometry would be.
 
-**This is not a bug to fix.** A recurrent state is a function of the entire processed
-sequence, so it has no common-prefix semantics: there is no prefix of it to match a prompt
-against. `n_restored` equals the saved cell count and `cache_n` is still zero because the
-restore genuinely succeeded and the reuse genuinely cannot happen.
+**Correction (see §17 and `hybrid-checkpoint-research.md`).** This section originally
+concluded that hybrid restoration is impossible. That was too broad. A recurrent state
+captured after an *exact* token sequence is deterministic and restorable; what cannot be done
+is reconstructing it from ordinary KV cells or slicing it to an arbitrary earlier prefix.
+
+The accurate statement is narrower: **current llama.cpp slot persistence omits the
+checkpoint state that hybrid and recurrent models require.** `n_restored` equals the saved
+cell count and `cache_n` is still zero because the sequence cells were restored and the
+checkpoint the server actually consults was never saved. The observed behaviour below is
+unchanged; only this interpretation is corrected.
 
 ### The fail-closed response
 
@@ -550,13 +556,17 @@ them. Any future support for hybrid models has to carry that state, not just the
 
 ### What would have to change
 
-The HTTP slot API exposes no way to save or restore context checkpoints, so this is not
-something an adapter can work around. Supporting hybrid models over this seam would need
-llama.cpp to include checkpoints in the sequence state, or to expose them separately. Until
-then the honest position is the one the code now takes: probe the architecture and withhold
-the capability.
+The HTTP slot API exposes no way to save or restore context checkpoints, so no adapter can
+work around it from outside. Supporting hybrid models over this seam needs llama.cpp to
+persist checkpoints alongside the sequence state - which is a missing feature with an open
+upstream issue (ggml-org/llama.cpp#25913), not a law of the architecture.
 
-The classification is therefore **proven by the runtime's own trace**, not inferred.
+Until a patched runtime advertises a checkpoint-persistence format, the code keeps the
+refusal: probe the architecture and withhold the capability. The pinned source map, the
+correction to the earlier interpretation, and the retained negative control are in
+`hybrid-checkpoint-research.md`.
+
+The mechanism is **proven by the runtime's own trace and its source**, not inferred.
 
 ## 16. P2 completed for the measurable model: three repetitions, medians and ranges
 

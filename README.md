@@ -109,12 +109,14 @@ Two results matter more than the speedup:
 
 ### Known limits
 
-- **Hybrid and recurrent architectures cannot reuse a restored prefix at all.** llama.cpp
-  needs a *context checkpoint* for those, and checkpoints are server-side state that
-  `llama_state_seq_save_file` does not carry. The runtime says so itself: *"forcing full
-  prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent
-  memory)"*. The adapter probes `general.architecture` and withholds the capability rather
-  than advertising something the runtime accepts but cannot honour.
+- **Hybrid and recurrent architectures cannot reuse a restored prefix on an unpatched
+  runtime.** Not because their state is unrestorable - state after an exact token sequence is
+  deterministic - but because llama.cpp's slot save omits the *context checkpoint* those
+  models need, and its restore clears the checkpoint list. The runtime says so itself:
+  *"forcing full prompt re-processing due to lack of cache data (likely due to SWA or
+  hybrid/recurrent memory)"*. Upstream issue ggml-org/llama.cpp#25913. Until a patched build
+  advertises checkpoint persistence, the adapter probes `general.architecture` and withholds
+  the capability; the failure is retained as a live negative control.
 - **Large-model economics are unmeasured.** Every model above 3 GB on the development host
   is `qwen35`/`qwen35moe`, all hybrid.
 - **Not implemented:** canonical extraction of llama.cpp state, cross-backend transfer,

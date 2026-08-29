@@ -102,6 +102,29 @@ to a green suite.
   and the Docker registry is unreachable from this shell, so numpy-dependent modules are
   syntax-checked in-sandbox and unit-tested on the host.
 
+### REQ-003 — Persist hybrid context checkpoints (research)
+
+Source: steer branch `codex/steer-hybrid-checkpoint-persistence` (bdaa391), which supersedes
+the conclusion that hybrid architectures are a dead end.
+
+| Item | Status | Evidence |
+|---|---|---|
+| R0. Pin source truth at the exact revision | ✅ done | `docs/hybrid-checkpoint-research.md`: llama.cpp `ca3d5a3`, binary `b1-3e73446`, sequence-state version 2 emitted vs 3 declared |
+| R0. Retain the unpatched failure as a live negative control | ✅ done | `tests/test_hybrid_negative_control.py`, 5 tests passing against a live `qwen35` server |
+| Correct the earlier over-broad interpretation | ✅ done | findings §13/§15, README and `gguf.py` now state the narrower truth; refusal behaviour unchanged |
+| R1. Choose the smallest correct llama.cpp persistence patch | 🔴 next | Audit issue #25913 options A (sidecar) and B (serialize `server_prompt_cache_state`) |
+| R2–R10 | 🔴 outstanding | Gated behind R1 |
+
+#### Correction recorded
+
+I had concluded hybrid restoration was impossible because recurrent state "has no prefix to
+match against". Too broad. State after an **exact** token sequence is deterministic and
+restorable; llama.cpp simply does not persist the context checkpoint those models resume
+from. Source-confirmed at `ca3d5a3`: the save handler serialises only `prompt.tokens`, and
+the restore handler calls `slot->prompt.clear()`, which drops `checkpoints`.
+
+**REQ-003 status: IN-PROGRESS.**
+
 **REQ-002 status: IN-PROGRESS** — core modules landed and verified; runtime adapters (M4a/b/c) next.
 
 ### REQ-001 — Start portable KV Rosetta core

@@ -18,9 +18,11 @@ _STRING = 8
 _ARRAY = 9
 
 #: Architectures llama.cpp classifies as hybrid attention + recurrent, mirroring
-#: llm_arch_is_hybrid() in src/llama-arch.cpp. A recurrent state is a function of the whole
-#: processed sequence, so it has no common-prefix semantics: a restored cache cannot be
-#: matched against a prompt prefix the way an attention KV cache can.
+#: llm_arch_is_hybrid() in src/llama-arch.cpp. These models resume from a context
+#: CHECKPOINT rather than from KV cells alone, and llama.cpp's slot save does not persist
+#: checkpoints (upstream issue #25913), so a restored cache reports every cell back and
+#: reuses none of it. The state itself is restorable after an exact token sequence; the
+#: persistence seam is what is missing.
 HYBRID_ARCHITECTURES = frozenset({
     "jamba", "falcon-h1", "plamo2", "granitehybrid", "lfm2", "lfm2moe",
     "nemotron_h", "nemotron_h_moe", "qwen3next", "kimi-linear", "bailingmoe3",
@@ -99,7 +101,7 @@ def supports_prefix_reuse(arch: str) -> tuple[bool, str]:
         return False, (f"{arch} is recurrent: its state depends on the whole sequence, "
                        f"so a restored cache has no reusable prompt prefix")
     if arch in HYBRID_ARCHITECTURES:
-        return False, (f"{arch} is a hybrid attention+recurrent architecture: the "
-                       f"recurrent state is a function of the entire processed sequence, "
-                       f"so a restored cache cannot be matched against a prompt prefix")
+        return False, (f"{arch} is a hybrid attention+recurrent architecture: it resumes "
+                       f"from a context checkpoint, and this runtime's slot save does not "
+                       f"persist checkpoints, so a restored cache reuses nothing")
     return True, "ok"
