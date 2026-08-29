@@ -1007,3 +1007,53 @@ exists for anyone who can run it.
 Status: **measured once on this host** (real-artifact decode). **Proven by retained test**:
 the synthetic decoder suite, 589 offline. **Untested**: a real *hybrid* artifact, whose body
 continues into recurrent state and checkpoints — that needs the 27B and a GPU window.
+
+## REQ-036 — One cache file moves between ROCm/HIP and Vulkan, both directions
+
+The project's headline claim, tested against the hardware rather than argued: the same cache
+file written on one compute backend restores on another.
+
+Three llama.cpp builds now exist at **one source revision** (`ca3d5a3e1`, build 151): HIP for
+gfx1030, Vulkan (RADV), and the existing CUDA control. That matters more than it sounds. An
+earlier attempt at this test restored a v3 state file into a binary compiled months earlier,
+which rejected it for the **state-file version**, and the result read as "cross-backend does
+not work" until the server log was read.
+
+Both builds needed a workaround unrelated to this project: `~/.cache/ccache/tmp` is owned by
+**root** and not writable, which fails every compile with `Permission denied`. Builds here
+pointed `CCACHE_DIR` elsewhere rather than touching a root-owned directory. **This will break
+other builds on this host until it is fixed** — the fix is `sudo rm -rf ~/.cache/ccache/tmp`.
+
+Run: one vacant W6800 (rocm index 1 / `Vulkan2`), 128 prompt tokens, qwen2 Q4_K_M. The 3090s
+were left alone — vLLM holds both, ~1.1 GiB free each.
+
+| direction | reused | text | token ids |
+|---|---|---|---|
+| HIP → Vulkan | **127 / 128** | identical | identical |
+| Vulkan → HIP | **127 / 128** | identical | identical |
+
+The logprob vectors are *not* identical, and the first version of this record could only say
+so as a boolean. That cannot separate twelfth-decimal kernel noise from a restore that put
+wrong numbers in the cache, so the record now decomposes it:
+
+| comparison | max logprob delta | top-1 agreement |
+|---|---|---|
+| restore of a foreign cache vs local cold prefill | 0.364 | 1.00 |
+| two cold runs, different backends, no cache at all | 0.375 | 1.00 |
+
+**Moving a cache across backends costs about what the two backends already differ by on their
+own.** Neither number means anything without the other, which is why both are recorded.
+
+Two measurement bugs were fixed to get there. The delta first folded top-k *membership*
+changes into itself as infinity — honest, but it saturated and hid how closely every shared
+alternative agreed; membership differences are now counted separately. And the run crashed
+*after* both transfers succeeded, on an undefined name left by a refactor in the code that
+assembles the record — ten minutes of GPU time spent and nothing written.
+`tests/test_no_undefined_names.py` now scans every module and script for that class of fault.
+
+Status: **measured once on this host** — HIP↔Vulkan, both directions, 128 tokens.
+**Proven by retained test**: the revision guard, the divergence arithmetic, the
+undefined-name scan (752 offline tests). **Untested**: CUDA↔anything, which needs a 3090 slot
+that vLLM currently holds; a same-backend save-and-restore control, which would separate the
+cost of restoring at all from the cost of restoring something foreign; anything above 128
+tokens on this pair. Top-1 agreement is over 8 generated positions — a small sample.
