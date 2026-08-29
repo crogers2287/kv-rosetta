@@ -40,6 +40,13 @@ PROMPT_TOKENS = 256
 
 #: The measured uncovered tail is 4; 8 is the working ceiling from the prior steer.
 MAX_UNCOVERED_TAIL = 8
+
+#: Alternatives requested per generated token.
+N_PROBS = 5
+
+#: Restoring a checkpoint should reproduce the same forward pass, so the vectors are
+#: expected to be identical; the tolerance covers only nondeterministic reduction order.
+LOGPROB_TOLERANCE = 1e-6
 # The production 27B lives on the rclone VFS mount, which reads well under 100 MB/s
 # cold. The first load of a leg warms it; later loads are local-cache speed.
 BOOT_TIMEOUT = 1800
@@ -95,6 +102,59 @@ def sha256_file(path: Path, chunk: int = 4 << 20) -> str:
     return digest.hexdigest()
 
 
+def git_state(tree: str) -> dict:
+    """HEAD and working-tree state of a source tree, so a build is identifiable.
+
+    A patched tree carries its patches as uncommitted changes, so HEAD alone does not
+    describe it. The diff digest does.
+    """
+    def run(*args):
+        result = subprocess.run(["git", "-C", tree, *args], capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else None
+
+    head = (run("rev-parse", "HEAD") or "").strip()
+    diff = run("diff", "HEAD")
+    return {
+        "tree": tree,
+        "head": head or None,
+        "worktree_diff_sha256": (hashlib.sha256(diff.encode()).hexdigest()
+                                 if diff else None),
+        "worktree_clean": diff == "" if diff is not None else None,
+    }
+
+
+def build_flags(binary: Path) -> dict:
+    """The cmake settings a build was configured with, read from its CMakeCache.txt."""
+    cache = binary.parent.parent / "CMakeCache.txt"
+    if not cache.is_file():
+        return {}
+    wanted = ("CMAKE_BUILD_TYPE", "GGML_CUDA", "GGML_CCACHE", "LLAMA_CURL",
+              "CMAKE_CUDA_ARCHITECTURES", "GGML_NATIVE")
+    out = {}
+    for line in cache.read_text(errors="replace").splitlines():
+        name, _, value = line.partition(":")
+        if name in wanted:
+            out[name] = value.partition("=")[2]
+    return out
+
+
+def require_clean_worktree() -> str:
+    """Refuse to produce evidence from an uncommitted implementation.
+
+    The previous record named a commit that did not contain the acceptance logic, because
+    the modified runner was executed before it was committed. A record whose runner cannot
+    be recovered from the named commit is not reproducible evidence.
+    """
+    dirty = subprocess.run(["git", "status", "--porcelain"],
+                           capture_output=True, text=True).stdout.strip()
+    if dirty:
+        raise SystemExit(
+            "refusing to run: the worktree has uncommitted changes, so the record could "
+            "not name the code that produced it. Commit the runner first.\n" + dirty)
+    return subprocess.run(["git", "rev-parse", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
 class Server:
     def __init__(self, binary: str, model: str, slots: str, port: int, log: Path):
         self.binary, self.model, self.slots, self.port = binary, model, slots, port
@@ -137,13 +197,13 @@ class Server:
         if self.healthy():
             raise RuntimeError(f"{self.url} already answers; refusing to attribute its "
                                f"behaviour to this run")
+        self.argv = [self.binary, "--model", self.model, "--host", "127.0.0.1",
+                     "--port", str(self.port), "-ngl", "99", "-c", "8192",
+                     "--parallel", "1", "-fa", "on", "--split-mode", "layer",
+                     "--tensor-split", "1,1",
+                     "--slot-save-path", self.slots.rstrip("/") + "/", "--no-warmup"]
         with open(self.log, "wb") as out:
-            self.proc = subprocess.Popen(
-                [self.binary, "--model", self.model, "--host", "127.0.0.1",
-                 "--port", str(self.port), "-ngl", "99", "-c", "8192", "--parallel", "1",
-                 "-fa", "on", "--split-mode", "layer", "--tensor-split", "1,1",
-                 "--slot-save-path", self.slots.rstrip("/") + "/", "--no-warmup"],
-                stdout=out, stderr=subprocess.STDOUT)
+            self.proc = subprocess.Popen(self.argv, stdout=out, stderr=subprocess.STDOUT)
         started = time.time()
         deadline = started + BOOT_TIMEOUT
         while time.time() < deadline:
@@ -224,7 +284,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         text = "In the year 1892 the naturalist recorded. " * 40
         ids = first.post("/tokenize", {"content": text})["tokens"][:PROMPT_TOKENS]
         request = {"prompt": ids, "n_predict": 8, "temperature": 0.0, "top_k": 1,
-                   "n_probs": 5, "cache_prompt": True, "id_slot": 0}
+                   "n_probs": N_PROBS, "cache_prompt": True, "id_slot": 0}
 
         first.post("/slots/0?action=erase", {})
         t0 = time.time()
@@ -279,11 +339,45 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         return [c["id"] for c in response.get("completion_probabilities", [])]
 
     def probs(response):
+        """The per-token alternative vectors, from the field llama.cpp actually uses.
+
+        With the default response contract the alternatives are under `top_logprobs` and
+        carry `logprob`; `top_probs`/`prob` appear only when post_sampling_probs=true is
+        requested. Reading the wrong key yields a list of empty dicts, and comparing two
+        such lists passes while comparing nothing at all.
+        """
         out = []
         for entry in response.get("completion_probabilities", []):
-            top = entry.get("top_probs", entry.get("probs", []))
-            out.append({str(t["id"]): t.get("prob", t.get("logprob")) for t in top})
+            top = entry.get("top_logprobs")
+            if top is None:
+                raise RuntimeError(
+                    f"completion entry has no top_logprobs; keys were {sorted(entry)}. "
+                    f"Refusing to compare vectors that were never returned.")
+            out.append({int(t["id"]): float(t["logprob"]) for t in top})
         return out
+
+    def check_vectors(vectors, label):
+        if len(vectors) != len(toks(warm)):
+            raise RuntimeError(f"{name}: {label} has {len(vectors)} vectors for "
+                               f"{len(toks(warm))} tokens")
+        for i, (vector, token) in enumerate(zip(vectors, toks(warm))):
+            if not vector:
+                raise RuntimeError(f"{name}: {label} vector {i} is empty")
+            if token not in vector:
+                raise RuntimeError(f"{name}: {label} vector {i} omits its own token {token}")
+            if len(vector) > N_PROBS:
+                raise RuntimeError(f"{name}: {label} vector {i} has {len(vector)} entries, "
+                                   f"more than the {N_PROBS} requested")
+        return vectors
+
+    def vectors_agree(a, b):
+        """Equal keys per position and logprobs within the declared tolerance."""
+        for va, vb in zip(a, b):
+            if set(va) != set(vb):
+                return False
+            if any(abs(va[k] - vb[k]) > LOGPROB_TOLERANCE for k in va):
+                return False
+        return True
 
     # The acceptance criteria, enforced rather than merely recorded. A record that reports
     # numbers without checking them is a log, not a gate.
@@ -294,8 +388,11 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         problems.append("restored output differs from the cold run")
     if toks(native) != toks(warm) or native["content"] != warm["content"]:
         problems.append("restored output differs from native in-memory reuse")
-    if probs(native) != probs(warm):
-        problems.append("restored probability vectors differ from native in-memory reuse")
+    native_vectors = check_vectors(probs(native), "native")
+    warm_vectors = check_vectors(probs(warm), "restored")
+    if not vectors_agree(native_vectors, warm_vectors):
+        problems.append("restored probability vectors differ from native in-memory reuse "
+                        f"by more than {LOGPROB_TOLERANCE}")
     if warm_cache_n + warm_prompt_n != len(ids):
         problems.append(f"cache_n + prompt_n = {warm_cache_n + warm_prompt_n}, not {len(ids)}")
     if expect_patched:
@@ -325,6 +422,9 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         "expect_patched": expect_patched,
         "binary": binary,
         "binary_digests": binary_digests(Path(binary)),
+        "build_flags": build_flags(Path(binary)),
+        "launch_argv": first.argv,
+        "second_launch_argv": second.argv,
         "build_info": props.get("build_info"),
         "protocol": protocol,
         "model_path": model,
@@ -354,7 +454,9 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
                                "prompt_n": warm["timings"]["prompt_n"],
                                "prompt_ms": warm["timings"]["prompt_ms"],
                                "tokens": toks(warm), "content": warm["content"],
-                               "top_probs": probs(warm)},
+                               "top_logprobs": warm_vectors},
+        "native_reuse_top_logprobs": native_vectors,
+        "logprob_tolerance": LOGPROB_TOLERANCE,
         "restore_wall_s": restore_wall,
     }
 
@@ -367,7 +469,10 @@ def main() -> int:
     ap.add_argument("--slots", required=True)
     ap.add_argument("--out", default="bench/production-27b-matrix.json")
     ap.add_argument("--patches-dir", default="patches/llama.cpp")
+    ap.add_argument("--deployment-note", default="",
+                    help="whether this exact model file is the deployed production SKU")
     args = ap.parse_args()
+    repo_commit = require_clean_worktree()
 
     log_dir = Path(args.slots).parent / "matrix-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -388,8 +493,15 @@ def main() -> int:
 
     record = {
         "kind": "production-27b-paired-restart-matrix",
-        "repo_commit": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
-                                      text=True).stdout.strip(),
+        # Proven by the runner digest, not merely asserted: the worktree was clean, so this
+        # commit contains the exact file below.
+        "repo_commit": repo_commit,
+        "runner_sha256": sha256_file(Path(__file__).resolve()),
+        "source_trees": {
+            "patched": git_state(str(Path(args.patched).parent.parent.parent)),
+            "unpatched": git_state(str(Path(args.unpatched).parent.parent.parent)),
+        },
+        "deployment_identity": args.deployment_note,
         "patches": patches,
         "prompt_tokens": PROMPT_TOKENS,
         "legs": legs,
