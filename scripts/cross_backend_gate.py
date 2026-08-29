@@ -226,8 +226,9 @@ def main() -> int:
 
     a, b = parse(args.backend_a, args.env_a), parse(args.backend_b, args.env_b)
     a["args"], b["args"] = tuple(args.args_a.split()), tuple(args.args_b.split())
-    require_one_revision({a["label"]: source_revision(Path(a["binary"])),
-                          b["label"]: source_revision(Path(b["binary"]))})
+    llama_revision = require_one_revision(
+        {a["label"]: source_revision(Path(a["binary"])),
+         b["label"]: source_revision(Path(b["binary"]))})
 
     slots = Path(args.slots)
     slots.mkdir(parents=True, exist_ok=True)
@@ -250,7 +251,7 @@ def main() -> int:
         "warning": "RESEARCH ONLY. Same model, same cache dtype, different compute backend.",
         "repo_commit": repo_commit,
         "runner_sha256": sha256_file(Path(__file__).resolve()),
-        "llama_source_revision": next(iter(revisions.values())),
+        "llama_source_revision": llama_revision,
         "model_path": args.model,
         "architecture": gguf.architecture(args.model),
         "prompt_tokens": args.prompt_tokens,
