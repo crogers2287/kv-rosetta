@@ -382,3 +382,148 @@ class CheckpointAppendixTest(unittest.TestCase):
         with self.assertRaises(GGSQError) as caught:
             self.parse(bytes(body))
         self.assertIn("impossible extent", str(caught.exception))
+
+
+class DequantisationTest(unittest.TestCase):
+    """The oracle is constructed, not taken from the decoder.
+
+    Known float values are packed exactly as ggml packs them, then decoded and compared to
+    the values we started from. A round trip through the decoder alone would only prove it
+    is self-consistent, which is what the 12-byte checkpoint record was.
+    """
+
+    def setUp(self):
+        import numpy as np
+        self.np = np
+
+    def test_f16_recovers_exactly(self):
+        values = self.np.array([1.0, -2.5, 3.75, 0.0], dtype=self.np.float16)
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        out = dequantise(values.tobytes(), F16, 4)
+        self.np.testing.assert_array_equal(out, values.astype(self.np.float32))
+
+    def test_f32_recovers_exactly(self):
+        values = self.np.array([1.0, -2.5, 1e-8, 12345.678], dtype=self.np.float32)
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        self.np.testing.assert_array_equal(dequantise(values.tobytes(), 0, 4), values)
+
+    def test_bf16_recovers_its_representable_values(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        originals = self.np.array([1.0, -2.0, 4.0, 0.5], dtype=self.np.float32)
+        packed = (originals.view(self.np.uint32) >> 16).astype("<u2").tobytes()
+        self.np.testing.assert_array_equal(dequantise(packed, 30, 4), originals)
+
+    def test_q8_0_recovers_within_its_own_quantisation_step(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        values = self.np.array([1.5, -2.0, 0.0, 3.25] * 8, dtype=self.np.float32)
+        scale = float(self.np.abs(values).max() / 127.0)
+        quantised = self.np.round(values / scale).astype(self.np.int8)
+        raw = self.np.float16(scale).tobytes() + quantised.tobytes()
+        out = dequantise(raw, Q8_0, 32)
+        # The bound is the format's own step, not a tolerance chosen to make it pass.
+        self.assertLessEqual(float(self.np.abs(out - values).max()), scale)
+
+    def test_q4_0_recovers_within_its_own_quantisation_step(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        scale = 0.5
+        nibbles = self.np.arange(32) % 16
+        expected = scale * (nibbles.astype(self.np.float32) - 8.0)
+        low, high = nibbles[:16], nibbles[16:]
+        packed = (low | (high << 4)).astype(self.np.uint8)
+        raw = self.np.float16(scale).tobytes() + packed.tobytes()
+        out = dequantise(raw, 2, 32)
+        self.np.testing.assert_allclose(out, expected, atol=1e-3)
+
+    def test_a_payload_of_the_wrong_length_is_refused(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        with self.assertRaises(GGSQError) as caught:
+            dequantise(b"\x00" * 10, Q8_0, 32)
+        self.assertIn("expected", str(caught.exception))
+
+    def test_an_element_count_off_the_block_boundary_is_refused(self):
+        """Isolates the block-multiple check from the payload-length check.
+
+        33 q8_0 elements truncate to one block, so a 34-byte payload satisfies the length
+        check and only the block check can catch it. Without this the guard broke no test.
+        """
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        with self.assertRaises(GGSQError) as caught:
+            dequantise(b"\x00" * 34, Q8_0, 33)
+        self.assertIn("not a multiple", str(caught.exception))
+
+    def test_an_unimplemented_quantisation_is_refused_not_approximated(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import dequantise
+        with self.assertRaises(GGSQError) as caught:
+            dequantise(b"\x00" * (32 // 32 * 20), 3, 32)      # q4_1
+        self.assertIn("refusing to approximate", str(caught.exception))
+
+
+class MaterialiseTest(unittest.TestCase):
+    """Canonical ordering, including normalisation of the transposed value layout."""
+
+    def setUp(self):
+        import numpy as np
+        self.np = np
+
+    def span(self, offset, nbytes, n_elements, transposed=False):
+        from kv_rosetta.adapters.llamacpp_ggsq import TensorSpan
+        return TensorSpan(layer_index=0, kind="k", type_id=F16, type_name="f16",
+                          row_size=nbytes, n_elements=n_elements, offset=offset,
+                          nbytes=nbytes, transposed=transposed)
+
+    def test_row_major_values_land_in_token_head_dim_order(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import materialise
+        cells, heads, dim = 3, 2, 4
+        values = self.np.arange(cells * heads * dim, dtype=self.np.float16)
+        handle = io.BytesIO(values.tobytes())
+        out = materialise(handle, self.span(0, values.nbytes, heads * dim),
+                          n_head=heads, head_dim=dim, cell_count=cells)
+        self.assertEqual(out.shape, (cells, heads, dim))
+        # Oracle: element (t, h, d) is the (t*heads*dim + h*dim + d)-th written value.
+        for t in range(cells):
+            for h in range(heads):
+                for d in range(dim):
+                    self.assertEqual(out[t, h, d], t * heads * dim + h * dim + d)
+
+    def test_a_transposed_value_span_is_normalised_to_the_same_order(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import materialise
+        cells, heads, dim = 3, 2, 4
+        width = heads * dim
+        logical = self.np.arange(cells * width, dtype=self.np.float16).reshape(cells, width)
+        # The writer stores transposed values as width rows of cell_count elements.
+        transposed = logical.T.copy()
+        handle = io.BytesIO(transposed.tobytes())
+        out = materialise(handle, self.span(0, transposed.nbytes, width, transposed=True),
+                          n_head=heads, head_dim=dim, cell_count=cells)
+        self.assertEqual(out.shape, (cells, heads, dim))
+        self.np.testing.assert_array_equal(
+            out.reshape(cells, width), logical.astype(self.np.float32),
+            "the transposed layout was not normalised back to token-major order")
+
+    def test_geometry_that_does_not_match_the_span_is_refused(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import materialise
+        values = self.np.zeros(24, dtype=self.np.float16)
+        handle = io.BytesIO(values.tobytes())
+        with self.assertRaises(GGSQError) as caught:
+            materialise(handle, self.span(0, values.nbytes, 8),
+                        n_head=3, head_dim=4, cell_count=3)     # 12 != 8
+        self.assertIn("does not match the declared geometry", str(caught.exception))
+
+    def test_a_short_payload_is_refused(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import materialise
+        handle = io.BytesIO(b"\x00" * 8)
+        with self.assertRaises(GGSQError) as caught:
+            materialise(handle, self.span(0, 64, 8), n_head=2, head_dim=4, cell_count=4)
+        self.assertIn("short by", str(caught.exception))
+
+    def test_invalid_head_geometry_is_refused(self):
+        from kv_rosetta.adapters.llamacpp_ggsq import materialise
+        handle = io.BytesIO(b"\x00" * 16)
+        for heads, dim in ((0, 4), (2, 0), (-1, 4)):
+            with self.subTest(heads=heads, dim=dim):
+                with self.assertRaises(GGSQError) as caught:
+                    materialise(handle, self.span(0, 16, 8), n_head=heads, head_dim=dim,
+                                cell_count=1)
+                # Assert the specific refusal: the geometry-match check fires first for
+                # these shapes, so without this the head-geometry guard proved nothing.
+                self.assertIn("invalid head geometry", str(caught.exception))

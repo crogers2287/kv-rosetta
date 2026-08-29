@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
+
+if TYPE_CHECKING:
+    import numpy as np
 
 #: ggml type id -> (name, block size, bytes per block). Only types this decoder can account
 #: for are listed; an unlisted id is refused rather than guessed at, because a wrong element
@@ -356,3 +359,89 @@ def read_checkpoint_appendix(handle: BinaryIO, start: int, end: int, *,
     if reader.offset != end:
         raise GGSQError(f"checkpoint appendix ends at {reader.offset}, not at {end}")
     return blobs
+
+
+def _require_numpy():
+    try:
+        import numpy as np
+    except ImportError as exc:                     # pragma: no cover - declared dependency
+        raise GGSQError("numpy is required to materialise tensors") from exc
+    return np
+
+
+def dequantise(raw: bytes, type_id: int, n_elements: int) -> "np.ndarray":
+    """Block-quantised bytes to float32. Only formats whose layout is verified are handled.
+
+    ggml packs a scale with each block of elements; reading a block as flat bytes and
+    reinterpreting would produce plausible-looking garbage, so an unhandled type is refused
+    rather than approximated.
+    """
+    np = _require_numpy()
+    if type_id not in GGML_TYPES:
+        raise GGSQError(f"unsupported ggml type id {type_id}")
+    name, block, per_block = GGML_TYPES[type_id]
+    if n_elements % block:
+        raise GGSQError(f"{n_elements} elements is not a multiple of the {block}-element "
+                        f"block for {name}")
+    n_blocks = n_elements // block
+    expected = n_blocks * per_block
+    if len(raw) != expected:
+        raise GGSQError(f"{name} payload is {len(raw)} bytes, expected {expected}")
+
+    if block == 1:                                  # f32 / f16 / bf16 are not blocked
+        if name == "f32":
+            return np.frombuffer(raw, dtype="<f4").astype(np.float32)
+        if name == "f16":
+            return np.frombuffer(raw, dtype="<f2").astype(np.float32)
+        if name == "bf16":
+            widened = np.zeros(n_elements, dtype="<u4")
+            widened |= np.frombuffer(raw, dtype="<u2").astype("<u4") << 16
+            return widened.view("<f4").astype(np.float32)
+        raise GGSQError(f"unhandled unblocked type {name}")
+
+    data = np.frombuffer(raw, dtype=np.uint8).reshape(n_blocks, per_block)
+    scales = data[:, :2].copy().view("<f2").astype(np.float32).reshape(n_blocks, 1)
+    if name == "q8_0":
+        # struct { fp16 d; int8 qs[32]; }
+        quants = data[:, 2:].view(np.int8).astype(np.float32)
+        return (scales * quants).reshape(-1)
+    if name == "q4_0":
+        # struct { fp16 d; uint8 qs[16]; } - two 4-bit values per byte, offset by 8
+        packed = data[:, 2:]
+        low = (packed & 0x0F).astype(np.float32) - 8.0
+        high = (packed >> 4).astype(np.float32) - 8.0
+        interleaved = np.concatenate([low, high], axis=1)
+        return (scales * interleaved).reshape(-1)
+    raise GGSQError(f"dequantisation of {name} is not implemented; refusing to approximate "
+                    f"a format whose block layout has not been verified against ggml")
+
+
+def materialise(handle: BinaryIO, span: TensorSpan, *, n_head: int, head_dim: int,
+                cell_count: int) -> "np.ndarray":
+    """One span's payload as float32 in canonical (token, head, dim) order.
+
+    A transposed value span is normalised here rather than recorded as a layout variant, so
+    two artifacts of the same cache stay comparable regardless of how the source stored it.
+    """
+    np = _require_numpy()
+    if n_head <= 0 or head_dim <= 0:
+        raise GGSQError(f"invalid head geometry {n_head}x{head_dim}")
+    width = n_head * head_dim
+    handle.seek(span.offset)
+    raw = handle.read(span.nbytes)
+    if len(raw) != span.nbytes:
+        raise GGSQError(f"span at {span.offset} is short by {span.nbytes - len(raw)} bytes")
+
+    if not span.transposed:
+        if span.n_elements != width:
+            raise GGSQError(f"span width {span.n_elements} does not match the declared "
+                            f"geometry {n_head}x{head_dim}={width}")
+        values = dequantise(raw, span.type_id, cell_count * span.n_elements)
+        return values.reshape(cell_count, n_head, head_dim)
+
+    # Transposed values are stored as n_embd rows of cell_count elements each.
+    if span.n_elements != width:
+        raise GGSQError(f"transposed span embeds {span.n_elements} values but geometry "
+                        f"says {width}")
+    values = dequantise(raw, span.type_id, width * cell_count)
+    return values.reshape(width, cell_count).T.reshape(cell_count, n_head, head_dim)
