@@ -23,7 +23,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from kv_rosetta import container
+from kv_rosetta import container, weights
+from kv_rosetta.identity import CacheABIIdentity, ModelIdentity, PromptIdentity
 from kv_rosetta.adapters import ggsq_envelope
 from kv_rosetta.adapters.base import (
     Adapter,
@@ -55,6 +56,7 @@ class LlamaCppHTTPAdapter(Adapter):
         self._props: dict[str, Any] | None = None
         self._state_version: int | None = None
         self._staged: list[Path] = []
+        self._digest_cache = weights.DigestCache()
 
     def _slot(self, req_slot: int | None = None) -> int:
         """Resolve the slot every call must name explicitly.
@@ -124,29 +126,61 @@ class LlamaCppHTTPAdapter(Adapter):
 
     # -- identity ---------------------------------------------------------------
 
-    def identity(self, model: str = "") -> dict[str, str]:
-        """Identity read from the running server, never assumed from configuration."""
+    def model_identity(self, model: str = "") -> ModelIdentity:
+        """Content-derived model identity.
+
+        The weights digest comes from the bytes, not the path: renaming or relocating a
+        model must not change its identity, and different weights written behind the same
+        name must. The digest is cached against strong file metadata so a large model is
+        read once rather than on every request.
+
+        When the weights file is not reachable from this process the digest is left empty
+        rather than substituted with a path hash - an artifact that cannot prove which
+        weights produced it should be unusable, not plausibly labelled.
+        """
         props = self.props()
-        settings = props.get("default_generation_settings", {}) or {}
-        model_digest = hashlib.sha256("\x00".join([
-            str(props.get("model_path", "")).rsplit("/", 1)[-1],   # filename, not the path
-            str(props.get("chat_template", "")),
+        weights_path = str(props.get("model_path", ""))
+        weights_sha256 = ""
+        if weights_path and Path(weights_path).is_file():
+            weights_sha256 = weights.model_content_digest(weights_path, self._digest_cache)
+        tokenizer_sha256 = hashlib.sha256("\x00".join([
             str(props.get("bos_token", "")),
             str(props.get("eos_token", "")),
+            str(props.get("vocab_type", "")),
+            str(props.get("n_vocab", "")),
         ]).encode()).hexdigest()
-        cache_abi_digest = hashlib.sha256("\x00".join([
-            "llama.cpp",
-            str(props.get("build_info", "")),
+        return ModelIdentity(
+            architecture=str(props.get("model_arch", props.get("architecture", ""))),
+            weights_sha256=weights_sha256,
+            tokenizer_sha256=tokenizer_sha256,
+            chat_template_sha256=hashlib.sha256(
+                str(props.get("chat_template", "")).encode()).hexdigest(),
+        )
+
+    def cache_abi_identity(self, model: str = "") -> CacheABIIdentity:
+        props = self.props()
+        settings = props.get("default_generation_settings", {}) or {}
+        return CacheABIIdentity(
+            runtime="llama.cpp",
+            runtime_revision=str(props.get("build_info", "")),
             # The emitted state version is part of cache identity: an artifact written at
             # version 2 is refused outright by a build expecting version 3.
-            self.opaque_format() if self.slot_save_path else "",
-            str(settings.get("n_ctx", "")),
-            str(props.get("type_k", settings.get("type_k", ""))),
-            str(props.get("type_v", settings.get("type_v", ""))),
-            str(model_digest),
-        ]).encode()).hexdigest()
-        return {"model_digest": model_digest, "cache_abi_digest": cache_abi_digest,
-                "build_info": str(props.get("build_info", ""))}
+            state_format=self.opaque_format() if self.slot_save_path else "",
+            k_dtype=str(props.get("type_k", settings.get("type_k", ""))),
+            v_dtype=str(props.get("type_v", settings.get("type_v", ""))),
+            context_kind=str(settings.get("n_ctx", "")),
+            byte_order="little",
+        )
+
+    def identity(self, model: str = "") -> dict[str, str]:
+        """Identity read from the running server, never assumed from configuration."""
+        model_ident = self.model_identity(model)
+        return {
+            "model_digest": model_ident.digest(),
+            "cache_abi_digest": self.cache_abi_identity(model).digest(),
+            "build_info": str(self.props().get("build_info", "")),
+            "weights_sha256": model_ident.weights_sha256,
+        }
 
     # -- capabilities -----------------------------------------------------------
 
