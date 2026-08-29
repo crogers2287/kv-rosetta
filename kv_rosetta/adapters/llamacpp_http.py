@@ -502,6 +502,11 @@ class LlamaCppHTTPAdapter(Adapter):
 
     # -- convenience used by the parity test ------------------------------------
 
+    def tokenize(self, text: str) -> list[int]:
+        """Tokenize with the LIVE model: token IDs are model-specific, so a prefix must be
+        tokenized by the runtime that will serve it, never by an assumed tokenizer."""
+        return list(self._post("/tokenize", {"content": text}).get("tokens", []))
+
     def erase(self, slot: int | None = None) -> int:
         return int(self._post(f"/slots/{self._slot(slot)}?action=erase", {}).get("n_erased", 0))
 

@@ -74,6 +74,13 @@ class Record:
 
 
 class Store:
+    """DEPRECATED for artifact lookup: keyed on the proxy prefix fingerprint alone.
+
+    A prefix has many artifacts that differ only in encoding, cache ABI, runtime revision
+    or mapper, and this class cannot tell them apart. Use ArtifactStore, which is keyed on
+    the full composite ArtifactKey. Retained only for the prefix-level index.
+    """
+
     def __init__(self, root: Path | str | None = None) -> None:
         if root is None:
             root = default_root()
