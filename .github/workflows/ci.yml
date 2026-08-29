@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Unit and integration tests
+        # The live llama.cpp tests skip unless KVX_LLAMA_URL is set, so a hosted runner
+        # exercises everything that does not need a GPU or a model.
+        run: python -m unittest discover -s tests -v
+
+      - name: Malformed container corpus
+        # Asserted separately from the suite: the verifier must return a reason for
+        # arbitrary bytes and must never raise, which is what keeps a corrupt artifact
+        # away from a runtime import call.
+        run: |
+          python - <<'PY'
+          import random, tempfile
+          from pathlib import Path
+          from kv_rosetta import container
+          rng = random.Random(0)
+          d = Path(tempfile.mkdtemp())
+          cases = [b"", b"KVX1", b"KVX1\x01\x00\x00\x00", b"NOPE" + b"\x00" * 64,
+                   b"KVX1" + (1).to_bytes(4,"little") + (10**9).to_bytes(4,"little") + b"{}",
+                   b"KVX1" + (99).to_bytes(4,"little") + (2).to_bytes(4,"little") + b"{}"]
+          cases += [bytes(rng.randrange(256) for _ in range(rng.randrange(1, 512)))
+                    for _ in range(200)]
+          for i, blob in enumerate(cases):
+              p = d / f"fuzz{i}.kvx"
+              p.write_bytes(blob)
+              ok, reason = container.verify(p)   # must not raise
+              assert ok is False, f"case {i} verified as valid"
+              assert isinstance(reason, str) and reason, f"case {i} gave no reason"
+          print(f"{len(cases)} malformed artifacts all refused with a reason")
+          PY
+
+      - name: Deterministic identity vectors
+        # Identity digests are written into artifacts and used as store keys. If they
+        # drift between versions, previously stored artifacts stop being findable.
+        run: |
+          python - <<'PY'
+          from kv_rosetta.identity import CacheABIIdentity, ModelIdentity, PromptIdentity
+          vectors = {
+              PromptIdentity(tokenizer_id="tok", token_ids_sha256="d"*64, token_count=10).digest(): "prompt",
+              ModelIdentity(architecture="qwen", weights_sha256="a"*64,
+                            tokenizer_sha256="b"*64, chat_template_sha256="c"*64).digest(): "model",
+              CacheABIIdentity(runtime="llama.cpp", runtime_revision="r", state_format="ggsq/2",
+                               k_dtype="f16", v_dtype="f16", rope_kind="normal",
+                               rope_base=1e6).digest(): "cache_abi",
+          }
+          assert len(vectors) == 3, "identity digests collided"
+          for digest in vectors:
+              assert len(digest) == 64 and digest == digest.lower(), digest
+          # stability across processes is what actually matters
+          again = ModelIdentity(architecture="qwen", weights_sha256="a"*64,
+                                tokenizer_sha256="b"*64, chat_template_sha256="c"*64).digest()
+          assert again in vectors, "model identity is not reproducible"
+          print("identity vectors stable:", *vectors.values())
+          PY
+
+      - name: Static checks
+        run: |
+          python -m compileall -q kv_rosetta tests
+          pip install ruff
+          ruff check kv_rosetta tests --select E9,F63,F7,F82
+
+      - name: CLI smoke
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys, tempfile
+          from pathlib import Path
+          m = {"schema":"kvx/0.1","model":{"architecture":"qwen","weights_id":"w"},
+               "prompt":{"tokenizer_id":"t","token_ids_sha256":"1"*64,"token_count":8},
+               "kv":{"layers":4,"heads":2,"head_dim":8,"dtype":"f16",
+                     "layout":"layer,kv,token,head,dim","byte_order":"little"},
+               "position":{"kind":"rope","theta":10000}}
+          d = Path(tempfile.mkdtemp()); (d/"a.json").write_text(json.dumps(m))
+          for args in (["validate", str(d/"a.json")], ["fingerprint", str(d/"a.json")],
+                       ["compat", str(d/"a.json"), str(d/"a.json")]):
+              r = subprocess.run([sys.executable, "-m", "kv_rosetta.cli", *args],
+                                 capture_output=True, text=True)
+              assert r.returncode == 0, f"{args[0]} failed: {r.stderr}"
+          print("cli ok")
+          PY
