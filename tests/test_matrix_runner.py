@@ -140,3 +140,52 @@ class ReconciliationIsRequiredTest(unittest.TestCase):
         window = source[marker:marker + 900]
         self.assertIn('rec["reconciled"]', window)
         self.assertIn("raise RuntimeError", window)
+
+
+class StorageEvidenceTest(unittest.TestCase):
+    """A persistent-storage record must identify the mount, not the pathname.
+
+    On this host /mnt/storage is a FUSE-mounted SATA volume while the NVMe is mounted at /,
+    so a name-based guess would have labelled the wrong device.
+    """
+
+    def setUp(self):
+        _spec2 = importlib.util.spec_from_file_location(
+            "admitted_store_gate", REPO / "scripts" / "admitted_store_gate.py")
+        self.gate = importlib.util.module_from_spec(_spec2)
+        _spec2.loader.exec_module(self.gate)
+
+    def evidence(self, path):
+        return self.gate.storage_evidence(Path(path), Path(__file__))
+
+    def test_memory_backed_targets_are_refused(self):
+        for path in ("/dev/shm", "/run"):
+            if not Path(path).is_dir():
+                continue
+            with self.subTest(path=path):
+                found = self.evidence(path)
+                if found["filesystem"] not in self.gate.MEMORY_BACKED:
+                    continue
+                with self.assertRaises(SystemExit) as caught:
+                    self.gate.require_persistent(found)
+                self.assertIn("memory-backed", str(caught.exception))
+
+    def test_an_unresolved_target_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.gate.require_persistent({"resolved_path": "/nowhere", "filesystem": "",
+                                          "mount_source": ""})
+        self.assertIn("refusing to call an unresolved target persistent",
+                      str(caught.exception))
+
+    def test_overlay_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.gate.require_persistent({"resolved_path": "/x", "filesystem": "overlay",
+                                          "mount_source": "overlay"})
+
+    def test_evidence_names_the_mount_source_and_backing_device(self):
+        found = self.evidence(REPO)
+        for key in ("resolved_path", "stat_device_id", "mount_source", "mount_target",
+                    "filesystem", "mount_options", "available_bytes", "backing_device",
+                    "rotational", "same_mount_as_model"):
+            self.assertIn(key, found)
+        self.assertTrue(found["mount_source"], "no mount source identified")

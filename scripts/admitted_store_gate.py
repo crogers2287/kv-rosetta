@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import shutil
 import subprocess
 import sys
 import time
@@ -44,6 +45,80 @@ from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter  # noqa: E402
 
 PHASE_TOLERANCE_S = 0.05
 
+#: Filesystems that do not survive a process restart in any meaningful sense. A record
+#: produced on one of these is not persistent-storage evidence, whatever the path looks like.
+MEMORY_BACKED = {"tmpfs", "ramfs"}
+
+
+def storage_evidence(path: Path, model: Path) -> dict:
+    """Identify the actual mounted source behind a path, not what the path looks like.
+
+    A name like /mnt/storage says nothing about the device; on this host it is a
+    FUSE-mounted SATA volume while the NVMe is mounted at /. The record has to carry the
+    mount source, filesystem type, options, and the backing device's rotational flag so a
+    reader can tell what was actually measured.
+    """
+    def findmnt(field: str) -> str:
+        result = subprocess.run(["findmnt", "-no", field, "--target", str(path)],
+                                capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    source = findmnt("SOURCE")
+    evidence = {
+        "resolved_path": str(path.resolve()),
+        "stat_device_id": path.stat().st_dev,
+        "mount_source": source,
+        "mount_target": findmnt("TARGET"),
+        "filesystem": findmnt("FSTYPE"),
+        "mount_options": findmnt("OPTIONS"),
+        "same_mount_as_model": findmnt("TARGET") == subprocess.run(
+            ["findmnt", "-no", "TARGET", "--target", str(model)],
+            capture_output=True, text=True).stdout.strip(),
+        "available_bytes": shutil.disk_usage(path).free,
+    }
+    # Walk the device-mapper/LVM chain to the physical block device, so an LVM name does
+    # not hide whether the bytes land on rotational media.
+    backing, rotational = None, None
+    try:
+        # -s walks toward the parents, so an LVM or partition resolves to its disk.
+        result = subprocess.run(["lsblk", "-npso", "NAME,TYPE,ROTA", source],
+                                capture_output=True, text=True)
+        rows = [line.split() for line in result.stdout.splitlines() if line.strip()]
+        for name, kind, rota in rows:
+            if kind == "disk":
+                backing, rotational = Path(name).name, rota == "1"
+                break
+    except (OSError, ValueError):
+        pass
+    if backing is None:
+        pvs = subprocess.run(["pvs", "--noheadings", "-o", "pv_name,vg_name"],
+                             capture_output=True, text=True).stdout
+        for line in pvs.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] and parts[1] in source:
+                device = Path(parts[0]).name.rstrip("0123456789").rstrip("p")
+                flag = Path(f"/sys/block/{device}/queue/rotational")
+                backing = device
+                rotational = flag.read_text().strip() == "1" if flag.is_file() else None
+                break
+    evidence["backing_device"] = backing
+    evidence["rotational"] = rotational
+    return evidence
+
+
+def require_persistent(evidence: dict) -> None:
+    """Refuse to produce a persistent-storage record on memory-backed storage."""
+    fs = evidence.get("filesystem", "")
+    if not fs or not evidence.get("mount_source"):
+        raise SystemExit(f"cannot identify the mount behind {evidence['resolved_path']}; "
+                         f"refusing to call an unresolved target persistent")
+    if fs in MEMORY_BACKED:
+        raise SystemExit(f"{evidence['resolved_path']} is on {fs}, which is memory-backed; "
+                         f"refusing to record it as persistent storage")
+    if fs == "overlay":
+        raise SystemExit(f"{evidence['resolved_path']} is on an overlay mount whose lower "
+                         f"layers are not established here; refusing")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -54,6 +129,11 @@ def main() -> int:
     ap.add_argument("--prompt-tokens", type=int, default=2048)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--storage-note", default="")
+    ap.add_argument("--require-persistent", action="store_true",
+                    help="refuse to run when the store is on memory-backed storage")
+    ap.add_argument("--page-cache-policy", default="natural",
+                    help="explicit page-cache state for the record, e.g. "
+                         "'natural after admission and process restarts'")
     ap.add_argument("--out", default="bench/admitted-store-2k.json")
     args = ap.parse_args()
     repo_commit = require_clean_worktree()
@@ -65,6 +145,9 @@ def main() -> int:
     # The store IS the slot directory: llama-server restores by basename relative to it, so
     # an object anywhere else would have to be copied or linked in, which is the cost being
     # removed. AdmittedStore enforces 0700 on it.
+    evidence = storage_evidence(slots, Path(args.model))
+    if args.require_persistent:
+        require_persistent(evidence)
     store = AdmittedStore(slots)
 
     # ---- admission, once, off the request path ---------------------------------------
@@ -203,8 +286,9 @@ def main() -> int:
         "runner_sha256": sha256_file(Path(__file__).resolve()),
         "storage_note": args.storage_note,
         "slots_path": str(slots),
-        "filesystem": subprocess.run(["findmnt", "-no", "FSTYPE", "--target", str(slots)],
-                                     capture_output=True, text=True).stdout.strip(),
+        "storage": evidence,
+        "page_cache_policy": args.page_cache_policy,
+        "filesystem": evidence["filesystem"],
         "prompt_tokens": args.prompt_tokens,
         "model_path": args.model,
         "architecture": gguf.architecture(args.model),
