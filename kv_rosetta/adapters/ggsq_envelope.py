@@ -72,6 +72,9 @@ class Source(str, Enum):
 
     FILE = "file"
     BUFFER = "buffer"
+    #: Not recognisable as either. Refused rather than guessed: treating unknown bytes as a
+    #: buffer is how a real state file was parsed into a plausible but wrong envelope.
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -170,8 +173,11 @@ def parse_buffer_envelope(
     the optional magic is read from the buffer; ``seq_id`` overrides it when it
     is not ``-1``.  ``body_offset`` follows the ``source_seq_id``.
     """
-    if io_magic is None:
-        _reject_known_magic(blob)
+    if not io_magic:
+        raise EnvelopeError(
+            "parse_buffer_envelope requires the runtime's internal IO magic; a buffer is not "
+            "self-describing and must not be inferred from its first bytes")
+    _reject_known_magic(blob)
     if not isinstance(blob, (bytes, bytearray)):
         raise EnvelopeError(
             f"expected bytes for a buffer envelope, got {type(blob).__name__}"
@@ -208,32 +214,34 @@ def parse_buffer_envelope(
 
 
 def detect(blob: bytes) -> Source:
-    """Return :attr:`Source.FILE` when ``blob`` starts with ``GGSQ_MAGIC``.
+    """Classify a blob by evidence only.
 
-    Pure prefix inspection; performs no parsing and never raises on short input.
+    Anything that is not recognisably a sequence-state FILE is UNKNOWN, never BUFFER.
+    Treating unrecognised bytes as an in-process buffer is how a real state file came to be
+    parsed into a plausible envelope with zero tokens and a body offset of 4.
     """
-    if not isinstance(blob, (bytes, bytearray)):
-        raise EnvelopeError(f"expected bytes, got {type(blob).__name__}")
-    return Source.FILE if bytes(blob)[:4] == GGSQ_MAGIC else Source.BUFFER
+    if blob[:4] == GGSQ_MAGIC:
+        return Source.FILE
+    return Source.UNKNOWN
 
 
-def parse(
-    blob: bytes,
-    source: Source | None = None,
-    **kwargs,
-) -> Envelope:
-    """Parse ``blob`` into an :class:`Envelope`.
+def parse(blob: bytes, source: Source | None = None, **kwargs: object) -> Envelope:
+    """Parse an envelope. An unknown blob is refused, not guessed.
 
-    When ``source`` is ``None`` it is inferred with :func:`detect`.  Extra
-    ``kwargs`` (e.g. ``seq_id``/``io_magic``) are forwarded to the buffer parser.
+    A buffer has no self-describing magic, so it can only be parsed when the caller states
+    that is what it is and supplies the runtime's internal IO magic.
     """
     if source is None:
         source = detect(blob)
+        if source is Source.UNKNOWN:
+            raise EnvelopeError(
+                f"cannot classify blob: first bytes {blob[:4]!r} are not {GGSQ_MAGIC!r}; "
+                f"pass source=Source.BUFFER with io_magic to parse an in-process buffer")
     if source is Source.FILE:
         return parse_file_envelope(blob)
     if source is Source.BUFFER:
-        return parse_buffer_envelope(blob, **kwargs)
-    raise EnvelopeError(f"unknown source: {source!r}")
+        return parse_buffer_envelope(blob, **kwargs)  # type: ignore[arg-type]
+    raise EnvelopeError(f"cannot parse source {source}")
 
 
 def body(blob: bytes, envelope: Envelope) -> bytes:

@@ -57,12 +57,17 @@ class FileEnvelopeTests(unittest.TestCase):
 
 
 class BufferEnvelopeTests(unittest.TestCase):
-    def test_buffer_without_magic(self):
-        blob = struct.pack("<i", 7) + b"BODY"
-        env = envelope.parse_buffer_envelope(blob)
+    def test_buffer_requires_the_runtime_io_magic(self):
+        """A buffer is not self-describing, so it may not be inferred from its bytes."""
+        blob = b"IOMG" + struct.pack("<i", 7) + b"BODY"
+        env = envelope.parse_buffer_envelope(blob, io_magic=b"IOMG")
         self.assertEqual(env.source, Source.BUFFER)
         self.assertEqual(env.token_ids, ())
         self.assertEqual(envelope.body(blob, env), b"BODY")
+
+    def test_buffer_without_declared_magic_is_refused(self):
+        with self.assertRaises(EnvelopeError):
+            envelope.parse_buffer_envelope(struct.pack("<i", 7) + b"BODY", io_magic=b"")
 
     def test_declared_io_magic_must_match(self):
         blob = b"IOMG" + struct.pack("<i", 0) + b"BODY"
@@ -72,9 +77,17 @@ class BufferEnvelopeTests(unittest.TestCase):
 
 
 class DispatchTests(unittest.TestCase):
-    def test_detect_distinguishes_the_two_sources(self):
+    def test_detect_recognises_a_file_and_refuses_to_guess(self):
+        """Unrecognised bytes are UNKNOWN, never BUFFER: guessing is how a real state file
+        was parsed into a plausible envelope with zero tokens."""
         self.assertEqual(envelope.detect(_file_blob()), Source.FILE)
-        self.assertEqual(envelope.detect(struct.pack("<i", 0) + b"BODY"), Source.BUFFER)
+        for blob in (struct.pack("<i", 0) + b"BODY", b"", b"\x01\x02\x03\x04", b"GGSQ"):
+            with self.subTest(blob=blob[:8]):
+                self.assertEqual(envelope.detect(blob), Source.UNKNOWN)
+
+    def test_parse_refuses_an_unclassifiable_blob(self):
+        with self.assertRaises(EnvelopeError):
+            envelope.parse(b"\x01\x02\x03\x04rest")
 
     def test_body_range_must_be_inside_the_blob(self):
         blob = _file_blob()

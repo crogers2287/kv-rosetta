@@ -36,7 +36,10 @@ from kv_rosetta.adapters.base import (
     register,
 )
 
-OPAQUE_FORMAT = "ggsq/3"
+OPAQUE_FORMAT_FAMILY = "ggsq"
+#: Never hardcode the sequence-state version. The installed binary here writes 2 while the
+#: checked-out header declares 3, and state_seq_load_file requires an exact match - so a
+#: hardcoded label would mark an artifact as loadable by builds that would refuse it.
 _TIMEOUT = 600
 
 
@@ -49,6 +52,7 @@ class LlamaCppHTTPAdapter(Adapter):
         self.slot_save_path = Path(slot_save_path) if slot_save_path else None
         self.slot = slot
         self._props: dict[str, Any] | None = None
+        self._state_version: int | None = None
 
     # -- transport --------------------------------------------------------------
 
@@ -74,6 +78,40 @@ class LlamaCppHTTPAdapter(Adapter):
             self._props = self._get("/props")
         return self._props
 
+    def state_version(self) -> int:
+        """The sequence-state version this server actually emits.
+
+        Probed once by saving the slot and reading the envelope, because no endpoint
+        reports it. Capability is evidence from the live runtime, not a constant.
+        """
+        if self._state_version is not None:
+            return self._state_version
+        if not self.slot_save_path:
+            raise AdapterError("cannot probe the state version without a slot_save_path")
+        probe = "kvx-version-probe.bin"
+        self._post(f"/slots/{self.slot}?action=save", {"filename": probe})
+        path = self.slot_save_path / probe
+        try:
+            with open(path, "rb") as handle:
+                head = handle.read(8)
+            envelope = ggsq_envelope.parse_file_envelope(head + b"\x00" * 8)
+        except ggsq_envelope.EnvelopeError as exc:
+            if "truncated" not in str(exc):
+                raise AdapterError(f"unrecognised slot state file: {exc}") from exc
+            import struct
+            if head[:4] != ggsq_envelope.GGSQ_MAGIC:
+                raise AdapterError(f"slot file magic {head[:4]!r} is not a sequence state file")
+            self._state_version = struct.unpack_from("<I", head, 4)[0]
+            path.unlink(missing_ok=True)
+            return self._state_version
+        finally:
+            path.unlink(missing_ok=True)
+        self._state_version = envelope.version
+        return self._state_version
+
+    def opaque_format(self) -> str:
+        return f"{OPAQUE_FORMAT_FAMILY}/{self.state_version()}"
+
     # -- identity ---------------------------------------------------------------
 
     def identity(self, model: str = "") -> dict[str, str]:
@@ -89,7 +127,9 @@ class LlamaCppHTTPAdapter(Adapter):
         cache_abi_digest = hashlib.sha256("\x00".join([
             "llama.cpp",
             str(props.get("build_info", "")),
-            OPAQUE_FORMAT,
+            # The emitted state version is part of cache identity: an artifact written at
+            # version 2 is refused outright by a build expecting version 3.
+            self.opaque_format() if self.slot_save_path else "",
             str(settings.get("n_ctx", "")),
             str(props.get("type_k", settings.get("type_k", ""))),
             str(props.get("type_v", settings.get("type_v", ""))),
@@ -119,7 +159,7 @@ class LlamaCppHTTPAdapter(Adapter):
             import_=reps,
             export_dtypes=frozenset({str(settings.get("type_k", "f16"))}),
             import_dtypes=frozenset({str(settings.get("type_k", "f16"))}),
-            opaque_formats=frozenset({OPAQUE_FORMAT}) if can_slot else frozenset(),
+            opaque_formats=frozenset({self.opaque_format()}) if can_slot else frozenset(),
             cache_abi_digest=self.identity().get("cache_abi_digest", ""),
             staging=frozenset({StagingMode.HOST_STAGED}),
             notes=tuple(notes),
@@ -161,7 +201,12 @@ class LlamaCppHTTPAdapter(Adapter):
                          "cache_abi_digest": ident["cache_abi_digest"]},
             "corpus": req.corpus or {},
         }
-        return container.write_opaque(out, manifest, blob, OPAQUE_FORMAT)
+        # Label with the version actually present in the bytes, not an assumed one.
+        envelope = ggsq_envelope.parse_file_envelope(blob)
+        fmt = f"{OPAQUE_FORMAT_FAMILY}/{envelope.version}"
+        self._state_version = envelope.version
+        manifest["identity"]["state_version"] = envelope.version
+        return container.write_opaque(out, manifest, blob, fmt)
 
     def import_(self, artifact: Path | str, req: ImportRequest,
                 verify_reuse: bool = True) -> ImportReport:
@@ -188,10 +233,18 @@ class LlamaCppHTTPAdapter(Adapter):
                     mode=StagingMode.HOST_STAGED, ok=False,
                     representation=Representation.OPAQUE,
                     reason=f"cache ABI mismatch: artifact {header_abi[:12]} vs expected {expected[:12]}")
-            if art.blob.get("opaque_format") != OPAQUE_FORMAT:
-                return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
-                                    representation=Representation.OPAQUE,
-                                    reason=f"unsupported opaque format {art.blob.get('opaque_format')!r}")
+            # Refuse a version this runtime cannot load, before touching the restore
+            # endpoint. Relabelling a version-2 artifact as version 3 would be a lie the
+            # loader discovers only after the state is already in flight.
+            live_format = self.opaque_format()
+            artifact_format = art.blob.get("opaque_format")
+            if artifact_format != live_format:
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=(f"opaque format mismatch: artifact is {artifact_format!r}, "
+                            f"this runtime emits and loads {live_format!r}"),
+                    seconds=time.time() - started)
 
             filename = artifact.stem + ".restore.bin"
             (self.slot_save_path / filename).write_bytes(art.opaque)
