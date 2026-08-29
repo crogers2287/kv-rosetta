@@ -54,6 +54,14 @@ class LlamaCppHTTPAdapter(Adapter):
         self._props: dict[str, Any] | None = None
         self._state_version: int | None = None
 
+    def _slot(self, req_slot: int | None = None) -> int:
+        """Resolve the slot every call must name explicitly.
+
+        A multi-slot server can schedule a completion onto a different slot than the one
+        restored, so a probe that does not name its slot proves nothing about the restore.
+        """
+        return self.slot if req_slot is None else int(req_slot)
+
     # -- transport --------------------------------------------------------------
 
     def _get(self, path: str) -> Any:
@@ -176,8 +184,8 @@ class LlamaCppHTTPAdapter(Adapter):
             raise AdapterError("no slot_save_path configured")
         out = Path(req.out_path)
         filename = out.stem + ".bin"
-        result = self._post(f"/slots/{req.slot or self.slot}?action=save",
-                            {"filename": filename})
+        slot = self._slot(req.slot)
+        result = self._post(f"/slots/{slot}?action=save", {"filename": filename})
         state = self.slot_save_path / filename
         if not state.is_file():
             raise AdapterError(f"server reported a save but {state} does not exist")
@@ -246,10 +254,10 @@ class LlamaCppHTTPAdapter(Adapter):
                             f"this runtime emits and loads {live_format!r}"),
                     seconds=time.time() - started)
 
-            filename = artifact.stem + ".restore.bin"
-            (self.slot_save_path / filename).write_bytes(art.opaque)
-            result = self._post(f"/slots/{req.slot or self.slot}?action=restore",
-                                {"filename": filename})
+            slot = self._slot(req.slot)
+            artifact_name = artifact.stem + ".restore.bin"
+            (self.slot_save_path / artifact_name).write_bytes(art.opaque)
+            result = self._post(f"/slots/{slot}?action=restore", {"filename": artifact_name})
             restored = int(result.get("n_restored", 0))
             if restored <= 0:
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
@@ -273,17 +281,31 @@ class LlamaCppHTTPAdapter(Adapter):
                         seconds=time.time() - started, tokens_restored=restored)
                 probe = self._post("/completion", {
                     "prompt": list(token_ids), "n_predict": 1, "temperature": 0.0,
-                    "top_k": 1, "cache_prompt": True})
-                cache_n = int(probe.get("timings", {}).get("cache_n", 0))
-                if cache_n <= 0:
+                    "top_k": 1, "cache_prompt": True, "id_slot": slot})
+                timings = probe.get("timings", {})
+                cache_n = int(timings.get("cache_n", 0))
+                prompt_n = int(timings.get("prompt_n", 0))
+                # llama.cpp always reprocesses the final token, so full reuse of an L-token
+                # prefix is exactly cache_n == L-1 and prompt_n == 1. Accepting cache_n > 0
+                # would accept PARTIAL reuse: probing a 200-token cache with a 100-token
+                # prefix returns cache_n=99, which is a different prompt sharing a prefix.
+                expected_cache_n = len(token_ids) - 1
+                if cache_n != expected_cache_n or prompt_n != 1:
+                    self._restore_pristine(artifact_name, slot)
                     return ImportReport(
                         mode=StagingMode.HOST_STAGED, ok=False,
                         representation=Representation.OPAQUE,
-                        reason=(f"restore accepted ({restored} cells) but the cache is not "
-                                f"reusable: cache_n=0 on the next completion"),
+                        reason=(f"slot {slot} did not reuse the full prefix: "
+                                f"cache_n={cache_n} prompt_n={prompt_n}, expected "
+                                f"cache_n={expected_cache_n} prompt_n=1 for "
+                                f"{len(token_ids)} token(s)"),
                         nbytes=int(result.get("n_read", len(art.opaque))),
                         seconds=time.time() - started, tokens_restored=restored)
-                reuse_note = f"verified reuse: cache_n={cache_n}"
+                # The probe generated a token into the slot. Put the slot back to the exact
+                # imported prefix so a caller never inherits a mutated cache.
+                self._restore_pristine(artifact_name, slot)
+                reuse_note = (f"verified full-prefix reuse on slot {slot}: "
+                              f"cache_n={cache_n}/{expected_cache_n} prompt_n={prompt_n}")
 
             return ImportReport(
                 mode=StagingMode.HOST_STAGED,
@@ -298,6 +320,14 @@ class LlamaCppHTTPAdapter(Adapter):
             return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                 representation=Representation.OPAQUE, reason=str(exc),
                                 seconds=time.time() - started)
+
+    def _restore_pristine(self, filename: str, slot: int) -> None:
+        """Re-restore so the slot holds exactly the imported prefix, nothing appended."""
+        try:
+            self._post(f"/slots/{slot}?action=erase", {})
+            self._post(f"/slots/{slot}?action=restore", {"filename": filename})
+        except AdapterError:
+            pass
 
     def _artifact_token_ids(self, art: "container.KVXArtifact") -> tuple[int, ...]:
         """Recover the prompt token IDs from the engine-native blob.
@@ -315,8 +345,7 @@ class LlamaCppHTTPAdapter(Adapter):
     # -- convenience used by the parity test ------------------------------------
 
     def erase(self, slot: int | None = None) -> int:
-        return int(self._post(f"/slots/{self.slot if slot is None else slot}?action=erase",
-                              {}).get("n_erased", 0))
+        return int(self._post(f"/slots/{self._slot(slot)}?action=erase", {}).get("n_erased", 0))
 
     def complete(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post("/completion", payload)

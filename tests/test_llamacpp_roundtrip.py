@@ -18,6 +18,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import urllib.request
+
+from kv_rosetta import container
+
 from kv_rosetta.adapters.base import ExportRequest, ImportRequest, Representation
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
 
@@ -125,3 +129,99 @@ class LlamaCppSameBackendRoundTrip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(_URL and _SLOTS, "set KVX_LLAMA_URL and KVX_LLAMA_SLOTS to run")
+class SlotBindingAndFullPrefixReuse(unittest.TestCase):
+    """A restore is proven only when the intended slot reuses the COMPLETE prefix.
+
+    The measured contract on llama.cpp: after restoring an L-token prefix, probing that
+    slot with those L tokens yields cache_n == L-1 and prompt_n == 1, because the final
+    token is always reprocessed. cache_n > 0 is not sufficient - probing a 200-token cache
+    with a 100-token prefix returns cache_n=99, which is a different prompt that merely
+    shares a prefix.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
+        text = "In the year 1892, the naturalist recorded observations. " * 40
+        cls.ids = cls.adapter._post("/tokenize", {"content": text})["tokens"][:200]
+
+    def _artifact(self, slot=0):
+        self.adapter.erase(slot)
+        self.adapter._post("/completion", {"prompt": self.ids, "n_predict": 2,
+                                           "temperature": 0.0, "cache_prompt": True,
+                                           "id_slot": slot})
+        out = Path(tempfile.mkdtemp()) / "slotbind.kvx"
+        return Path(self.adapter.export(ExportRequest(
+            model="", out_path=out, representation=Representation.OPAQUE, slot=slot)))
+
+    def _probe(self, tokens, slot):
+        return self.adapter._post("/completion", {
+            "prompt": list(tokens), "n_predict": 1, "temperature": 0.0,
+            "cache_prompt": True, "id_slot": slot})["timings"]
+
+    def test_restore_and_verification_are_bound_to_the_same_slot(self):
+        artifact = self._artifact(slot=0)
+        self.adapter.erase(0)
+        report = self.adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        self.assertIn("slot 0", report.reason)
+
+    def test_a_different_slot_does_not_satisfy_the_restore(self):
+        """Slot B must not inherit slot A's proof."""
+        artifact = self._artifact(slot=0)
+        self.adapter.erase(0)
+        self.adapter.erase(1)
+        report = self.adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        timings = self._probe(self.ids, slot=1)
+        self.assertEqual(timings["cache_n"], 0,
+                         "an unrestored slot reported reuse; the proof is not slot-bound")
+
+    def test_partial_prefix_reuse_is_not_full_reuse(self):
+        """The exact reason cache_n > 0 is an unsafe acceptance test."""
+        artifact = self._artifact(slot=0)
+        self.adapter.erase(0)
+        self.assertTrue(self.adapter.import_(artifact, ImportRequest(model="", slot=0)).ok)
+        half = self.ids[:100]
+        timings = self._probe(half, slot=0)
+        self.assertGreater(timings["cache_n"], 0, "a shared prefix does reuse some cells")
+        self.assertNotEqual(timings["cache_n"], len(self.ids) - 1,
+                            "partial reuse must be distinguishable from full reuse")
+
+    def test_verification_leaves_the_slot_at_the_imported_prefix(self):
+        """The probe generates a token; the slot must not be handed back mutated."""
+        artifact = self._artifact(slot=0)
+        expected = len(self.adapter._artifact_token_ids(container.read(artifact, mmap=False)))
+        self.adapter.erase(0)
+        self.assertTrue(self.adapter.import_(artifact, ImportRequest(model="", slot=0)).ok)
+        slots = json.loads(
+            urllib.request.urlopen(_URL.rstrip("/") + "/slots", timeout=30).read())
+        self.assertEqual(int(slots[0]["n_prompt_tokens"]), expected,
+                         "slot holds more than the imported prefix after verification")
+
+    def test_parity_survives_a_verified_import(self):
+        artifact = self._artifact(slot=0)
+        self.adapter.erase(0)
+        cold = self.adapter._post("/completion", {
+            "prompt": self.ids, "n_predict": 8, "temperature": 0.0, "top_k": 1,
+            "n_probs": 5, "cache_prompt": True, "id_slot": 0})
+        self.adapter.erase(0)
+        self.assertTrue(self.adapter.import_(artifact, ImportRequest(model="", slot=0)).ok)
+        warm = self.adapter._post("/completion", {
+            "prompt": self.ids, "n_predict": 8, "temperature": 0.0, "top_k": 1,
+            "n_probs": 5, "cache_prompt": True, "id_slot": 0})
+        self.assertEqual(warm["content"], cold["content"])
+        self.assertEqual([c["id"] for c in warm["completion_probabilities"]],
+                         [c["id"] for c in cold["completion_probabilities"]])
+
+    def test_artifact_is_labelled_with_the_emitted_state_version(self):
+        artifact = self._artifact(slot=0)
+        header = json.loads(
+            artifact.read_bytes()[12:12 + int.from_bytes(artifact.read_bytes()[8:12], "little")])
+        self.assertEqual(header["blob"]["opaque_format"],
+                         f"ggsq/{self.adapter.state_version()}")
+        self.assertIn(header["blob"]["opaque_format"],
+                      self.adapter.capabilities().opaque_formats)
