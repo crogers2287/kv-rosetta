@@ -119,6 +119,8 @@ the conclusion that hybrid architectures are a dead end.
 | R6. Restart persistence, measured once | ✅ measured | Save, full server stop, fresh start, restore -> `cache_n=252 prompt_n=4`, parity held. Orchestrated by hand |
 | R6. Restart persistence, harness-owned | ✅ **proven by retained test** | `tests/test_hybrid_restart_harness.py` owns both process lifetimes: verifies `/proc/<pid>` gone, new pid differs, fresh process reuses nothing before restore. ~58 s. Corrects an earlier overclaim that the in-process test proved the restart |
 | R2. Exact-boundary checkpoint | ✅ resolved without a patch | Uncovered tail measured **constant at 4** across prompts 256/1024/4096 and checkpoint settings min-step 128/8, ctx-checkpoints 8/32 - not a granularity artifact, so forcing a boundary checkpoint would not help. Adapter invariant generalised to a bounded, self-consistent tail |
+| Patched/unpatched test matrix | ✅ proven by retained test | `tests/runtime_matrix.py` classifies the runtime from SCKP format evidence; negative control skips (5 skipped) instead of failing (2 failures) against a patched binary |
+| Artifact-size heuristics removed | ✅ done | Checkpoint presence asserted from the `SCKP` magic, not from a 200 MB threshold |
 | R3. Runtime capability advertisement | 🔴 outstanding | PR #26004 adds no `slot_checkpoint_persistence` field; support must not be inferred from a version string |
 | Binary provenance verified | ✅ proven | Running binary = commit `3e7344670` (seq version 2); HEAD `ca3d5a3` is 150 commits ahead (version 3); `~/llama.cpp` is a shallow clone, which fails ancestry checks silently |
 | R2–R10 | 🔴 outstanding | Gated behind R1 |

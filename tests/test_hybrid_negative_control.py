@@ -19,6 +19,8 @@ import os
 import unittest
 import urllib.request
 
+from runtime_matrix import UNPATCHED, require_runtime
+
 from kv_rosetta import gguf
 from kv_rosetta.adapters.base import Representation
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
@@ -30,6 +32,12 @@ _PROMPT_TOKENS = 256
 
 @unittest.skipUnless(_URL and _SLOTS, "set KVX_HYBRID_URL and KVX_HYBRID_SLOTS to run")
 class UnpatchedHybridFailsClosed(unittest.TestCase):
+    def setUp(self):
+        # Declared, then checked against format evidence from the running binary. Against a
+        # patched runtime this file's assertions are wrong by construction, so it skips
+        # rather than reporting a different binary as a code failure.
+        require_runtime(self, _URL, _SLOTS, UNPATCHED)
+
     @classmethod
     def setUpClass(cls):
         cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)

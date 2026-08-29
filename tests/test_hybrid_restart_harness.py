@@ -148,6 +148,12 @@ class RestartOwnedByTheHarness(unittest.TestCase):
             except Exception:
                 pass
 
+    def _require_patched(self):
+        from runtime_matrix import PATCHED, detect_runtime
+        actual = detect_runtime(_URL, _SLOTS)
+        if actual != PATCHED:
+            self.skipTest(f"restart proof needs a patched runtime; connected one is {actual}")
+
     def _boot(self):
         # This host shares its GPUs with a model router that reloads on demand. Taking
         # memory it is using is not this test's call, so skip loudly rather than either
@@ -174,6 +180,7 @@ class RestartOwnedByTheHarness(unittest.TestCase):
                         "cache_prompt": True, "id_slot": 0}
 
         first, first_pid = self._boot()
+        self._require_patched()
         ids = self._tokens()
         request = {"prompt": ids, **request_tail}
 

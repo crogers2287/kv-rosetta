@@ -373,3 +373,45 @@ with the numbers that made it the right choice.
 
 **Caveat:** 4 is what this model and build do. The adapter measures the tail per restore and
 bounds it; it does not hardcode 4 anywhere.
+
+## Patched/unpatched test matrix, and format evidence instead of size
+
+Hybrid tests come in two mutually exclusive kinds. The negative control asserts the
+UNPATCHED failure; the restart tests assert PATCHED behaviour. Run either against the wrong
+binary and it fails for a reason unrelated to the code - the negative control "failing"
+against a patched server is correct behaviour being misreported as a regression, which is
+exactly what happened when the patched build first came up.
+
+`tests/runtime_matrix.py` makes the requirement explicit. Each test declares what it needs,
+and the declaration is checked against **evidence from the running binary**:
+
+    detect_runtime(url, slots) -> "patched" | "unpatched" | "unknown"
+
+It saves a real slot and scans the file for the four-byte magic `SCKP`
+(`SLOT_CKPT_MAGIC = 0x504b4353`, little-endian, which spells the ASCII it was chosen for)
+that the patched save handler appends after the llama state. The scan carries three bytes
+across chunk boundaries so a magic straddling a read cannot be missed. `unknown` is returned
+rather than guessed when the server cannot be probed: a test that cannot establish which
+binary it is talking to must skip, not assume.
+
+Verified both directions against a live patched server:
+
+| | before | after |
+|---|---|---|
+| negative control vs patched runtime | 2 failures | **5 skipped**, with the reason stated |
+| patched tests vs patched runtime | ran | 5 passed |
+| runtime classification | n/a | `patched`, from SCKP evidence |
+
+### Size heuristics removed
+
+`test_the_runtime_persists_checkpoints` previously asserted the artifact exceeded 200 MB.
+That is not evidence: a large file only means a large cache, and the threshold would need
+retuning for every model and context length. It now asserts the `SCKP` payload is present -
+a direct observation that checkpoints were persisted, independent of how big anything is.
+
+### A note on ports
+
+Two servers failed to start during this work with `couldn't bind HTTP server socket`, on
+8787 and 8788, both held by unrelated services on this host. Each failure read exactly like
+a leaked server of our own. Fixed ports make a harness fail for reasons that have nothing to
+do with what it tests; the harness and these probes now ask the OS for a free port.

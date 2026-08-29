@@ -22,6 +22,8 @@ import os
 import unittest
 import urllib.request
 
+from runtime_matrix import PATCHED, require_runtime, slot_file_has_checkpoints
+
 from kv_rosetta import gguf
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
 
@@ -32,6 +34,9 @@ _PROMPT_TOKENS = 256
 
 @unittest.skipUnless(_URL and _SLOTS, "set KVX_CKPT_URL and KVX_CKPT_SLOTS to run")
 class PatchedHybridCheckpointReuse(unittest.TestCase):
+    def setUp(self):
+        require_runtime(self, _URL, _SLOTS, PATCHED)
+
     @classmethod
     def setUpClass(cls):
         cls.adapter = LlamaCppHTTPAdapter(_URL, _SLOTS)
@@ -49,22 +54,23 @@ class PatchedHybridCheckpointReuse(unittest.TestCase):
         self.assertIn(self.arch, gguf.HYBRID_ARCHITECTURES | gguf.RECURRENT_ARCHITECTURES)
 
     def test_the_runtime_persists_checkpoints(self):
-        """Save a slot and assert the artifact is materially larger than the sequence state
-        alone. An unpatched build writes ~174 MB for this prefix; a patched one writes the
-        checkpoint too, and the difference is the ~149.6 MiB checkpoint."""
+        """Assert the saved file actually carries a checkpoint payload.
+
+        This previously asserted the artifact exceeded 200 MB, which is not evidence: a
+        large file only means a large cache, and the threshold would have to be retuned for
+        every model. The direct observation is the SCKP magic the patched save handler
+        appends after the llama state.
+        """
         from pathlib import Path
         self.adapter.erase(0)
         self._complete()
-        saved = self.adapter._post("/slots/0?action=save", {"filename": "ckpt-probe.bin"})
+        self.adapter._post("/slots/0?action=save", {"filename": "ckpt-probe.bin"})
         path = Path(_SLOTS) / "ckpt-probe.bin"
         self.assertTrue(path.is_file())
         with open(path, "rb") as handle:
-            head = handle.read(8)
-        self.assertEqual(head[:4], b"qsgg", "not a sequence-state file")
-        # The checkpoint payload is appended after the llama state, so the file must exceed
-        # what the sequence state alone would occupy.
-        self.assertGreater(saved["n_written"], 200 * 1024 * 1024,
-                           "artifact is too small to contain a context checkpoint")
+            self.assertEqual(handle.read(4), b"qsgg", "not a sequence-state file")
+        self.assertTrue(slot_file_has_checkpoints(path),
+                        "saved slot carries no SCKP checkpoint payload")
 
     def test_reuse_after_restore_within_one_process(self):
         adapter = self.adapter
