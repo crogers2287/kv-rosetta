@@ -1080,3 +1080,41 @@ self-restore refusal, the undefined-name scan (728 offline tests, CI green). **U
 CUDA↔anything, which needs a 3090 slot that vLLM currently holds; anything above 128 tokens on
 this pair. Top-1 agreement is over 8 generated positions — a small sample, and the claim above
 rests on the delta rather than on that agreement.
+
+## REQ-037 — The same result at 8K, which is where the actual use case lives
+
+RA-002 objected that every measurement so far sat at 128–2048 tokens while the goal — cached
+system prompts, skills, MCP tool schemas for agentic harnesses — lives at 8K–32K. This is that
+run, on the same vacant W6800, same pair of builds at `ca3d5a3e1`.
+
+First, a bug that would have made this meaningless: the runner built its prompt from a **fixed
+24 repetitions** of one sentence, a few hundred tokens, then sliced to `--prompt-tokens`. Any
+request for more would have measured a short prefix and reported it under the requested
+length. The text now scales with the request, and the run refuses if it still falls short.
+
+| direction | reused | text | token ids | artifact |
+|---|---|---|---|---|
+| HIP → Vulkan | **8191 / 8192** | identical | identical | 288 MB |
+| Vulkan → HIP | **8191 / 8192** | identical | identical | 288 MB |
+
+The one-token shortfall is constant — llama.cpp always reprocesses the final token — so the
+reuse fraction climbs from 99.2% at 128 tokens to **99.99% at 8192**. The win grows with
+prefix length, which is the direction the use case pushes.
+
+| comparison | HIP→Vulkan | Vulkan→HIP | 128-token run |
+|---|---|---|---|
+| own restore vs cold prefill, same backend | 0.175 | 0.750 | 0.053 / 0.139 |
+| foreign cache vs own cache | 0.442 | 0.495 | 0.373 / 0.397 |
+| two cold runs, different backends, no cache | 0.783 | 0.783 | 0.375 |
+
+At this length **every one of these is the same order of magnitude**, and the foreign-cache
+column is *smaller* than the backend-versus-backend floor. The divergence is dominated by
+kernel and batch-shape arithmetic, not by moving the cache. Top-1 agreement is 1.00
+throughout and the generated tokens are identical in every comparison.
+
+Status: **measured once on this host** — HIP↔Vulkan at 8192 tokens, both directions, four-way
+decomposition. **Proven by retained test**: the short-prefix refusal, the self-restore
+refusal, the divergence arithmetic (728 offline tests, CI green). **Untested**: 32K, which
+would be a ~1.1 GB artifact; CUDA↔anything, still waiting on a 3090 slot; any model other than
+this qwen2 Q4_K_M. **Inferred, not measured**: that the constant one-token shortfall continues
+to hold above 8K.
