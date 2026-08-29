@@ -152,6 +152,43 @@ as the prefix grows, which is the same direction the product goal points.
 
 ---
 
+## RA-004 — The sidecar must be demand-driven, or it recreates the harm it replaces · **open** · 2026-08-29
+
+Operational finding from the running system, not from design review.
+
+`kvwarm` is currently evicting the models the owner is actually using. The mechanism is in
+`cfrproxy/scripts/kvwarm.py:186`: `model_identity()` requests
+`{swap}/upstream/{model}/props`, and **that request alone makes llama-swap load the model**.
+It wakes a model just to ask what it is, before warming anything. Measured from its journal:
+~20,236-token prefixes, up to 51 of them, re-prefilled every 15 minutes into a vLLM model
+that needs both 3090s.
+
+**The design consequence, which changes the sidecar spec:** replacing recompute with restore
+does *not* fix this. A restore also needs the model resident. A sidecar that keeps a timer
+and walks a list of target models wakes them exactly as kvwarm does, just more cheaply. The
+saving would be real and the harm would be unchanged.
+
+So the sidecar must be **demand-driven**: restore a prefix when a request arrives for a model
+that is *already loaded*, and never contact a model nobody asked for. Scheduled pre-warming
+of arbitrary models should not be an available mode, because it is the failure, not a
+configuration of it.
+
+**Second finding, on scope.** The owner's target is one cache file replacing *both* warmers.
+Those are `tiel-coder-q5-w6800` on ROCm/W6800 and `qwen38-27b-vllm-vision` on CUDA/3090s -
+different models *and* different backends. So "retire both warmers with one file" is the
+complete cross-arch and cross-model stack, not a near-term substitution. A same-model
+demand-driven sidecar retires kvwarm's *behaviour* immediately; retiring its *file format*
+needs canonical decode, dtype conversion, and backend transfer first.
+
+**Questions for the steer:**
+
+1. Should scheduled/proactive warming be excluded from the sidecar contract outright, rather
+   than offered and discouraged?
+2. Does the staged order hold - demand-driven same-model sidecar first, then decoder, dtype,
+   backend, model - or should the canonical work land before any service surface?
+
+---
+
 ## Answered
 
 ### RA-001 — answered in steer 7ded4e1, 2026-08-29
