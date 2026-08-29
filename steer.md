@@ -1,12 +1,12 @@
-# KV Rosetta research steer: bind cache dtype, then measure the zero-copy 2K lower bound
+# KV Rosetta research steer: turn the measured 2K lower-bound win into a fail-closed admitted store
 
-Status basis: default-branch head 2efffccfe86e0341409c31ff3598358773343851.
+Status basis: default-branch head 520509b583e64da8610c135a9da9a096bda0aef4.
 
-This steer supersedes 0315e90. The corrected economic timer, reconciled phase accounting, one clean 2K break-test, and one-pass verified staging have landed. Correctness remains green and one redundant payload read is gone, but the public adapter is still 2.52× slower than cold because copying and hashing the 577 MiB payload dominates. Do not run 8K or NVMe yet. First close the missing K/V-cache-dtype identity boundary, then measure a direct-raw 2K lower bound before choosing a zero-copy artifact design.
+This steer supersedes f081b53. The K/V-cache identity gap is closed, the patched import no longer performs the avoidable state-version save probe, the rebuilt 256 gate is sealed, and a retained direct-raw 2K run is 12.4% faster than cold prefill. The next smallest falsifiable experiment is not 8K: implement the narrowest local admitted-state contract that can reproduce that win without treating an arbitrary filename or prior hash as trusted.
 
 ## Mission
 
-Deliver persistent exact-prefix restoration for the deployed 27B qwen35-family hybrid model across a complete llama-server restart, with fail-closed artifact identity and request-path economics that beat native prefill.
+Deliver persistent exact-prefix restoration for the deployed 27B qwen35-family hybrid model across a complete llama-server restart, with exact runtime/artifact identity, fail-closed behavior on unpatched or incomplete runtimes, and request-path economics that beat native prefill.
 
 Primary upstream evidence remains open as of 2026-08-29:
 
@@ -17,225 +17,126 @@ Keep checkpoint-persistence patch 0001 pinned. Do not post upstream during this 
 
 ## Evidence now retained
 
-### Economic measurement is now truthful
+### Runtime identity and fail-closed boundaries
 
-At `4814702`:
+Commits 1638e14 through 4613be8 establish and retain:
 
-- the completion after public-adapter import is timed directly as `adapter_tail_completion_wall_s`;
-- the raw-endpoint tail remains diagnostic only;
-- the verdict refuses to substitute when the adapter timer is missing;
-- preflight is a named import phase;
-- phase sum, reported seconds, and unclassified remainder are retained and checked.
+- live target K and V cache types from the runtime configuration;
+- f16/f16 in the tested deployment, distinct from Q4_K model-weight quantization;
+- target K/V types bound into CacheABIIdentity;
+- missing or differing cache types withholding capability and refusing before state endpoints;
+- active draft/speculative state still withheld;
+- complete patched import using advertised sequence version 3 without a discovery save;
+- unpatched hybrid import refusing before save or restore;
+- reconciled phase accounting that fails the runner on an unexplained interval.
 
-The corrected 2K run reconciles to less than 0.005 s unclassified. Keep `tests/test_matrix_runner.py`.
+The rebuilt 256 record remains correct: patched cache_n=252 and prompt_n=4; same-source unpatched cache_n=0 and prompt_n=256.
 
-### Two-pass 2K tmpfs baseline
+### First measured request-path economic win
 
-`bench/ladder-2k-tmpfs.json`, produced from committed runner `4814702`, records one corrected break-first repetition:
+Retained record bench/direct-raw-2k-tmpfs.json, produced by committed runner cd3722b and committed at 520509b, records one research-only pre-admitted run on Qwen3.8-27B-UD-Q4_K_XL.gguf, architecture qwen35:
 
-- exact prompt tokens: 2,048;
-- patched: `cache_n=2044`, `prompt_n=4`;
-- same-source unpatched: `cache_n=0`, `prompt_n=2048`;
+| Measurement | Result |
+|---|---:|
+| Native cold request | 1.731 s |
+| Direct raw timed import | 1.081 s |
+| Actual tail completion | 0.434 s |
+| Direct import plus tail | 1.516 s |
+| Ratio to cold | 0.876 |
+| Request-path saving | 0.216 s / 12.4% |
+| Reuse | 2,044 / 2,048 tokens |
+| Uncovered tail | 4 tokens |
+| Raw state size | 604,958,676 bytes |
+| Untimed admission | 3.267 s |
+
+Correctness checks include a real PID replacement, zero reuse before restore, field-for-field checkpoint metadata equality, cache_n equal to declared coverage, token/content/nonempty probability-vector parity, unchanged file facts and digest after restore, no temporary leftovers, and unpatched refusal from support evidence. Timed phases reconcile within 0.00003 s.
+
+Classify this accurately: measured once on Fred, not yet a production path. Admission is intentionally excluded from request latency. At the observed 0.216 s per-request saving, its 3.267 s admission cost amortizes only after about 16 successful restores; retain that lifecycle fact in future records.
+
+The patched llama.cpp source tree is recorded as modified with a source diff digest. Continue recording base head, patch-file digests, source diff digest, binary digests, and build flags; do not describe it as a clean upstream build.
+
+## P0: smallest admitted-state contract
+
+Build a local-only prototype around the raw ggsq/3+sckp/1 state. Do not change the portable KVX format and do not weaken its verification semantics.
+
+The contract must distinguish two phases:
+
+1. Admission, off the request path: validate every raw byte and all semantic identity, then atomically publish a state object into an adapter-owned private store on the same filesystem as the llama-server slot directory.
+2. Restore, on the request path: resolve only an already-admitted object and restore it in place without payload extraction, copying, or a full payload read.
+
+Use a full SHA-256 content address, not the current 128-bit filename abbreviation. Bind a small sidecar/manifest to that full digest and include at least:
+
+- complete raw-state digest and size;
+- sequence version and exact ggsq/3+sckp/1 tuple;
+- checkpoint appendix offset, size, coverage, count, and positions;
+- model content/weights digest;
+- prompt token digest and token count;
+- target K/V cache types;
+- active state classes;
+- adapter/runtime ABI identity;
+- creation patch/binary identity sufficient to reproduce the state.
+
+Admission must validate sequence framing, exact prompt tokens, the appendix at the declared offset, full payload digest, complete checkpoint metadata, allowlisted compound tuple, proven active state classes, and exact cache ABI. Hash while writing if a write is required; fsync the file and containing directory; publish data and manifest atomically or fail closed and clean up.
+
+State the trust boundary explicitly. An admitted object may avoid rehashing only while it remains in an adapter-owned private directory and its pinned identity/metadata remain unchanged. A basename, read-only mode bit, prior hash, content-looking filename, or manifest alone is not admission.
+
+Because llama-server restores by basename rather than file descriptor, directly address the name-to-object race. Before any live benchmark, retain red tests for symlink/path traversal, replacement after admission, changed inode/device/size/mtime/ctime/link count, non-private store permissions, incomplete atomic publish, manifest substitution, truncation, and payload corruption. If the prototype cannot make the filename lookup resistant within its stated local threat model, stop and evaluate fs-verity or an upstream restore-from-open-fd/verified-offset primitive; do not silently narrow the threat model.
+
+## P1: public prototype gate
+
+Expose the admitted-store operation through a clearly experimental adapter API. It must reuse the same support predicate and CacheABIIdentity as export/import.
+
+Required red-test-first behavior:
+
+- unpatched or incomplete hybrid runtimes refuse before opening/linking state or issuing save/restore;
+- missing/different model, prompt, K/V dtype, protocol tuple, active state class, or ABI refuses before restore;
+- an arbitrary raw file cannot enter the restore path without successful admission;
+- corrupt/truncated bytes and altered metadata refuse during admission;
+- a changed or replaced admitted object refuses before restore;
+- restore-response metadata must equal admitted metadata field for field;
+- mandatory reuse verification requires cache_n equal declared coverage and a 1–8 token uncovered tail;
+- verification failure erases/restores safely and leaves no temporary objects;
+- active draft/MTP/speculative configurations remain withheld;
+- the request-time path performs no payload copy and no full payload read, enforced with retained byte/read-count instrumentation.
+
+Do not call this zero-copy unless instrumentation proves no payload bytes are copied by KV Rosetta. Runtime-internal reads are expected and must remain separately attributed.
+
+## P2: one falsifiable live 2K experiment
+
+After code and offline tests are committed, run three process-owned repetitions on the same exact model, prompt, patched/unpatched binary pair, and tmpfs environment. Reuse one admitted object so admission is measured once and every restore crosses a fresh server process.
+
+For every repetition require:
+
+- new PID and zero reuse before restore;
+- patched cache_n=2044 and prompt_n=4;
+- complete restore-metadata equality;
 - token, content, and nonempty probability-vector parity against native reuse;
-- public-adapter patched import succeeds;
-- unpatched export and cross-import refuse without a restore POST;
-- total KVX artifact: 604,960,596 bytes;
-- payload: 604,958,676 bytes;
-- sequence state: 291,169,856 bytes;
-- checkpoint state: 313,788,820 bytes;
-- checkpoint coverage: 2 checkpoints, 2,044 tokens;
-- server peak RSS: about 17.1 GiB;
-- two NVIDIA devices: about 9.0 and 9.4 GiB used after load.
+- pristine-prefix restoration after the verification probe;
+- unpatched refusal before file access/linking and before restore;
+- unchanged admitted-object identity across the timed window;
+- zero staging/copy bytes and bounded metadata-only request-path reads;
+- phase sum reconciliation.
 
-Measured:
+Retain raw per-repetition cold, restore, probe, pristine restore, tail, and total times. Report median and range; do not report only the best run.
 
-| Phase | Seconds |
-|---|---:|
-| Native cold request | 1.772 |
-| Container payload verification | 1.986 |
-| Staging copy | 2.404 |
-| Preflight | 0.542 |
-| Runtime restore | 0.515 |
-| Reuse probe | 0.207 |
-| Pristine re-restore | 0.477 |
-| Actual post-adapter completion | 0.430 |
-| Adapter import plus tail | 6.664 |
-| Ratio to cold | 3.76× |
+Decision rule:
 
-The runtime restore itself is about 3.4× faster than prefill. KV Rosetta's two full payload passes caused the loss.
+- Pass: median admitted-store import plus actual tail is below median native cold, at least 2 of 3 paired repetitions win, and all correctness/security gates pass.
+- Marginal or noisy: if median is within 10% of cold or fewer than 2 paired wins occur, repeat only after explaining the variance; do not scale.
+- Fail: if the median loses to cold, stop storage-format work and profile runtime restore, verification probe, and pristine re-restore separately.
+- Any safety failure: fail the experiment regardless of speed.
 
-### One-pass verified staging is correct and materially faster
+Also retain admission time and the measured break-even restore count: ceiling(admission seconds / median per-restore saving). A request-path win is not automatically a lifecycle win.
 
-At `9ce3ceb`, opaque import now:
+## P3: only then test storage realism
 
-1. verifies structure and the authenticated header without reading the payload;
-2. extracts the payload to a temporary staged file;
-3. hashes every byte in the same pass that writes it;
-4. compares the payload digest before publishing the staged file;
-5. issues no restore POST on any mismatch;
-6. removes temporary and staged files on failure.
+If P2 passes, the next rung is the same admitted-store contract at 2K on the intended persistent filesystem/NVMe. Do not jump to 8K merely because tmpfs passes. Measure cold, admission, request-path total, and amortization under the exact filesystem and mount options.
 
-Segmented artifacts do not take this path because extraction does not validate their per-segment digests; they retain the full verification path.
+Only after the 2K persistent-filesystem gate passes may 8K be considered. Keep 32K, 131K, canonical conversion, cross-backend work, vLLM, Transformers, and upstream submission deferred.
 
-Retained negative tests cover corrupted payload, corrupted header, truncation, exception containment, cleanup, before-restore refusal, genuine import, segmented fallback, and a read-count ceiling below 1.6× payload bytes. Keep `tests/test_one_pass_staging.py`.
+## Scope and reporting discipline
 
-`bench/ladder-2k-tmpfs-onepass.json`, from committed implementation `9ce3ceb`, records:
-
-| Phase | Seconds |
-|---|---:|
-| Native cold request | 1.734 |
-| Separate payload verification | 0.000 |
-| Verified staging | 2.222 |
-| Preflight | 0.525 |
-| Runtime restore | 0.438 |
-| Reuse probe | 0.232 |
-| Pristine re-restore | 0.443 |
-| Actual post-adapter completion | 0.425 |
-| Adapter import plus tail | 4.371 |
-| Ratio to cold | 2.52× |
-
-Correctness and unpatched refusal are unchanged. Phase accounting reconciles to 0.004 s. The separate verification pass was removed, not merely accelerated.
-
-The remaining dominant phase is verified staging: 2.222 s, about 57% of import, to copy and hash 577 MiB on tmpfs. The result crosses the previous stop threshold, so repetitions, NVMe, 8K, and 32K are not next.
-
-## P0: bind the actual K/V cache dtype before changing storage identity
-
-Both retained 2K records truthfully report:
-
-- `kv_dtype_k=""`;
-- `kv_dtype_v=""`.
-
-The live patched `/props` does not expose the cache K/V types. It exposes weight quantization information, which is not a substitute. `CacheABIIdentity.k_dtype` and `.v_dtype` are therefore empty, so two otherwise identical launches that differ only in K/V cache type currently produce the same cache ABI digest.
-
-That is an artifact-identity gap. Do not introduce a direct raw artifact path while it remains.
-
-Extend the local capability-advertisement patch, not checkpoint-persistence patch 0001, to report the actual target context K and V cache types used by the running server. Requirements:
-
-- values come from the live context/runtime configuration, not model filename, weight quantization, defaults guessed by the adapter, or launch-argument text;
-- advertisement is machine-readable and exact;
-- target, draft, and speculative contexts are distinguished if more than target exists;
-- target-only hybrid support requires nonempty advertised target K/V types;
-- the exact types are bound into `CacheABIIdentity`;
-- missing or unrecognized types withhold hybrid capabilities and refuse export/import before save, staging, or restore;
-- a runtime with a different K or V type refuses the artifact on ABI identity before touching state;
-- same-type patched restart remains accepted;
-- same-source unpatched hybrid remains withheld.
-
-Required retained tests:
-
-1. differing only in K dtype changes cache ABI and refuses cross-import;
-2. differing only in V dtype changes cache ABI and refuses cross-import;
-3. missing dtype advertisement yields empty hybrid capabilities;
-4. missing dtype refuses explicit export and import before state endpoints;
-5. weight quantization cannot populate cache dtype fields;
-6. exact advertised types survive into the benchmark record;
-7. target-only live 256 restart remains green after rebuilding the patched binary.
-
-Because this changes capability patch 0002 and the patched binary identity, record the new patch digest, binary digest, source-tree diff digest, and build configuration. Do not transfer old live measurements to the rebuilt binary without a 256 smoke gate.
-
-## P1: remove the avoidable state-version save probe
-
-The one-pass record attributes about 0.525 s to preflight. Endpoint evidence shows `state_version()` saves a slot to discover the sequence version even though the complete patched checkpoint protocol advertises `sequence_state_version=3`.
-
-After P0 makes runtime identity complete:
-
-- use the advertised sequence version for import compatibility only when the protocol is complete, the tuple is allowlisted, active state classes are proven, and K/V cache types are present;
-- keep byte-derived sequence-version validation on export and require emitted bytes to match the advertisement;
-- retain a fail-closed fallback for runtimes without a complete protocol;
-- an unpatched hybrid must refuse from support evidence, not perform a save probe to discover a format it is not allowed to use.
-
-Measure the removed endpoint call and preflight time. Do not merely relabel it.
-
-Required tests:
-
-- complete patched hybrid import makes no version-probe save;
-- advertised/emitted version disagreement refuses export;
-- incomplete or malformed protocol never enables the fast path;
-- unpatched hybrid import still issues no save or restore;
-- cache ABI remains exact.
-
-## P2: measure the direct-raw 2K lower bound before choosing a format
-
-Do not build a production zero-copy store yet. First answer whether eliminating staging can actually cross break-even.
-
-Run a research-only, process-owned lower-bound experiment on the exact existing 2K model, prompt, binary pair, and tmpfs environment. Keep the public adapter unchanged and clearly label this path non-production and pre-admitted.
-
-### Artifact admission outside the timed restore window
-
-- start with the exact raw `ggsq/3+sckp/1` state produced by the patched prefix export;
-- validate its sequence framing, SCKP appendix, full payload digest, model identity, prompt identity, protocol tuple, active state classes, and K/V cache types;
-- record admission time separately;
-- store it under its content digest;
-- record device, inode, size, mtime_ns, ctime_ns, and digest;
-- ensure the file is unchanged before and after the timed restore;
-- never count an unverified or changed file as admitted.
-
-This is a lower bound for a trusted, pre-admitted local cache. It is not permission to skip integrity on arbitrary files.
-
-### Timed direct path
-
-Across a real server restart:
-
-1. prove the new process has zero reuse;
-2. use the already-admitted raw state directly, with no KVX payload extraction or byte copy;
-3. issue the runtime restore;
-4. compare every restore checkpoint field with admitted metadata;
-5. run mandatory reuse verification;
-6. restore the pristine prefix;
-7. time the actual post-import completion;
-8. require `cache_n=2044`, `prompt_n=4`, and full token/content/logprob parity;
-9. prove the raw file and any temporary link are unchanged/removed;
-10. run the unpatched control and require refusal before file linking or restore.
-
-Record two direct variants if needed:
-
-- current exact verification semantics with the preflight save retained;
-- complete advertised identity with the version-probe save removed after P1.
-
-Decision rule remains:
-
-`timed verified/admitted restore path + actual tail < native cold request`
-
-The one-pass measurements imply, but do not prove, a lower bound near:
-
-`runtime restore + reuse probe + pristine restore + tail ≈ 1.54 s`
-
-against a 1.73 s cold request. The margin is small enough that it must be measured, not projected.
-
-### Branch on the lower-bound result
-
-- Lower bound is not cheaper: stop 2K storage redesign. Preserve the result and determine whether probe/pristine semantics or longer context is the only remaining path.
-- Lower bound is within 10% of cold: run three repetitions before choosing a format.
-- Lower bound is clearly cheaper: then design the smallest admitted raw-artifact contract.
-
-Only after a measured win choose among:
-
-- content-addressed raw state plus authenticated sidecar;
-- same-filesystem hardlink/reflink into the slot directory;
-- restore-from-container offset support;
-- filesystem integrity such as fs-verity.
-
-Any chosen design must maintain atomic admission, digest identity, TOCTOU resistance, cleanup, and unpatched refusal. A filename, read-only bit, or prior hash alone is not sufficient proof that the bytes restored are the bytes admitted.
-
-## P3: keep scaling and scope deferred
-
-Do not run NVMe, 8K, 32K, or 131K until the direct 2K lower bound is measured and the identity gap is closed.
-
-The proven model is exactly `Qwen3.8-27B-UD-Q4_K_XL.gguf`, architecture `qwen35`. Exact Qwen3.5-27B and Qwen3.6-27B digests remain untested.
-
-Draft/MTP/speculative state remains withheld until behaviorally tested while active.
-
-## Required execution order
-
-1. Add live K/V cache dtype advertisement and fail-closed ABI tests.
-2. Rebuild the patched runtime and run the sealed 256 smoke gate.
-3. Remove the patched import's avoidable state-version save probe with exact fallback tests.
-4. Commit code before evidence generation.
-5. Run one pre-admitted direct-raw 2K lower-bound repetition on tmpfs.
-6. Follow the measured branch; do not automatically design a new format or run 8K.
-7. Keep upstream submission, exact-boundary work, canonical conversion, cross-backend work, vLLM, and Transformers deferred.
-
-## Reporting discipline
+The proven model is exactly Qwen3.8-27B-UD-Q4_K_XL.gguf, architecture qwen35. Exact Qwen3.5-27B and Qwen3.6-27B model digests remain untested. Do not generalize the evidence beyond the tested digest and runtime ABI.
 
 Classify claims as:
 
@@ -249,12 +150,19 @@ Classify claims as:
 
 Current truthful status:
 
-- persistent hybrid restoration is correct on the exact tested Qwen3.8-27B qwen35 model;
-- the public KVX adapter remains fail closed on the tested unpatched runtime;
-- 2K correctness holds with `2044/2048` reuse and a four-token tail;
-- one-pass verified staging safely removes one complete 577 MiB payload read;
-- 2K improves from 3.76× to 2.52× cold but remains economically unsuccessful;
-- verified staging is now the dominant phase;
-- actual K/V cache dtypes are missing from runtime advertisement and cache ABI identity;
-- a direct pre-admitted raw restore is inferred to be near break-even but is unmeasured;
-- NVMe, 8K, 32K, exact Qwen3.5/Qwen3.6 digests, and active draft/speculative state remain untested.
+- persistent hybrid restoration is correct on the exact tested 27B qwen35 model;
+- patched reuse is 252/256 and 2044/2048, with a stable four-token tail;
+- target K/V cache identity is now explicit and fail closed;
+- the public KVX adapter remains correct but slower than cold because verified staging copies the payload;
+- a research-only pre-admitted direct raw path is measured once at 12.4% faster than cold;
+- that result justifies the smallest admitted-store prototype, not a general zero-copy claim;
+- admission costs 3.267 s and is inferred to amortize after about 16 restores at the one-run saving;
+- NVMe, production admitted-store behavior, 8K, exact Qwen3.5/Qwen3.6 digests, and active draft/speculative state remain untested.
+
+## Required execution order
+
+1. Write the admitted-store trust contract and red tests for atomicity, identity, TOCTOU, and unpatched refusal.
+2. Implement only the local experimental admission and direct-restore path; leave portable KVX unchanged.
+3. Commit code before generating evidence.
+4. Run the three-repetition 2K tmpfs gate and retain the full record.
+5. Follow the decision rule; do not automatically run NVMe or 8K.
