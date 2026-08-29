@@ -10,21 +10,12 @@ strings(1) match, or an artifact size - all of which describe the build
 rather than the behaviour.
 
   /props           slot_checkpoint_persistence, slot_checkpoint_format,
-                   sequence_state_version, per-blob support flags, and
-                   active_checkpoint_state_classes
+                   sequence_state_version, per-blob support flags,
+                   active_checkpoint_state_classes, and the live target
+                   context's K/V cache types
   save/restore     n_checkpoints, checkpoint_bytes, and the newest
                    checkpoint's n_tokens, pos_min and pos_max
 
-active_checkpoint_state_classes reports which state classes THIS launch
-actually requires, derived from the launch configuration rather than from
-what the format can hold. The support flags alone cannot distinguish an
-unproven class that is idle from one that is in use: a checkpoint stores
-target, draft and speculative state together, so a launch with a draft
-model produces checkpoints whose restoration has never been verified.
-Without this field a target-only configuration cannot be told apart from a
-speculative one, and a fail-closed consumer has to refuse both.
-
-The reported coverage lets an importer check declared coverage against
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -526,6 +526,14 @@
@@ -68,6 +59,24 @@ The reported coverage lets an importer check declared coverage against
          { "timings", {
              { "restore_ms", t_ms }
          }},
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -25,6 +25,15 @@
+     bool has_inp_video;
+     json json_ui_settings;
+     int slot_n_ctx;
++
++    // The K/V cache types the live target context was created with. Weight quantization
++    // is not a substitute: a Q4 model can run an f16, q8_0 or quantized KV cache, and two
++    // launches differing only in these types produce caches that are not interchangeable.
++    std::string cache_type_k;
++    std::string cache_type_v;
++    // Only populated when a draft context actually exists.
++    std::string draft_cache_type_k;
++    std::string draft_cache_type_v;
+     enum llama_pooling_type pooling_type;
+ 
+     // chat params
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -2676,6 +2676,17 @@
@@ -106,7 +115,22 @@ The reported coverage lets an importer check declared coverage against
                      queue_results.send(std::move(res));
                  } break;
              case SERVER_TASK_TYPE_SLOT_ERASE:
-@@ -4686,6 +4708,17 @@
+@@ -4287,6 +4309,14 @@
+         /* has_inp_video          */ impl->chat_params.allow_video,
+         /* json_ui_settings       */ impl->json_ui_settings,
+         /* slot_n_ctx             */ impl->n_ctx_slot(),
++        /* cache_type_k           */ ggml_type_name(impl->params_base.cache_type_k),
++        /* cache_type_v           */ ggml_type_name(impl->params_base.cache_type_v),
++        /* draft_cache_type_k     */ impl->ctx_dft != nullptr
++                                       ? ggml_type_name(impl->params_base.speculative.draft.cache_type_k)
++                                       : std::string(),
++        /* draft_cache_type_v     */ impl->ctx_dft != nullptr
++                                       ? ggml_type_name(impl->params_base.speculative.draft.cache_type_v)
++                                       : std::string(),
+         /* pooling_type           */ llama_pooling_type(impl->ctx_tgt),
+ 
+         /* chat_params            */ impl->chat_params,
+@@ -4686,6 +4716,17 @@
  }
  
  static json get_res_props(const server_context_meta & meta, const common_params & params, bool is_sleeping) {
@@ -124,7 +148,7 @@ The reported coverage lets an importer check declared coverage against
      // note: do NOT use ctx_server here, otherwise it's not possible to use this during sleep
  
      task_params tparams;
-@@ -4721,6 +4754,33 @@
+@@ -4721,6 +4762,40 @@
          { "eos_token",                   meta.eos_token_str },
          { "build_info",                  meta.build_info },
          { "is_sleeping",                 is_sleeping },
@@ -155,6 +179,13 @@ The reported coverage lets an importer check declared coverage against
 +        // has never been verified. Without this, a target-only configuration cannot be
 +        // distinguished from a speculative one and both have to be refused.
 +        { "active_checkpoint_state_classes",     active_checkpoint_state_classes },
++        // The live target context's K/V cache types. A cache written under one pair is not
++        // interchangeable with one written under another, so a consumer must be able to
++        // bind these into cache identity rather than infer them from the model file.
++        { "target_cache_type_k",                 meta.cache_type_k },
++        { "target_cache_type_v",                 meta.cache_type_v },
++        { "draft_cache_type_k",                  meta.draft_cache_type_k },
++        { "draft_cache_type_v",                  meta.draft_cache_type_v },
          { "cors_proxy_enabled",          params.ui_mcp_proxy },
      };
      if (params.use_jinja) {

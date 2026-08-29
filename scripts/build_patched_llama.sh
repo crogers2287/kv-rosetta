@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # refreshed from upstream without disturbing our additions.
 PATCHES=(
   "$REPO_ROOT/patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch:baf44e7c06f1a8b16bcc7de1019c2a36e8147b0b32a61b33bff4160e445fc22f"
-  "$REPO_ROOT/patches/llama.cpp/0002-advertise-checkpoint-capability.patch:132acd3e3013d90f634ccbcbcb7dcb7e168128a5157ae28378b2a598eca0491f"
+  "$REPO_ROOT/patches/llama.cpp/0002-advertise-checkpoint-capability.patch:31f1f74b4af4a322058c6faa956ea0dbbf3868fa54a5f78793d27b066aeb1a3f"
 )
 
 TARGET="${1:-$HOME/llama.cpp-kvx-patched}"

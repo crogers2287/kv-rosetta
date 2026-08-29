@@ -248,8 +248,8 @@ class LlamaCppHTTPAdapter(Adapter):
             # The emitted state version is part of cache identity: an artifact written at
             # version 2 is refused outright by a build expecting version 3.
             state_format=self.opaque_format() if self.slot_save_path else "",
-            k_dtype=str(props.get("type_k", settings.get("type_k", ""))),
-            v_dtype=str(props.get("type_v", settings.get("type_v", ""))),
+            k_dtype=self._cache_dtype(props, "k"),
+            v_dtype=self._cache_dtype(props, "v"),
             context_kind=str(settings.get("n_ctx", "")),
             byte_order="little",
             # The checkpoint contract is part of cache identity: an artifact written by a
@@ -417,7 +417,14 @@ class LlamaCppHTTPAdapter(Adapter):
         if unproven:
             return False, (f"this launch requires {unproven} checkpoint state, whose "
                            f"restoration is not behaviourally proven; refusing"), protocol
-        return True, f"target-only {fmt} on sequence version {version}", protocol
+        k_dtype, v_dtype = self.cache_dtypes()
+        if not k_dtype or not v_dtype:
+            return False, ("runtime does not advertise its K/V cache types, so a cache "
+                           "written here cannot be bound to the configuration that wrote "
+                           "it; refusing rather than treating weight quantization as a "
+                           "substitute"), protocol
+        return True, (f"target-only {fmt} on sequence version {version}, "
+                      f"K/V cache {k_dtype}/{v_dtype}"), protocol
 
     def _require_exportable(self, model: str) -> dict[str, Any]:
         """Refuse before asking the server to save anything it cannot make usable.
@@ -467,6 +474,23 @@ class LlamaCppHTTPAdapter(Adapter):
                 f"{n_written - checkpoint_bytes} ({appendix.status.value}); refusing to "
                 f"label this artifact {protocol['format']}")
         return True
+
+    @staticmethod
+    def _cache_dtype(props: dict[str, Any], axis: str) -> str:
+        """The live target context's K or V cache type, or "" when not advertised.
+
+        Deliberately does NOT fall back to model_ftype or any weight-quantization field. A
+        Q4 model can run an f16, q8_0 or quantized KV cache; treating weight quantization as
+        cache dtype would put a confident wrong value into cache identity, which is worse
+        than an empty one because it would compare equal across genuinely different caches.
+        """
+        value = props.get(f"target_cache_type_{axis}")
+        return value if isinstance(value, str) and value else ""
+
+    def cache_dtypes(self) -> tuple[str, str]:
+        """(K, V) cache types this runtime advertises. Empty strings mean unadvertised."""
+        props = self.props()
+        return self._cache_dtype(props, "k"), self._cache_dtype(props, "v")
 
     def _active_state_classes(self) -> list[str] | None:
         """Which checkpoint state classes this launch actually requires, or None."""

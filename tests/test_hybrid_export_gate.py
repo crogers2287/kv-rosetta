@@ -49,6 +49,8 @@ def props(**overrides) -> dict:
         "sckp_serializes_speculative_state": True,
         "default_generation_settings": {"type_k": "f16", "n_ctx": 8192},
         "build_info": "bstub-0000000",
+        "target_cache_type_k": "f16",
+        "target_cache_type_v": "f16",
     }
     base.update(overrides)
     return base
@@ -82,7 +84,10 @@ class StubAdapter(LlamaCppHTTPAdapter):
         return {}
 
     def identity(self, model: str = "") -> dict:
-        return {"model_digest": "d" * 64, "cache_abi_digest": "a" * 64,
+        # The cache ABI digest must be the real one, or every cross-runtime identity test
+        # compares a constant against itself.
+        return {"model_digest": "d" * 64,
+                "cache_abi_digest": self.cache_abi_identity(model).digest(),
                 "build_info": "bstub-0000000"}
 
     def model_identity(self, model: str = ""):
@@ -92,12 +97,9 @@ class StubAdapter(LlamaCppHTTPAdapter):
                              adapters=(), notes=())
 
     def cache_abi_identity(self, model: str = ""):
-        from kv_rosetta.identity import CacheABIIdentity
-        return CacheABIIdentity(
-            runtime="llama.cpp", runtime_revision="bstub-0000000", state_format="ggsq/3",
-            k_dtype="f16", v_dtype="f16", context_kind="hybrid", rope_kind="rope",
-            rope_base=1000000.0, rope_scaling=(), partial_rotary_dim=0, swa_window=0,
-            hybrid_cache="checkpoint", unified_kv=True, byte_order="little", flags=())
+        # The real implementation, so identity actually varies with what the runtime
+        # advertises. A constant here would make every identity test vacuous.
+        return LlamaCppHTTPAdapter.cache_abi_identity(self, model)
 
     def prefix_reuse_support(self, model: str = ""):
         from kv_rosetta import gguf
