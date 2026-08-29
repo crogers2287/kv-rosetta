@@ -238,11 +238,30 @@ class ServerContextSizeTest(unittest.TestCase):
     server, and the earlier fix silently matched nothing while passing ast.parse.
     """
 
-    def test_the_argv_does_not_hardcode_a_context_size(self):
-        source = (REPO / "scripts" / "production_matrix.py").read_text()
-        self.assertNotIn('"-c", "8192"', source,
-                         "context size is hardcoded; a longer prompt will 400")
-        self.assertIn('"-c", str(self.n_ctx)', source)
+    def server(self, n_ctx):
+        import importlib.util as iu
+        spec = iu.spec_from_file_location("pm", REPO / "scripts" / "production_matrix.py")
+        module = iu.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.Server("/bin/true", "m", "/slots", 1234, Path("/tmp/x.log"),
+                             n_ctx=n_ctx)
+
+    def test_the_argv_carries_the_requested_context(self):
+        """Behavioural, not a source-string match.
+
+        The earlier nonfunctional fix passed both ast.parse and a substring assertion, so
+        this builds the actual command line and reads the value back.
+        """
+        for n_ctx in (8192, 9216, 33792):
+            with self.subTest(n_ctx=n_ctx):
+                argv = self.server(n_ctx).build_argv()
+                self.assertIn("-c", argv)
+                self.assertEqual(argv[argv.index("-c") + 1], str(n_ctx))
+
+    def test_the_argv_still_carries_the_slot_save_path(self):
+        argv = self.server(9216).build_argv()
+        self.assertIn("--slot-save-path", argv)
+        self.assertTrue(argv[argv.index("--slot-save-path") + 1].endswith("/"))
 
     def test_the_gate_derives_a_context_with_headroom(self):
         source = (REPO / "scripts" / "admitted_store_gate.py").read_text()
@@ -255,3 +274,48 @@ class ServerContextSizeTest(unittest.TestCase):
         spec.loader.exec_module(module)
         server = module.Server("/bin/true", "m", "/tmp", 1, Path("/tmp/x.log"), n_ctx=9216)
         self.assertEqual(server.n_ctx, 9216)
+
+
+class CoverageAcceptanceTest(unittest.TestCase):
+    """Expected coverage is a relationship, not a constant.
+
+    The harness required cache_n=2044 and prompt_n=4 literally, so it was silently 2K-only:
+    an 8K run reporting the correct 8188/4 would have been rejected as a failure.
+    """
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "admitted_store_gate", REPO / "scripts" / "admitted_store_gate.py")
+        self.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate)
+
+    def test_an_8192_token_run_accepts_8188_over_4(self):
+        self.assertEqual(
+            self.gate.check_coverage(cache_n=8188, prompt_n=4, prompt_tokens=8192,
+                                     checkpoint_n_tokens=8188), [])
+
+    def test_an_8192_token_run_rejects_the_2k_numbers(self):
+        problems = self.gate.check_coverage(cache_n=2044, prompt_n=4, prompt_tokens=8192,
+                                            checkpoint_n_tokens=8188)
+        self.assertTrue(problems)
+        self.assertTrue(any("2044" in p for p in problems))
+
+    def test_the_2k_case_still_passes_unchanged(self):
+        self.assertEqual(
+            self.gate.check_coverage(cache_n=2044, prompt_n=4, prompt_tokens=2048,
+                                     checkpoint_n_tokens=2044), [])
+
+    def test_a_tail_that_does_not_complete_the_prompt_is_rejected(self):
+        problems = self.gate.check_coverage(cache_n=8188, prompt_n=2, prompt_tokens=8192,
+                                            checkpoint_n_tokens=8188)
+        self.assertTrue(problems)
+
+    def test_reuse_below_the_declared_coverage_is_rejected(self):
+        problems = self.gate.check_coverage(cache_n=0, prompt_n=8192, prompt_tokens=8192,
+                                            checkpoint_n_tokens=8188)
+        self.assertTrue(problems)
+
+    def test_the_record_kind_is_length_neutral(self):
+        source = (REPO / "scripts" / "admitted_store_gate.py").read_text()
+        self.assertIn('"kind": "admitted-store-gate"', source)
+        self.assertNotIn("admitted-store-2k-gate", source)

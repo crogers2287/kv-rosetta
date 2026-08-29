@@ -182,6 +182,26 @@ def evict_file(path: Path) -> dict:
     }
 
 
+def check_coverage(cache_n: int, prompt_n: int, prompt_tokens: int,
+                   checkpoint_n_tokens: int) -> list[str]:
+    """Coverage the restore must show, derived from the admitted metadata.
+
+    Hardcoding 2044/4 made the harness silently 2K-only: an 8K run would have been rejected
+    for reporting the correct numbers. The contract is a relationship, not a constant - the
+    checkpoint covers what it says it covers, and the tail is whatever is left.
+    """
+    problems = []
+    if cache_n != checkpoint_n_tokens:
+        problems.append(f"cache_n {cache_n} != declared checkpoint coverage "
+                        f"{checkpoint_n_tokens}")
+    expected_tail = prompt_tokens - checkpoint_n_tokens
+    if prompt_n != expected_tail:
+        problems.append(f"prompt_n {prompt_n} != uncovered tail {expected_tail}")
+    if cache_n + prompt_n != prompt_tokens:
+        problems.append(f"cache_n + prompt_n = {cache_n + prompt_n}, not {prompt_tokens}")
+    return problems
+
+
 def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
                   margin: float = 0.20) -> dict:
     """Predict the object size and peak transient use, and say whether it fits.
@@ -353,9 +373,11 @@ def main() -> int:
             report = rep_path.restore(obj.digest, model=args.model, token_ids=ids2)
             if not report.ok:
                 raise RuntimeError(f"rep {index}: admitted restore failed: {report.reason}")
-            if report.cache_n != 2044 or report.prompt_n != 4:
-                raise RuntimeError(f"rep {index}: cache_n={report.cache_n} "
-                                   f"prompt_n={report.prompt_n}, expected 2044/4")
+            covered = int(obj.manifest["checkpoint"]["n_tokens"])
+            problems = check_coverage(report.cache_n, report.prompt_n,
+                                      args.prompt_tokens, covered)
+            if problems:
+                raise RuntimeError(f"rep {index}: " + "; ".join(problems))
             if report.reads.payload_bytes:
                 raise RuntimeError(f"rep {index}: request path read "
                                    f"{report.reads.payload_bytes} payload bytes")
@@ -424,7 +446,7 @@ def main() -> int:
     median_total, median_cold = statistics.median(totals), statistics.median(colds)
     saving = median_cold - median_total
     record = {
-        "kind": "admitted-store-2k-gate",
+        "kind": "admitted-store-gate",
         "warning": "RESEARCH ONLY. Experimental local path, not a production API.",
         "repo_commit": repo_commit,
         "runner_sha256": sha256_file(Path(__file__).resolve()),

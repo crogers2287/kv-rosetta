@@ -225,15 +225,23 @@ class Server:
                 time.sleep(10)
         raise AssertionError("unreachable")
 
+    def build_argv(self) -> list[str]:
+        """The exact command line, separable from starting it.
+
+        Extracted so the context size can be checked without a live server: a previous edit
+        left -c hardcoded, and both ast.parse and a source-string assertion passed it.
+        """
+        return [self.binary, "--model", self.model, "--host", "127.0.0.1",
+                "--port", str(self.port), "-ngl", "99", "-c", str(self.n_ctx),
+                "--parallel", "1", "-fa", "on", "--split-mode", "layer",
+                "--tensor-split", "1,1",
+                "--slot-save-path", self.slots.rstrip("/") + "/", "--no-warmup"]
+
     def _start_once(self) -> int:
         if self.healthy():
             raise RuntimeError(f"{self.url} already answers; refusing to attribute its "
                                f"behaviour to this run")
-        self.argv = [self.binary, "--model", self.model, "--host", "127.0.0.1",
-                     "--port", str(self.port), "-ngl", "99", "-c", str(self.n_ctx),
-                     "--parallel", "1", "-fa", "on", "--split-mode", "layer",
-                     "--tensor-split", "1,1",
-                     "--slot-save-path", self.slots.rstrip("/") + "/", "--no-warmup"]
+        self.argv = self.build_argv()
         with open(self.log, "wb") as out:
             self.proc = subprocess.Popen(self.argv, stdout=out, stderr=subprocess.STDOUT)
         started = time.time()
