@@ -269,8 +269,99 @@ def protocol_of(props: dict) -> dict:
     }
 
 
+def toks(response):
+    return [c["id"] for c in response.get("completion_probabilities", [])]
+
+
+def probs(response):
+    """The per-token alternative vectors, from the field llama.cpp actually uses.
+
+    With the default response contract the alternatives are under `top_logprobs` and carry
+    `logprob`; `top_probs`/`prob` appear only when post_sampling_probs=true is requested.
+    Reading the wrong key yields a list of empty dicts, and comparing two such lists passes
+    while comparing nothing at all.
+    """
+    out = []
+    for entry in response.get("completion_probabilities", []):
+        top = entry.get("top_logprobs")
+        if top is None:
+            raise RuntimeError(f"completion entry has no top_logprobs; keys were "
+                               f"{sorted(entry)}. Refusing to compare vectors that were "
+                               f"never returned.")
+        out.append({int(t["id"]): float(t["logprob"]) for t in top})
+    return out
+
+
+def check_vectors(vectors, label, expected_tokens, leg):
+    if len(vectors) != len(expected_tokens):
+        raise RuntimeError(f"{leg}: {label} has {len(vectors)} vectors for "
+                           f"{len(expected_tokens)} tokens")
+    for i, (vector, token) in enumerate(zip(vectors, expected_tokens)):
+        if not vector:
+            raise RuntimeError(f"{leg}: {label} vector {i} is empty")
+        if token not in vector:
+            raise RuntimeError(f"{leg}: {label} vector {i} omits its own token {token}")
+        if len(vector) > N_PROBS:
+            raise RuntimeError(f"{leg}: {label} vector {i} has {len(vector)} entries, "
+                               f"more than the {N_PROBS} requested")
+    return vectors
+
+
+def vectors_agree(a, b):
+    """Equal keys per position and logprobs within the declared tolerance."""
+    for va, vb in zip(a, b):
+        if set(va) != set(vb):
+            return False
+        if any(abs(va[k] - vb[k]) > LOGPROB_TOLERANCE for k in va):
+            return False
+    return True
+
+
+def record_calls(adapter):
+    """Wrap _post so every endpoint call is recorded in order.
+
+    Lets "refused before any save/restore POST" be checked mechanically rather than
+    asserted in prose.
+    """
+    adapter.calls = []
+    original = adapter._post
+
+    def logging_post(path, payload, *args, **kwargs):
+        adapter.calls.append(path)
+        return original(path, payload, *args, **kwargs)
+
+    adapter._post = logging_post
+    return adapter
+
+
+def describe_artifact(path: Path) -> dict:
+    """Everything needed to identify a KVX artifact without re-reading its payload."""
+    from kv_rosetta import container
+
+    header = container.read_header(path)
+    blob = header.get("blob", {})
+    coverage = header.get("coverage", {})
+    total = path.stat().st_size
+    checkpoint_bytes = coverage.get("checkpoint_bytes")
+    return {
+        "container_sha256": sha256_file(path),
+        "payload_sha256": blob.get("sha256"),
+        "opaque_format": blob.get("opaque_format"),
+        "coverage": coverage,
+        "artifact_key": header.get("artifact_key"),
+        "total_bytes": total,
+        "payload_bytes": blob.get("nbytes"),
+        "checkpoint_bytes": checkpoint_bytes,
+        "sequence_bytes": (blob.get("nbytes") - checkpoint_bytes
+                           if isinstance(blob.get("nbytes"), int)
+                           and isinstance(checkpoint_bytes, int) else None),
+        "container_overhead_bytes": (total - blob["nbytes"]
+                                     if isinstance(blob.get("nbytes"), int) else None),
+    }
+
+
 def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool,
-            log_dir: Path) -> dict:
+            log_dir: Path, patched_artifact: Path | None = None) -> dict:
     """One full save / stop / start / restore lifecycle."""
     slot_file = "matrix-" + name + ".bin"
     port = free_port()
@@ -302,6 +393,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
 
         # Native in-memory reuse, the behaviour a restore must reproduce.
         native = first.post("/completion", request)
+        native_vectors = check_vectors(probs(native), "native", toks(native), name)
 
         saved = first.post("/slots/0?action=save", {"filename": slot_file})
         artifact = Path(slots) / slot_file
@@ -311,7 +403,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         # The adapter's own view of this runtime, and a real KVX export through it. This
         # is the contract a caller actually uses; the raw endpoint measurements above say
         # nothing about whether the adapter would let them near it.
-        adapter = LlamaCppHTTPAdapter(first.url, slots)
+        adapter = record_calls(LlamaCppHTTPAdapter(first.url, slots))
         supported, support_reason, _ = adapter.hybrid_support()
         caps = adapter.capabilities()
         adapter_view = {
@@ -340,9 +432,18 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
             adapter_view["export_refused"] = None
             adapter_view["export_seconds"] = time.time() - export_started
             adapter_view["kvx_bytes"] = kvx_path.stat().st_size
+            adapter_view["artifact"] = describe_artifact(kvx_path)
+            adapter_view["kvx_path"] = str(kvx_path)
         except AdapterError as exc:
             adapter_view["export_refused"] = str(exc)
             adapter_view["export_seconds"] = time.time() - export_started
+        # "Before any save POST" is mechanically checkable, not asserted in prose.
+        adapter_view["calls_during_export"] = list(adapter.calls)
+        if adapter_view["export_refused"] and any(
+                "action=save" in call for call in adapter.calls):
+            raise RuntimeError(f"{name}: export refused only after a save POST: "
+                               f"{adapter.calls}")
+
         # Capability and the support predicate must agree on a live runtime as they do
         # offline. An artifact-level refusal - incomplete checkpoint coverage on this
         # particular save - is a different thing and is reported separately.
@@ -394,7 +495,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         # End-to-end through the adapter: outer KVX verification, staging, runtime
         # restore, and the mandatory reuse probe. Save time is deliberately excluded -
         # it is not paid on the request path - but everything a caller waits for is in.
-        adapter2 = LlamaCppHTTPAdapter(second.url, slots)
+        adapter2 = record_calls(LlamaCppHTTPAdapter(second.url, slots))
         if expect_patched:
             second.post("/slots/0?action=erase", {})
             started_import = time.time()
@@ -404,57 +505,63 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
             adapter_view["import_reason"] = report.reason
             adapter_view["import_reported_seconds"] = report.seconds
             adapter_view["import_tokens_restored"] = report.tokens_restored
+            adapter_view["import_phases"] = dict(report.phases)
+            adapter_view["calls_during_import"] = list(adapter2.calls)
             if not report.ok:
                 raise RuntimeError(f"{name}: adapter import failed: {report.reason}")
+            # The staged copy is the size of the cache; leaving it behind fills the disk.
+            leftover = sorted(str(x) for x in Path(slots).glob("*.restore.bin"))
+            adapter_view["staged_copies_left"] = leftover
+            if leftover:
+                raise RuntimeError(f"{name}: staged copies not removed: {leftover}")
+            # Parity of the adapter-restored cache against native in-memory reuse, not
+            # just of the raw-endpoint restore measured above.
+            after_adapter = second.post("/completion", request2)
+            adapter_view["after_adapter_import"] = {
+                "cache_n": after_adapter["timings"]["cache_n"],
+                "prompt_n": after_adapter["timings"]["prompt_n"],
+                "tokens": toks(after_adapter),
+                "content": after_adapter["content"],
+            }
+            adapter_vectors = check_vectors(probs(after_adapter), "adapter-restored",
+                                            toks(after_adapter), name)
+            if toks(after_adapter) != toks(native) or \
+                    after_adapter["content"] != native["content"]:
+                raise RuntimeError(f"{name}: output after adapter import differs from "
+                                   f"native in-memory reuse")
+            if not vectors_agree(adapter_vectors, native_vectors):
+                raise RuntimeError(f"{name}: probability vectors after adapter import "
+                                   f"differ from native in-memory reuse")
+            adapter_view["after_adapter_top_logprobs"] = adapter_vectors
         else:
             adapter_view["import_ok"] = None
             adapter_view["import_reason"] = "no artifact: export was refused, as required"
+            # The unpatched runtime must also refuse an artifact the patched one produced,
+            # before staging or restoring it - and verify_reuse=False must not change that.
+            if patched_artifact and Path(patched_artifact).is_file():
+                refusals = {}
+                for verify in (True, False):
+                    adapter2.calls.clear()
+                    report = adapter2.import_(Path(patched_artifact),
+                                              ImportRequest(model=model, slot=0),
+                                              verify_reuse=verify)
+                    refusals[f"verify_reuse={verify}"] = {
+                        "ok": report.ok, "reason": report.reason,
+                        "calls": list(adapter2.calls),
+                        "phases": dict(report.phases),
+                    }
+                    if report.ok:
+                        raise RuntimeError(f"{name}: unpatched runtime accepted a patched "
+                                           f"compound artifact (verify_reuse={verify})")
+                    if any("action=restore" in call for call in adapter2.calls):
+                        raise RuntimeError(f"{name}: refused only after a restore POST: "
+                                           f"{adapter2.calls}")
+                    staged = sorted(Path(slots).glob("*.restore.bin"))
+                    if staged:
+                        raise RuntimeError(f"{name}: staged copies left behind: {staged}")
+                adapter_view["cross_import_refusals"] = refusals
     finally:
         second.stop()
-
-    def toks(response):
-        return [c["id"] for c in response.get("completion_probabilities", [])]
-
-    def probs(response):
-        """The per-token alternative vectors, from the field llama.cpp actually uses.
-
-        With the default response contract the alternatives are under `top_logprobs` and
-        carry `logprob`; `top_probs`/`prob` appear only when post_sampling_probs=true is
-        requested. Reading the wrong key yields a list of empty dicts, and comparing two
-        such lists passes while comparing nothing at all.
-        """
-        out = []
-        for entry in response.get("completion_probabilities", []):
-            top = entry.get("top_logprobs")
-            if top is None:
-                raise RuntimeError(
-                    f"completion entry has no top_logprobs; keys were {sorted(entry)}. "
-                    f"Refusing to compare vectors that were never returned.")
-            out.append({int(t["id"]): float(t["logprob"]) for t in top})
-        return out
-
-    def check_vectors(vectors, label):
-        if len(vectors) != len(toks(warm)):
-            raise RuntimeError(f"{name}: {label} has {len(vectors)} vectors for "
-                               f"{len(toks(warm))} tokens")
-        for i, (vector, token) in enumerate(zip(vectors, toks(warm))):
-            if not vector:
-                raise RuntimeError(f"{name}: {label} vector {i} is empty")
-            if token not in vector:
-                raise RuntimeError(f"{name}: {label} vector {i} omits its own token {token}")
-            if len(vector) > N_PROBS:
-                raise RuntimeError(f"{name}: {label} vector {i} has {len(vector)} entries, "
-                                   f"more than the {N_PROBS} requested")
-        return vectors
-
-    def vectors_agree(a, b):
-        """Equal keys per position and logprobs within the declared tolerance."""
-        for va, vb in zip(a, b):
-            if set(va) != set(vb):
-                return False
-            if any(abs(va[k] - vb[k]) > LOGPROB_TOLERANCE for k in va):
-                return False
-        return True
 
     # The acceptance criteria, enforced rather than merely recorded. A record that reports
     # numbers without checking them is a log, not a gate.
@@ -465,8 +572,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         problems.append("restored output differs from the cold run")
     if toks(native) != toks(warm) or native["content"] != warm["content"]:
         problems.append("restored output differs from native in-memory reuse")
-    native_vectors = check_vectors(probs(native), "native")
-    warm_vectors = check_vectors(probs(warm), "restored")
+    warm_vectors = check_vectors(probs(warm), "restored", toks(warm), name)
     if not vectors_agree(native_vectors, warm_vectors):
         problems.append("restored probability vectors differ from native in-memory reuse "
                         f"by more than {LOGPROB_TOLERANCE}")
@@ -558,10 +664,20 @@ def main() -> int:
     Path(args.slots).mkdir(parents=True, exist_ok=True)
 
     legs = {}
+    patched_artifact = None
+    # The patched leg runs first so its artifact can be offered to the unpatched runtime,
+    # which must refuse it before staging or restoring.
     for name, binary, expect in (("patched", args.patched, True),
                                  ("unpatched", args.unpatched, False)):
         print(f"=== {name} leg ===", flush=True)
-        legs[name] = run_leg(name, binary, args.model, args.slots, expect, log_dir)
+        legs[name] = run_leg(name, binary, args.model, args.slots, expect, log_dir,
+                             patched_artifact=patched_artifact)
+        if expect:
+            kept = Path(args.slots) / "patched-artifact.kvx"
+            produced = Path(legs[name]["adapter"].get("kvx_path", ""))
+            if produced.is_file():
+                produced.replace(kept)
+                patched_artifact = kept
         w = legs[name]["warm_after_restore"]
         print(f"  pids {legs[name]['first_pid']} -> {legs[name]['second_pid']} | "
               f"after restore cache_n={w['cache_n']} prompt_n={w['prompt_n']}", flush=True)

@@ -575,12 +575,15 @@ class LlamaCppHTTPAdapter(Adapter):
                 verify_reuse: bool = True) -> ImportReport:
         started = time.time()
         artifact = Path(artifact)
+        phases: dict[str, float] = {}
         try:
             if not self.slot_save_path:
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
                                     reason="no slot_save_path configured")
+            phase_started = time.time()
             ok, reason = container.verify(artifact)
+            phases["container_verify"] = time.time() - phase_started
             if not ok:
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
@@ -694,8 +697,12 @@ class LlamaCppHTTPAdapter(Adapter):
             artifact_name = f"{artifact.stem}.{os.getpid()}.restore.bin"
             staged = self.slot_save_path / artifact_name
             self._staged.append(staged)
+            phase_started = time.time()
             container.extract_payload(artifact, staged)
+            phases["staging"] = time.time() - phase_started
+            phase_started = time.time()
             result = self._post(f"/slots/{slot}?action=restore", {"filename": artifact_name})
+            phases["runtime_restore"] = time.time() - phase_started
             restored = int(result.get("n_restored", 0))
             if is_compound:
                 pairs = (("n_checkpoints", "n_checkpoints_restored"),
@@ -737,9 +744,11 @@ class LlamaCppHTTPAdapter(Adapter):
                         reason="cannot verify reuse: artifact carries no token IDs",
                         nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                         seconds=time.time() - started, tokens_restored=restored)
+                phase_started = time.time()
                 probe = self._post("/completion", {
                     "prompt": list(token_ids), "n_predict": 1, "temperature": 0.0,
                     "top_k": 1, "cache_prompt": True, "id_slot": slot})
+                phases["reuse_probe"] = time.time() - phase_started
                 timings = probe.get("timings", {})
                 cache_n = int(timings.get("cache_n", 0))
                 prompt_n = int(timings.get("prompt_n", 0))
@@ -785,7 +794,10 @@ class LlamaCppHTTPAdapter(Adapter):
                 # imported prefix so a caller never inherits a mutated cache. If that fails
                 # the slot holds the prefix plus the probe's token, which is not the cache
                 # the caller would be told it has.
-                if not self._restore_pristine(artifact_name, slot):
+                phase_started = time.time()
+                pristine_ok = self._restore_pristine(artifact_name, slot)
+                phases["pristine_restore"] = time.time() - phase_started
+                if not pristine_ok:
                     return ImportReport(
                         mode=StagingMode.HOST_STAGED, ok=False,
                         representation=Representation.OPAQUE,
@@ -806,6 +818,7 @@ class LlamaCppHTTPAdapter(Adapter):
                 nbytes=int(result.get("n_read", blob.get("nbytes", 0))),
                 seconds=time.time() - started,
                 tokens_restored=restored,
+                phases=dict(phases),
             )
         except AdapterError as exc:
             return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,

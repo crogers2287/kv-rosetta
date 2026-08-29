@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import abc
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Type
@@ -127,6 +127,11 @@ class ImportReport:
     tokens_restored: int = 0
     tokens_reprefilled: int = 0
     lossy_conversions: tuple[str, ...] = ()
+    #: Seconds attributed to each phase of an import: outer container verification,
+    #: payload staging, runtime restore, the reuse probe, and the pristine re-restore.
+    #: Reported so a total that loses to a cold prefill can be attributed rather than
+    #: merely observed.
+    phases: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, StagingMode):

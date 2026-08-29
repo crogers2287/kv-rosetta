@@ -135,3 +135,27 @@ class CompoundFormatAgreementTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhaseTimingTest(CompoundFormatAgreementTest):
+    """A total that loses to a cold prefill must be attributable to a phase."""
+
+    def test_a_successful_import_reports_every_phase(self):
+        adapter = self.importer()
+        report = adapter.import_(self.genuine, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        for phase in ("container_verify", "staging", "runtime_restore",
+                      "reuse_probe", "pristine_restore"):
+            self.assertIn(phase, report.phases)
+            self.assertGreaterEqual(report.phases[phase], 0.0)
+        self.assertLessEqual(sum(report.phases.values()), report.seconds + 1e-6,
+                             "phases sum to more than the reported total")
+
+    def test_a_refusal_before_staging_reports_no_staging_phase(self):
+        artifact = self.variant("plain-coverage-phases",
+                                lambda h: h["coverage"].__setitem__("format", "ggsq/3"))
+        adapter = self.importer()
+        report = adapter.import_(artifact, ImportRequest(model="", slot=0))
+        self.assertFalse(report.ok)
+        self.assertNotIn("staging", report.phases)
+        self.assertNotIn("runtime_restore", report.phases)
