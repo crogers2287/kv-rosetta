@@ -50,7 +50,10 @@ Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
 | 10. M9a RoPE apply/strip | ✅ done | `kv_rosetta/mappers/rope.py`; exact inverse verified |
 | 11. M6a store + watcher + budget | ✅ done | `kv_rosetta/store.py`, `daemon/watcher.py`, `daemon/budget.py` |
 | 12. Remaining test files (container, adapters, store, budget, ggsq) | 🔴 outstanding | Generation blocked by repeated upstream 502s; implementations are in place and independently verified |
-| 13. M4a/b/c runtime adapters (HF, llama.cpp HTTP, vLLM) | 🔴 outstanding | Next milestone |
+| 13. Steer P0 hardening (identity, segments, integrity, gate, envelopes, capabilities, conformance) | ✅ done | Commits 29d55d0, 6e7c1fc, e433052, 180795c |
+| 14. llama.cpp HTTP adapter + 256-token same-backend round trip | ✅ done | `cache_n=255 prompt_n=1`; token IDs identical; max top-5 probability delta 0.000e+00; 423ms → 97ms prefill. See `docs/research-findings.md` §10 |
+| 15. Context ladder 2K / 8K / 32K / 131K | 🔴 outstanding | Next: scale the proven path |
+| 16. CUDA↔HIP canonical transfer, HF reference adapter, vLLM connector | 🔴 outstanding | Gated behind the ladder |
 
 #### Verification evidence (independent, not the generated tests)
 

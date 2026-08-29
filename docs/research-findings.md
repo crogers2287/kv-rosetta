@@ -252,3 +252,55 @@ Still outstanding from the steer: the segment table (P0 #2), composite artifact 
 (P0 #1), content-derived model and cache-ABI identity (P0 #4), explicit GGSQ envelopes
 (P0 #6), directional capabilities (P0 #7), and a conformance suite that demands a real round
 trip. Runtime adapters must not be built until those land.
+
+## 10. First runtime proof: llama.cpp same-backend round trip
+
+Everything before this was a property of the file format. This is the first evidence that
+a real cache can leave a runtime and come back.
+
+Setup: `llama-server` from `~/llama.cpp/build/bin` at commit `ca3d5a3`, CPU-only (`-ngl 0`,
+both 3090s were at 23.5/24.5 GB serving the resident vLLM 27B, so there was no VRAM to take),
+`library_of_alexandria_Q4_K_M.gguf` (Qwen2.5-3B), `-c 4096`, one slot, started with
+`--slot-save-path`.
+
+Method, following the break-first ladder at its smallest rung: a prompt tokenized to
+**exactly 256 token IDs**, greedy decoding (`temperature 0`, `top_k 1`), 16 predicted tokens
+with top-5 probabilities recorded.
+
+| Step | Result |
+|---|---|
+| Cold run | `prompt_n=256 cache_n=0`, 423 ms prefill |
+| Save slot 0 | 271 cells, 9,995,388 bytes, 8.6 ms |
+| Erase slot 0 | 271 cells erased |
+| Re-run after erase, no restore | `cache_n=0` — the cache really was gone |
+| Restore from file | 271 cells, 9,995,388 bytes read, 7.0 ms |
+| Run after restore | `prompt_n=1 cache_n=255`, 97 ms prefill |
+
+Parity against the cold reference:
+
+- generated text identical
+- **token IDs identical** across all 16 generated positions
+- **max top-5 probability delta `0.000e+00`**, first divergent position: none
+- prefill 423 ms to 97 ms, a 4.4x reduction
+
+The erase-and-rerun step matters: without it, a "successful restore" cannot be
+distinguished from a cache that was never dropped.
+
+### What this does and does not establish
+
+It establishes: llama-server's slot endpoints are a usable cache-import ABI; an opaque KVX
+artifact survives a save/erase/restore cycle; and a restored cache produces token-for-token
+identical output rather than merely plausible output.
+
+It does not establish: cross-backend transfer, cross-model transfer, canonical decoding of
+the blob, or behaviour above 256 tokens. Those are separate rungs and none of them should be
+described as working until each has its own retained test.
+
+### Kept as a regression test
+
+`tests/test_llamacpp_roundtrip.py`, skipped unless `KVX_LLAMA_URL` and `KVX_LLAMA_SLOTS` are
+set. A one-time check does not count: the container, the identity formula and the adapter can
+all drift, and this is the only test that would notice.
+
+The adapter also passes the conformance suite that rejects five separately broken adapters
+(9 tests run, 1 legitimate skip for the canonical representation it does not export).
