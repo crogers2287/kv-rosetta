@@ -1,408 +1,421 @@
-# KV Rosetta research steer: persist hybrid checkpoints
+# KV Rosetta research steer: productionize hybrid checkpoint persistence
 
-Status basis: default-branch head 1ec08a727d0a716c6cfeb16149c872f87dccdafc.
+Status basis: default-branch head 6b0fd5e1d8b9afbf877b18a5f3b8ab2b3a0d4e56.
 
-This steer supersedes the conclusion that hybrid and recurrent architectures are a dead end. Keep the current fail-closed behavior for unpatched runtimes, but continue the research by adding the missing persistence seam to llama.cpp and proving it on the actual 27B model.
+This steer supersedes bdaa391. The hybrid checkpoint seam is no longer hypothetical. The next work is to turn a successful one-time experiment into a reproducible, detectable, fail-closed production path on the actual Qwen3.5/Qwen3.6 27B model.
 
 ## Mission
 
-Make the fixed Hermes/system/tool prefix of the Qwen3.5/Qwen3.6 27B model persist across slot eviction and server restart without re-prefilling it.
+Persist the exact stable Hermes/system/tool prefix for the production 27B hybrid model across slot eviction and a complete llama-server restart, then prove that total restore latency beats native prefill at useful context lengths.
 
-The target is exact-prefix restoration. The target is not arbitrary recurrent-state slicing, approximate longest-common-prefix reuse, or cross-model translation.
+Exact-prefix means the artifact is bound to the exact token sequence, model, runtime, and cache ABI. It does not require every token to be reused when llama.cpp deliberately rolls back to the nearest valid recurrent checkpoint. A small, declared, verified tail re-prefill is acceptable when it preserves native behavior and the economics remain favorable.
 
-A recurrent state after an exact token sequence is deterministic and can be restored. It cannot be reconstructed from ordinary KV cells or safely sliced to an arbitrary earlier prefix. That distinction defines the work.
+## What changed
 
-## Corrected current truth
+The repository now contains:
 
-The existing evidence remains valid:
+- a source map for the hybrid checkpoint failure;
+- an unpatched-runtime negative control;
+- upstream PR #26004 preserved as a pinned patch;
+- a guarded build script;
+- a patched llama-server built on Fred;
+- an in-process hybrid save, erase, restore, and reuse result;
+- a one-time full-process restart result on a qwen35 hybrid model.
 
-- Qwen2.5-3B can save, erase, restore, and reuse a llama.cpp slot state.
-- q4_0 KV restore beats native prefill on the measured 3B ladder.
-- The tested Qwen3.5/Qwen3.6 27B restores sequence cells but reports cache_n=0 and re-prefills.
-- The failure is not caused by model size, MTP, flash attention, GPU offload, tensor splitting, slot count, or prompt length.
-- The current adapter correctly withholds the opaque capability rather than reporting false success.
+Measured on OpenMythos-Q6_K:
 
-The interpretation needs correction:
+- unpatched slot file: 173,678,144 bytes;
+- patched slot file: 330,573,584 bytes;
+- restored checkpoint: about 149.626 MiB;
+- post-restore reuse: cache_n=252, prompt_n=4 for a 256-token prompt;
+- output and token IDs matched the recorded cold run;
+- the same result survived a manually controlled full server restart.
 
-- Hybrid/recurrent architecture does not make an exact saved prefix fundamentally unrestorable.
-- It makes ordinary KV-only prefix matching insufficient.
-- llama-server already creates common_prompt_checkpoint objects containing the state required to resume.
-- The /slots save endpoint does not persist those checkpoints.
-- The restore handler clears slot.prompt, which also clears checkpoints.
-- The next request finds no checkpoint and deliberately resets n_past to zero.
+This proves the architecture is restorable when checkpoint state travels with the slot file.
 
-Upstream issue:
+It does not yet prove the production 27B, MTP/speculative state, repeatable restart automation, or favorable economics on Fred.
+
+## Primary upstream evidence
+
+Use these as evidence, not as substitutes for local tests:
 
 - https://github.com/ggml-org/llama.cpp/issues/25913
+- https://github.com/ggml-org/llama.cpp/pull/26004
 
-The issue documents this exact save/restore defect and proposes two implementation paths. It is open, unassigned, and has no linked patch as of this steer.
+PR #26004 remains open. Its current design appends a versioned SCKP payload to the same slot file and preserves data_tgt, data_dft, and data_spec.
 
-Related in-memory checkpoint behavior:
+Independent upstream testing reported:
 
-- https://github.com/ggml-org/llama.cpp/issues/24055
+- Qwen3.5-35B-A3B hybrid;
+- 58,202-token cold prompt;
+- full server restart between measurements;
+- unpatched restore: cache_n=0, prompt_n=58,202, 181.9 seconds;
+- patched restore: cache_n=57,686, prompt_n=516, 4.7 seconds;
+- successful ten-turn continuation after restore.
 
-Do not rediscover those reports. Reproduce them against our pinned runtime, then build from them.
+That is a roughly 39x first-request improvement despite reprocessing 516 tokens. It is evidence that checkpoint granularity is not automatically a blocker.
 
-## Why this remains worth pursuing
+A separate CUDA-to-Metal result is interesting but not yet a cross-backend proof because its initial prompt continued straight ahead rather than diverging at a checkpoint. Keep cross-backend work deferred.
 
-The actual checkpoint observed on the 27B was about 149.6 MiB at both roughly 252 and roughly 2,800 tokens. That suggests the recurrent checkpoint component is largely fixed-size per checkpoint rather than growing by 149.6 MiB per token.
+## Critical evidence correction
 
-llama-server may retain up to 32 or 64 checkpoints for general conversation reuse. KV Rosetta does not need to persist all of them for the first milestone. It needs one valid checkpoint at the exact end of the stable prefix.
+tests/test_hybrid_checkpoint_restart.py does not start, stop, or restart llama-server. Its module documentation explicitly says restart orchestration is the caller's responsibility.
 
-The system prompt and canonical tool schemas are the best-case workload:
+Therefore:
 
-- token sequence is known exactly;
-- prefix boundary is controlled;
-- one endpoint checkpoint is sufficient;
-- model, tokenizer, runtime, and cache ABI are already content-addressed;
-- fallback remains native prefill.
+- the full-restart result is measured once on Fred;
+- the test retains in-process properties;
+- the repository does not yet contain an automated retained restart proof.
 
-## Non-negotiable safety rule
+Do not describe the restart as proven by the retained test until the harness owns and verifies both process lifetimes.
 
-Do not remove the current hybrid architecture refusal merely because a patched binary exists.
+This is the first item to fix because every later benchmark depends on knowing the old process and its in-memory checkpoints are gone.
 
-Replace the static refusal only after the live runtime advertises a checkpoint-persistence format and passes retained save, restart, restore, full-reuse, and parity tests.
+## Steering decision
 
-Unpatched llama.cpp remains unsupported for hybrid opaque restoration.
+Do not spend the next cycle forcing cache_n from 252 to 255.
 
-## R0: pin source truth and retain the failure
+The four-token tail is visible checkpoint granularity, not evidence of corrupted restoration. Forcing an endpoint checkpoint is extra invasive and has no demonstrated economic value yet.
 
-Work from the exact llama.cpp revision that produced the evidence before rebasing anything:
+Prioritize:
 
-- installed runtime build and commit;
-- server-context.cpp save handler;
-- restore handler;
-- common_prompt_checkpoint definition;
-- server_prompt_cache_state implementation;
-- checkpoint creation and matching logic;
-- target, draft, and speculative state handling.
+1. a real restart harness;
+2. machine-readable capability advertisement;
+3. the actual production 27B;
+4. measured context-ladder economics;
+5. exact-boundary checkpoint creation only if measured tail reprocessing is material.
 
-Create a concise source map in docs/hybrid-checkpoint-research.md with exact commit hashes, paths, symbols, and observed behavior.
+Preserve the unpatched negative control throughout.
 
-Retain a live negative test that proves the unpatched runtime:
+## P0-A: make the restart proof genuinely retained
 
-1. processes an exact 256-token prefix;
-2. saves the slot;
-3. erases it;
-4. restores it;
-5. reports restored sequence cells;
-6. returns cache_n=0;
-7. logs that full prompt processing was forced because checkpoint data is absent.
+Replace the manual restart convention with a harness that owns llama-server.
 
-This negative control must remain runnable after the patch exists.
+Inputs:
 
-## R1: choose the smallest correct llama.cpp persistence patch
+- patched llama-server path;
+- unpatched llama-server path;
+- exact GGUF model path;
+- slot directory;
+- launch flags;
+- test port or dynamically allocated port.
 
-Audit both upstream issue #25913 options before writing the patch.
+The harness must:
 
-### Option A: versioned checkpoint sidecar
+1. create a unique temporary slot directory;
+2. launch the first server process;
+3. record its PID, binary digest, build information, model identity, and launch flags;
+4. wait for readiness;
+5. cold-prefill the exact token sequence;
+6. save the slot artifact;
+7. record artifact digest and size;
+8. stop the process;
+9. wait for process exit and confirm the port is closed;
+10. launch a second process with a different PID and an empty in-memory state;
+11. prove the same request before restore has cache_n=0;
+12. restore the persisted artifact;
+13. issue the exact request to the exact slot;
+14. record cache_n, prompt_n, output tokens, probabilities, and timings;
+15. stop and reap the second process;
+16. clean temporary files.
 
-Save filepath plus a checkpoint sidecar containing, for every persisted common_prompt_checkpoint:
+The test must fail if:
 
-- n_tokens;
-- id_task;
-- pos_min;
-- pos_max;
-- length-prefixed data_tgt;
-- length-prefixed data_dft;
-- length-prefixed data_spec.
+- the two PIDs are equal;
+- the first process remains alive;
+- the port never closes;
+- cache reuse exists before restore on the second process;
+- the restored artifact is not the exact file created by the first process;
+- the expected hybrid checkpoint coverage is not reused.
 
-The file requires:
+Run the same harness against the unpatched binary and require the negative result: sequence cells restore, but cache_n remains zero.
 
-- fixed magic;
-- explicit format version;
-- byte order;
-- bounded counts and lengths;
-- exact prompt-token digest;
+Do not retire the negative control. Parameterize the matrix:
+
+- unpatched hybrid: must fail closed;
+- patched hybrid: must restore checkpoint coverage;
+- ordinary-attention model: must continue to use the existing GGSQ path.
+
+## P0-B: stop inferring the runtime feature
+
+The build script's strings search proves that SCKP code compiled into one shared library. It is not a runtime protocol and must not enable the adapter.
+
+Keep upstream PR #26004 as the unchanged first patch. Add a second local patch for KV Rosetta integration so upstream provenance remains auditable.
+
+Expose machine-readable fields from the live server, preferably through /props:
+
+- slot_checkpoint_persistence: true;
+- slot_checkpoint_format: sckp/1;
+- sequence_state_version;
+- supports_target_checkpoint_state;
+- supports_draft_checkpoint_state;
+- supports_speculative_checkpoint_state.
+
+Save and restore responses should additionally report:
+
+- n_checkpoints_saved or restored;
+- checkpoint_bytes;
+- newest checkpoint n_tokens;
+- newest checkpoint pos_min and pos_max;
+- total on-disk bytes.
+
+Do not enable hybrid capabilities from:
+
+- architecture name alone;
+- llama.cpp commit alone;
+- binary filename;
+- strings output;
+- artifact size greater than a model-specific threshold.
+
+The current static refusal remains correct until this protocol exists and the live test passes.
+
+## P0-C: define the hybrid reuse contract
+
+The standard-attention invariant cache_n=L-1 and prompt_n=1 is too strict for recurrent checkpoint restoration.
+
+For a checkpoint-aware artifact, bind the following into the manifest:
+
+- exact prompt token count and digest;
+- checkpoint format;
+- saved checkpoint n_tokens;
+- pos_min and pos_max;
+- declared uncovered tail;
+- runtime checkpoint policy;
+- context and speculative configuration.
+
+Import succeeds only when the post-restore request agrees with the persisted checkpoint coverage.
+
+A positive cache_n alone remains insufficient.
+
+Required checks:
+
+- cache_n is at least the declared reusable checkpoint coverage adjusted by the runtime's documented one-token evaluation rule;
+- prompt_n equals the exact uncovered tail plus required evaluation tokens;
+- no cache beyond the artifact's declared coverage is credited;
+- output matches the runtime's native in-memory checkpoint reuse behavior.
+
+If the metadata and observed reuse disagree, fail closed to native prefill.
+
+Do not force an exact endpoint checkpoint unless this measured contract leaves a tail large enough to damage the economics.
+
+## P0-D: label the artifact truthfully
+
+PR #26004 produces one file, not a sidecar pair. The previous steer’s two-segment requirement is obsolete.
+
+Keep the slot file as one opaque KVX payload whose whole-byte digest covers both the GGSQ state and appended SCKP checkpoint data.
+
+Label it explicitly:
+
+- ggsq/<sequence-version>+sckp/1
+
+Do not label it as plain ggsq/2 or ggsq/3.
+
+CacheABIIdentity must include:
+
+- exact llama.cpp build;
 - sequence-state version;
-- integrity digest;
-- atomic temporary-file publication.
+- SCKP version;
+- target, draft, and speculative model identities;
+- K and V dtypes;
+- context flags;
+- checkpoint policy;
+- hardware/backend fields that affect opaque compatibility.
 
-Restore must rebuild slot.prompt.checkpoints after slot.prompt.clear and token restoration.
+The outer KVX verifier must reject truncation or modification before runtime import. A truncated SCKP appendix currently degrades to a sequence-only restore; that behavior is backward compatible for llama.cpp but unacceptable as a successful hybrid KV Rosetta import.
 
-### Option B: serialize the complete server prompt-cache state
+## P0-E: remove brittle evidence tests
 
-The in-memory prompt-cache path already knows how to retain tokens and checkpoints together. Determine whether serializing server_prompt_cache_state avoids duplicating logic and prevents the disk path from drifting from the in-memory path again.
+The current positive test infers checkpoint presence from a file larger than 200 MiB. That threshold is specific to one model and can pass on a large sequence state without proving SCKP exists.
 
-### Decision rule
+Replace it with one of:
 
-Prefer reuse of the existing prompt-cache representation if it can be:
+- explicit save-response checkpoint metadata from P0-B;
+- a bounded parser for the SCKP appendix using a server-reported offset;
+- an exact known-format fixture.
 
-- versioned;
-- bounded;
-- validated before allocation;
-- restored into one exact slot;
-- kept backward compatible;
-- tested without a large invasive refactor.
+Do not scan arbitrary binary bytes for SCKP magic and call that proof.
 
-Otherwise implement the sidecar first.
+The current parity test compares restored output directly to cold prefill. For quantized KV, the project already proved llama.cpp's own warm reuse can diverge from cold processing.
 
-Record why the chosen path is smaller and safer. Do not build both production paths.
+Use three controls:
 
-## R2: persist one exact-boundary checkpoint first
+1. cold versus cold to prove deterministic sampling;
+2. native in-memory checkpoint reuse;
+3. persisted checkpoint restore.
 
-The general server creates checkpoints according to --ctx-checkpoints and --checkpoint-min-step. That granularity may leave the newest checkpoint before the end of the stable prefix.
+Persisted restore must match native checkpoint reuse. Require cold equality only when native checkpoint reuse itself equals cold.
 
-For the KV Rosetta use case, create or select a checkpoint that covers the exact exported prefix boundary. Do not synthesize fake pos_min metadata around state captured at another position. Upstream issue #25913 explicitly warns that this can silently decode on top of recurrent state that already consumed the token.
+## P1: prove the actual production model at 256 tokens
 
-The initial save contract must either:
+The successful local run used OpenMythos-Q6_K, not the production 27B named by the project.
 
-- force a real checkpoint at the current stable-prefix boundary before serializing; or
-- return the exact checkpoint coverage and require the adapter to reprocess the uncovered tail.
+Run the automated restart matrix on the exact production Qwen3.5/Qwen3.6 27B GGUF with its actual Fred launch configuration.
 
-Prefer a real endpoint checkpoint so the imported state can satisfy the existing full-prefix invariant.
+Record:
 
-Persist one checkpoint for the first proof. Add multiple-checkpoint persistence only after the one-checkpoint path is correct and a real workload requires it.
+- model and tokenizer content digests;
+- general.architecture;
+- model quantization;
+- K and V cache dtypes;
+- GPU split and offload flags;
+- MTP, draft, and speculative configuration;
+- server and patch digests;
+- sequence and checkpoint format versions.
 
-## R3: make the patch reproducible from KV Rosetta
+Start at 256 tokens.
 
-Do not leave the only copy of the experiment as edits in Fred's llama.cpp checkout.
+Acceptance:
 
-Commit:
+- patched runtime restores nonzero declared checkpoint coverage after a true restart;
+- unpatched runtime restores sequence cells but reuses zero;
+- persisted behavior matches native in-memory checkpoint reuse;
+- MTP/speculative state is either explicitly proven or capability is withheld for that configuration.
 
-- patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch;
-- scripts/build_patched_llama.sh;
-- the exact upstream base SHA;
-- expected patch SHA-256;
-- build flags;
-- a version probe;
-- startup flags used by the live tests.
+Do not proceed to larger contexts if the exact production model fails at 256.
 
-The build script must refuse an unexpected upstream revision rather than applying fuzzily to unknown source.
+## P2: measure production economics before exact-boundary work
 
-The experimental binary must expose a machine-readable capability such as:
-
-- slot_checkpoint_persistence = true;
-- slot_checkpoint_format = 1.
-
-Do not infer support from a version string, filename, or architecture.
-
-## R4: extend KVX for a checkpoint-aware opaque bundle
-
-Represent the persisted hybrid artifact as two independently hashed opaque segments:
-
-1. llama.cpp sequence state;
-2. llama-server prompt checkpoint state.
-
-Use explicit roles such as:
-
-- opaque.llama.sequence_state;
-- opaque.llama.prompt_checkpoints.
-
-The cache ABI and ArtifactKey must include:
-
-- GGSQ sequence-state version;
-- checkpoint format version;
-- llama.cpp commit and build identity;
-- target/draft/speculative configuration;
-- K and V physical dtype;
-- context and checkpoint flags;
-- exact prompt token digest;
-- model and tokenizer identities.
-
-Do not label the bundle as plain ggsq/2. Use an explicit compound representation such as ggsq/2+llama-checkpoints/1.
-
-ArtifactStore must publish both segments atomically under one ArtifactKey. A sequence file paired with the wrong checkpoint sidecar must fail verification before reaching llama.cpp.
-
-Import must write the two restored files through bounded streaming, invoke the exact slot, and clean every temporary file on success and failure.
-
-## R5: change capability probing, not the safety posture
-
-Replace the blanket architecture conclusion with a two-part rule:
-
-- ordinary attention architecture: sequence-state persistence may be sufficient;
-- hybrid/recurrent architecture: checkpoint persistence is additionally required.
-
-For hybrid/recurrent models, advertise opaque import/export only when the live runtime reports a supported checkpoint-persistence format.
-
-Unknown architecture or unknown checkpoint format remains fail closed.
-
-Update README and gguf.py wording only when this distinction has a retained test. Until then, the current refusal stays active.
-
-## R6: prove the patched path at 256 tokens
-
-Use the exact Qwen3.5/Qwen3.6 27B model that currently fails. Start without an external draft model or speculative decoder unless those features cannot be disabled.
-
-Required sequence:
-
-1. tokenize an exact 256-token stable prefix;
-2. cold prefill and record outputs and probabilities;
-3. create an exact-boundary checkpoint;
-4. save sequence state and checkpoint state;
-5. erase the slot;
-6. rerun without restore and prove cache_n=0;
-7. stop the server completely;
-8. start the same patched build and configuration;
-9. restore both state segments to an exact slot;
-10. run the exact prompt;
-11. require the expected checkpoint reuse;
-12. compare against native in-memory checkpoint reuse;
-13. record first divergent token and probability deltas.
-
-The server restart is mandatory. Without it, the test does not prove persistence.
-
-Success requires:
-
-- checkpoint file integrity passes;
-- prompt, model, runtime, and cache ABI match;
-- the intended slot is used;
-- n_checkpoints_restored is explicit and positive;
-- cache_n and prompt_n match the declared checkpoint coverage;
-- restored output matches native in-memory checkpoint reuse;
-- missing, corrupt, wrong-version, wrong-prompt, and wrong-slot checkpoint files are refused;
-- verification leaves a usable, uncontaminated prefix.
-
-n_restored alone remains insufficient.
-
-## R7: handle MTP, draft, and speculative state explicitly
-
-common_prompt_checkpoint carries data_tgt, data_dft, and data_spec because target context alone is not always sufficient.
-
-The first proof may disable external draft/speculative execution and mark that limitation in capabilities.
-
-Before claiming support with MTP or a draft model:
-
-- persist and restore data_dft;
-- persist and restore data_spec;
-- bind draft-model identity and speculative configuration into CacheABIIdentity;
-- prove restored behavior against native in-memory checkpoint reuse;
-- add a negative test where draft state is omitted.
-
-Never silently restore only data_tgt while advertising the full configuration.
-
-## R8: scale using break-first methodology
-
-After the 256-token restart proof passes, run:
+After the production 256-token proof, run:
 
 - 2K;
 - 8K;
-- 32K;
-- 131K only after 32K evidence supports it.
+- 32K.
 
-At each rung record separately:
+Run 131K only after the 32K result gives a credible size and time projection.
 
-- cold native prefill;
-- in-memory checkpoint reuse;
-- checkpoint creation;
-- sequence-state export;
-- checkpoint-state export;
-- integrity and identity verification;
-- sequence-state restore;
-- checkpoint-state restore;
-- post-restore verification;
-- total user-visible restore latency;
-- sequence artifact size;
-- checkpoint artifact size;
-- total bytes;
-- peak host RAM and VRAM;
+At least three clean repetitions per rung. Report medians and ranges for:
+
+- native cold prefill;
+- native in-memory checkpoint reuse;
+- slot save;
+- artifact verification;
+- slot restore;
+- post-restore tail prefill;
+- total user-visible restore;
+- sequence-state bytes;
+- checkpoint bytes;
+- total artifact bytes;
 - cache_n and prompt_n;
-- output parity against native checkpoint reuse;
-- first divergence.
+- effective throughput;
+- host RSS and VRAM;
+- output parity against native reuse.
 
-Run at least three repetitions and report medians and ranges.
+Test tmpfs and NVMe separately.
 
-Test tmpfs and NVMe separately. The checkpoint load path may behave differently from the existing GGSQ restore path.
+Use actual production KV quantization. Do not transfer the 3B q4 economics to the 27B by arithmetic.
 
-Use the actual production KV configuration. Do not extrapolate from the 3B.
+The relevant decision is not whether prompt_n equals one. It is whether:
 
-## R9: measure the one-checkpoint design against server defaults
+total restore + verified tail prefill < native full prefill
 
-Compare:
+If the checkpoint tail is a few tokens or a few hundred tokens against tens of thousands, leave checkpoint creation policy alone.
 
-- one exact endpoint checkpoint;
-- llama-server's normal multi-checkpoint policy;
-- no checkpoint persistence.
+## P3: test MTP and speculative state deliberately
 
-Measure RAM, disk, restore latency, and reusable prefix length.
+PR #26004 serializes data_tgt, data_dft, and data_spec, but field presence is not behavioral proof.
 
-Do not persist 32 or 64 copies of a roughly 149.6 MiB checkpoint unless measurements show a concrete benefit. The fixed-prefix workload should normally need one.
+For the production MTP configuration:
 
-Determine whether checkpoint size remains approximately constant across context length and whether K/V sequence-state growth remains the dominant 131K cost. Report measured values rather than projecting from one sample.
+- prove the saved artifact contains the required state blobs through explicit metadata;
+- restore after a full restart;
+- compare generated token IDs and probability vectors with native in-memory checkpoint reuse;
+- run a negative build or fixture omitting data_dft or data_spec and require refusal or demonstrated failure;
+- bind the draft/speculative identities into the cache ABI.
 
-## R10: prepare an upstream-quality change
+No MTP claim may rest solely on the upstream struct containing data_spec.
 
-Once local proof is retained:
+## P4: harden corruption and compatibility behavior
 
-- rebase the minimal llama.cpp patch onto current upstream;
-- add upstream C++ or server integration tests;
-- document backward compatibility;
-- document missing-sidecar behavior;
-- document draft/speculative handling;
-- document checkpoint granularity;
-- prepare a clean PR description referencing issue #25913.
+Retained cases:
 
-Do not submit an upstream PR or comment without explicit authorization. Preserve the patch and evidence in KV Rosetta regardless of upstream timing.
+- no SCKP appendix on a hybrid artifact;
+- unknown SCKP version;
+- truncated appendix;
+- absurd checkpoint count;
+- oversized individual blob;
+- excessive aggregate blob size;
+- wrong model identity;
+- wrong prompt token digest;
+- wrong runtime or sequence-state version;
+- wrong slot;
+- target state present but required draft/speculative state missing.
 
-## Parallel fallback path
+The upstream loader intentionally ignores an unusable appendix and may still return a successful sequence restore. KV Rosetta must interpret that as hybrid checkpoint failure and fall back to native prefill.
 
-While the persistent patch is being developed, retain the operational fallback:
+Do not rely on the server's HTTP status alone.
 
-- keep the stable prefix warm in llama-server's in-memory prompt cache;
-- use cfrproxy affinity routing;
-- replay through kvwarm after model startup;
-- fall back to native prefill after restart or eviction.
+## P5: decide whether exact endpoint checkpoints are worth adding
 
-This is not the final product, but it keeps Fred usable and provides the native checkpoint-reuse control required by the persistence tests.
+Only after the production ladder:
 
-Do not divert into another backend merely to avoid the hybrid checkpoint problem. The 27B production model is the research target.
+- measure the maximum uncovered tail;
+- measure its latency;
+- compare it with the complexity and memory cost of forcing an endpoint checkpoint;
+- determine whether a checkpoint already lands at the stable Hermes prefix boundary under practical checkpoint flags.
 
-## Work explicitly deferred
+If exact-boundary work is justified, create a real checkpoint at the correct state boundary. Never relabel or synthesize pos_min/pos_max around state captured elsewhere.
 
-Until the 27B checkpoint-aware restart proof passes:
+If the existing policy delivers greater than 99% reuse and restore economics are favorable, keep the smaller upstream patch.
 
-- canonical tensor extraction;
-- CUDA-to-HIP transfer;
+## Work still deferred
+
+Until the production 27B passes the automated restart and 32K economic gates:
+
+- canonical extraction;
+- CUDA-to-HIP claims;
 - vLLM adapter;
 - Transformers adapter;
 - cross-model mapping;
+- DeepSeek compatibility;
 - 131K brute-force runs;
-- additional model downloads solely to find an easier architecture.
+- upstream comments or PR submissions.
 
-The project already proved the ordinary-attention path. The next unknown with the highest value is persistent hybrid checkpoint state.
+The upstream CUDA-to-Metal observation is a research lead, not authorization to claim opaque portability.
 
 ## Required execution order
 
-1. Retain the unpatched 27B failure as a live negative control.
-2. Map common_prompt_checkpoint and server_prompt_cache_state at the pinned llama.cpp revision.
-3. Choose the sidecar or unified prompt-cache serialization path.
-4. Implement one exact-boundary checkpoint save and restore.
-5. Commit the reproducible llama.cpp patch and guarded build script.
-6. Add runtime capability advertisement.
-7. Add the two-segment checkpoint-aware KVX representation.
-8. Prove a 256-token save, full server restart, restore, reuse, and native-checkpoint parity.
-9. Add corrupt, mismatched, missing, multi-slot, and wrong-version refusals.
-10. Add draft/speculative support or explicitly withhold it.
-11. Run 2K, 8K, and 32K ladders with one checkpoint.
-12. Decide whether 131K is economically and operationally justified.
-13. Prepare the upstream patch only after the retained evidence is complete.
-14. Resume canonical and cross-backend work only after the production 27B path is proven.
+1. Replace the manual restart convention with a process-owning retained harness.
+2. Keep an explicit patched/unpatched test matrix.
+3. Add a second local llama.cpp patch for capability and checkpoint metadata.
+4. Teach the adapter the compound GGSQ+SCKP format and coverage contract.
+5. Replace artifact-size heuristics with explicit format evidence.
+6. Prove the exact production 27B at 256 tokens after a full restart.
+7. Prove or withhold MTP/speculative support.
+8. Run 2K, 8K, and 32K production ladders.
+9. Decide from measurements whether exact-boundary checkpoints are necessary.
+10. Attempt 131K only if artifact size, restore latency, and memory remain viable.
+11. Resume canonical and cross-backend work only after those gates.
 
 ## Definition of the next milestone
 
-The hybrid persistence milestone is complete only when:
+The production hybrid milestone is complete only when:
 
-- the unpatched runtime still fails closed;
-- the patched runtime advertises an explicit checkpoint format;
-- one exact stable-prefix checkpoint is persisted;
-- sequence and checkpoint state are cryptographically bound in one ArtifactKey;
-- a full llama-server restart occurs between save and restore;
-- the exact 27B model reuses the declared prefix in the intended slot;
-- restored behavior matches native in-memory checkpoint reuse;
-- corrupted or mismatched checkpoint state never reaches runtime import;
-- total restore latency and artifact size are measured;
-- the complete experiment is reproducible from committed files.
-
-Anything short of the restart test is an in-memory cache experiment, not persistent prefix restoration.
+- one automated test owns both server processes;
+- the second process has a different PID and no preexisting cache;
+- the unpatched binary fails closed;
+- the patched binary advertises sckp/1 through the runtime API;
+- the artifact is labelled ggsq/<version>+sckp/1;
+- exact prompt, model, runtime, cache, and checkpoint identities are bound;
+- the actual production 27B reuses its declared checkpoint coverage;
+- persisted behavior matches native in-memory checkpoint reuse;
+- corrupt or incomplete checkpoint state cannot report successful hybrid import;
+- 2K, 8K, and 32K total restore economics are measured with repetitions.
 
 ## Reporting discipline
 
-Separate every statement into:
+Separate every claim into:
 
-- proven by retained test;
-- measured on Fred;
-- confirmed by upstream source;
+- proven by retained automated test;
+- measured once on Fred;
+- independently measured upstream;
+- confirmed by source review;
 - inferred;
 - untested;
 - failed.
 
-Do not repeat that hybrid restoration is impossible. State the narrower truth: current llama.cpp slot persistence omits the checkpoint state required by hybrid/recurrent models.
+Current status must be stated precisely:
+
+- hybrid checkpoint persistence is feasible;
+- one manual full-restart run succeeded locally;
+- the retained test does not yet automate that restart;
+- the exact production 27B and its economics remain unproven.
