@@ -550,3 +550,57 @@ here: it is outside this steer's stated order.
 
 Status: **measured once on this host, three repetitions** (2K tmpfs).
 **Untested**: the NVMe rung, 8K, 32K.
+
+## REQ-027 — The 2K rung, re-measured with the adapter's own timers
+
+Steer 0315e90, P0 then P1. Both of its measurement-attribution findings were real; I
+confirmed each against the code before changing it.
+
+**The previous 2K verdict was built on a borrowed timer.** REQ-026 reported
+`adapter+tail = 6.528 s`, where the tail came from the completion after the *raw* endpoint
+restore. The completion after the *adapter* import was checked for parity but never timed.
+The two states do behave alike - measured now, the adapter tail is 0.430 s
+against the raw path's 0.421 s - but parity does not turn a borrowed
+timer into a measurement of the thing it stands in for. `compute_verdict()` now refuses
+outright rather than substituting, and a retained test proves changing only the raw tail
+cannot move the verdict.
+
+**Phase attribution was incomplete**: 6.135 s reported against a
+phase sum that previously left ~0.52 s unclassified — the `state_version()` probe inside
+`opaque_format()`, plus the header read and identity checks. Those are now a named
+`preflight` phase. This run reconciles to **0.0049 s unclassified**.
+
+**Result — correct, and still not cheaper.** One clean repetition, tmpfs
+(`/dev/shm/kvx-ladder`, fstype confirmed by `findmnt`), runner `053f2b9d5a00`:
+
+| phase | seconds | share |
+|---|---:|---:|
+| staging | 2.404 | 39.2% |
+| container verification | 1.986 | 32.4% |
+| preflight | 0.542 | 8.8% |
+| runtime restore | 0.515 | 8.4% |
+| pristine re-restore | 0.477 | 7.8% |
+| reuse probe | 0.207 | 3.4% |
+| **adapter import + tail** | **6.664** | |
+| *native cold prefill* | *1.772* | |
+
+Correctness held: `cache_n=2044 prompt_n=4` patched, `cache_n=0 prompt_n=2048` unpatched,
+with token, content and logprob parity against native reuse. Artifact 604,960,596
+bytes = 291,169,856 sequence + 313,788,820 checkpoint +
+1,920 overhead.
+
+**Branch decision.** Ratio is 3.76x, above the steer's 1.25x threshold, so
+repetitions and 8K are **not** the next work. The attribution points at one thing: container
+verification and staging are **two separate full passes over the same
+577 MiB payload**, together 4.390 s, 66% of the total, on tmpfs -
+so memory bandwidth and SHA-256, not disk. Meanwhile the runtime restore is
+0.515 s against a 1.772 s cold prefill: the
+runtime half is already ~3.4x cheaper than prefilling.
+
+Next per the steer: a one-pass verified staging primitive - validate the header, then hash
+the payload while writing the staged file, compare the digest before any restore POST, and
+delete the staged file on mismatch. That removes one of the two passes without weakening
+fail-closed behaviour.
+
+Status: **measured once on this host** (one repetition, by design - this was the
+break-first run). **Untested**: NVMe, 8K, 32K, and the one-pass staging hypothesis.

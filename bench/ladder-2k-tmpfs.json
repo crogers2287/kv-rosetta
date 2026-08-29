@@ -11,6 +11,7 @@
         "active_checkpoint_state_classes": [
           "target"
         ],
+        "adapter_tail_completion_wall_s": 0.42958712577819824,
         "after_adapter_import": {
           "cache_n": 2044,
           "content": "2 the naturalist recorded. In the",
@@ -132,20 +133,21 @@
           "opaque"
         ],
         "export_refused": null,
-        "export_seconds": 3.5346601009368896,
+        "export_seconds": 3.3838858604431152,
         "hybrid_support": true,
         "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
         "import_ok": true,
         "import_phases": {
-          "container_verify": 2.1375210285186768,
-          "pristine_restore": 0.415097713470459,
-          "reuse_probe": 0.21590280532836914,
-          "runtime_restore": 0.4648282527923584,
-          "staging": 2.19267201423645
+          "container_verify": 1.9860823154449463,
+          "preflight": 0.5415945053100586,
+          "pristine_restore": 0.4768810272216797,
+          "reuse_probe": 0.2073688507080078,
+          "runtime_restore": 0.5148563385009766,
+          "staging": 2.4035444259643555
         },
         "import_reason": "verified reuse on slot 0: cache_n=2044 of 2048 token(s), 4 reprocessed, matching declared coverage 2044",
-        "import_reported_seconds": 5.930315732955933,
-        "import_seconds_end_to_end": 6.019750356674194,
+        "import_reported_seconds": 6.135195016860962,
+        "import_seconds_end_to_end": 6.234735488891602,
         "import_tokens_restored": 2048,
         "kvx_bytes": 604960596,
         "kvx_path": "/dev/shm/kvx-ladder/matrix-patched-adapter.kvx",
@@ -177,7 +179,7 @@
       "cold": {
         "cache_n": 0,
         "content": "2 the naturalist recorded. In the",
-        "prompt_ms": 1482.693,
+        "prompt_ms": 1530.131,
         "prompt_n": 2048,
         "tokens": [
           17,
@@ -189,14 +191,14 @@
           733,
           279
         ],
-        "wall_s": 1.710371971130371
+        "wall_s": 1.771615982055664
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 2048
       },
       "expect_patched": true,
-      "first_pid": 401192,
+      "first_pid": 663939,
       "kv_dtype_k": "",
       "kv_dtype_v": "",
       "launch_argv": [
@@ -206,7 +208,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "60839",
+        "48925",
         "-ngl",
         "99",
         "-c",
@@ -226,16 +228,16 @@
       "leg": "patched",
       "logprob_tolerance": 1e-06,
       "memory": {
-        "runner_peak_rss_bytes": 63901696,
-        "server_peak_rss_bytes_first": 18317484032,
-        "server_peak_rss_bytes_second": 18317762560,
+        "runner_peak_rss_bytes": 64241664,
+        "server_peak_rss_bytes_first": 18306883584,
+        "server_peak_rss_bytes_second": 18318274560,
         "vram_used_bytes_after_load": [
           9396289536,
-          9901703168
+          9899606016
         ],
         "vram_used_bytes_after_restore": [
-          9396289536,
-          9901703168
+          9669967872,
+          10173284352
         ]
       },
       "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
@@ -333,10 +335,10 @@
         "n_read": 605417624,
         "n_restored": 2055,
         "timings": {
-          "restore_ms": 423.631
+          "restore_ms": 414.102
         }
       },
-      "restore_wall_s": 0.4250369071960449,
+      "restore_wall_s": 0.4153931140899658,
       "save_response": {
         "checkpoint_bytes": 313788820,
         "checkpoint_n_tokens": 2044,
@@ -348,7 +350,7 @@
         "n_saved": 2055,
         "n_written": 605417624,
         "timings": {
-          "save_ms": 374.636
+          "save_ms": 379.48
         }
       },
       "second_launch_argv": [
@@ -358,7 +360,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "45741",
+        "35615",
         "-ngl",
         "99",
         "-c",
@@ -375,14 +377,14 @@
         "/dev/shm/kvx-ladder/",
         "--no-warmup"
       ],
-      "second_pid": 406774,
-      "tail_completion_wall_s": 0.41672682762145996,
+      "second_pid": 672533,
+      "tail_completion_wall_s": 0.42079782485961914,
       "token_count": 2048,
       "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
       "warm_after_restore": {
         "cache_n": 2044,
         "content": "2 the naturalist recorded. In the",
-        "prompt_ms": 202.778,
+        "prompt_ms": 207.641,
         "prompt_n": 4,
         "tokens": [
           17,
@@ -482,7 +484,7 @@
           }
         },
         "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-        "export_seconds": 0.6062040328979492,
+        "export_seconds": 0.715235710144043,
         "hybrid_support": false,
         "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
         "import_ok": null,
@@ -514,7 +516,7 @@
       "cold": {
         "cache_n": 0,
         "content": "2 the naturalist recorded. In the",
-        "prompt_ms": 1493.754,
+        "prompt_ms": 1512.217,
         "prompt_n": 2048,
         "tokens": [
           17,
@@ -526,14 +528,14 @@
           733,
           279
         ],
-        "wall_s": 1.7249603271484375
+        "wall_s": 1.740941047668457
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 2048
       },
       "expect_patched": false,
-      "first_pid": 412829,
+      "first_pid": 677828,
       "kv_dtype_k": "",
       "kv_dtype_v": "",
       "launch_argv": [
@@ -543,7 +545,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "47883",
+        "52921",
         "-ngl",
         "99",
         "-c",
@@ -563,16 +565,16 @@
       "leg": "unpatched",
       "logprob_tolerance": 1e-06,
       "memory": {
-        "runner_peak_rss_bytes": 69292032,
-        "server_peak_rss_bytes_first": 18318716928,
-        "server_peak_rss_bytes_second": 18318360576,
+        "runner_peak_rss_bytes": 69607424,
+        "server_peak_rss_bytes_first": 18318462976,
+        "server_peak_rss_bytes_second": 18319892480,
         "vram_used_bytes_after_load": [
-          9396289536,
-          9901703168
+          9669967872,
+          10173284352
         ],
         "vram_used_bytes_after_restore": [
-          9396289536,
-          9901703168
+          9669967872,
+          10173284352
         ]
       },
       "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
@@ -659,17 +661,17 @@
         "n_read": 291628804,
         "n_restored": 2055,
         "timings": {
-          "restore_ms": 95.982
+          "restore_ms": 127.642
         }
       },
-      "restore_wall_s": 0.09737110137939453,
+      "restore_wall_s": 0.1293196678161621,
       "save_response": {
         "filename": "matrix-unpatched.bin",
         "id_slot": 0,
         "n_saved": 2055,
         "n_written": 291628804,
         "timings": {
-          "save_ms": 215.676
+          "save_ms": 233.972
         }
       },
       "second_launch_argv": [
@@ -679,7 +681,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "42567",
+        "56525",
         "-ngl",
         "99",
         "-c",
@@ -696,14 +698,14 @@
         "/dev/shm/kvx-ladder/",
         "--no-warmup"
       ],
-      "second_pid": 417626,
-      "tail_completion_wall_s": 1.7169842720031738,
+      "second_pid": 682011,
+      "tail_completion_wall_s": 1.7130777835845947,
       "token_count": 2048,
       "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
       "warm_after_restore": {
         "cache_n": 0,
         "content": "2 the naturalist recorded. In the",
-        "prompt_ms": 1492.314,
+        "prompt_ms": 1495.928,
         "prompt_n": 2048,
         "tokens": [
           17,
@@ -781,7 +783,7 @@
     "0002-advertise-checkpoint-capability.patch": "132acd3e3013d90f634ccbcbcb7dcb7e168128a5157ae28378b2a598eca0491f"
   },
   "prompt_tokens": 2048,
-  "repeats": 3,
+  "repeats": 1,
   "repetitions": [
     {
       "legs": {
@@ -794,6 +796,7 @@
             "active_checkpoint_state_classes": [
               "target"
             ],
+            "adapter_tail_completion_wall_s": 0.42958712577819824,
             "after_adapter_import": {
               "cache_n": 2044,
               "content": "2 the naturalist recorded. In the",
@@ -915,20 +918,21 @@
               "opaque"
             ],
             "export_refused": null,
-            "export_seconds": 3.5346601009368896,
+            "export_seconds": 3.3838858604431152,
             "hybrid_support": true,
             "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
             "import_ok": true,
             "import_phases": {
-              "container_verify": 2.1375210285186768,
-              "pristine_restore": 0.415097713470459,
-              "reuse_probe": 0.21590280532836914,
-              "runtime_restore": 0.4648282527923584,
-              "staging": 2.19267201423645
+              "container_verify": 1.9860823154449463,
+              "preflight": 0.5415945053100586,
+              "pristine_restore": 0.4768810272216797,
+              "reuse_probe": 0.2073688507080078,
+              "runtime_restore": 0.5148563385009766,
+              "staging": 2.4035444259643555
             },
             "import_reason": "verified reuse on slot 0: cache_n=2044 of 2048 token(s), 4 reprocessed, matching declared coverage 2044",
-            "import_reported_seconds": 5.930315732955933,
-            "import_seconds_end_to_end": 6.019750356674194,
+            "import_reported_seconds": 6.135195016860962,
+            "import_seconds_end_to_end": 6.234735488891602,
             "import_tokens_restored": 2048,
             "kvx_bytes": 604960596,
             "kvx_path": "/dev/shm/kvx-ladder/matrix-patched-adapter.kvx",
@@ -960,7 +964,7 @@
           "cold": {
             "cache_n": 0,
             "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1482.693,
+            "prompt_ms": 1530.131,
             "prompt_n": 2048,
             "tokens": [
               17,
@@ -972,14 +976,14 @@
               733,
               279
             ],
-            "wall_s": 1.710371971130371
+            "wall_s": 1.771615982055664
           },
           "control_after_restart": {
             "cache_n": 0,
             "prompt_n": 2048
           },
           "expect_patched": true,
-          "first_pid": 401192,
+          "first_pid": 663939,
           "kv_dtype_k": "",
           "kv_dtype_v": "",
           "launch_argv": [
@@ -989,7 +993,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "60839",
+            "48925",
             "-ngl",
             "99",
             "-c",
@@ -1009,16 +1013,16 @@
           "leg": "patched",
           "logprob_tolerance": 1e-06,
           "memory": {
-            "runner_peak_rss_bytes": 63901696,
-            "server_peak_rss_bytes_first": 18317484032,
-            "server_peak_rss_bytes_second": 18317762560,
+            "runner_peak_rss_bytes": 64241664,
+            "server_peak_rss_bytes_first": 18306883584,
+            "server_peak_rss_bytes_second": 18318274560,
             "vram_used_bytes_after_load": [
               9396289536,
-              9901703168
+              9899606016
             ],
             "vram_used_bytes_after_restore": [
-              9396289536,
-              9901703168
+              9669967872,
+              10173284352
             ]
           },
           "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
@@ -1116,10 +1120,10 @@
             "n_read": 605417624,
             "n_restored": 2055,
             "timings": {
-              "restore_ms": 423.631
+              "restore_ms": 414.102
             }
           },
-          "restore_wall_s": 0.4250369071960449,
+          "restore_wall_s": 0.4153931140899658,
           "save_response": {
             "checkpoint_bytes": 313788820,
             "checkpoint_n_tokens": 2044,
@@ -1131,7 +1135,7 @@
             "n_saved": 2055,
             "n_written": 605417624,
             "timings": {
-              "save_ms": 374.636
+              "save_ms": 379.48
             }
           },
           "second_launch_argv": [
@@ -1141,7 +1145,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "45741",
+            "35615",
             "-ngl",
             "99",
             "-c",
@@ -1158,14 +1162,14 @@
             "/dev/shm/kvx-ladder/",
             "--no-warmup"
           ],
-          "second_pid": 406774,
-          "tail_completion_wall_s": 0.41672682762145996,
+          "second_pid": 672533,
+          "tail_completion_wall_s": 0.42079782485961914,
           "token_count": 2048,
           "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
           "warm_after_restore": {
             "cache_n": 2044,
             "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 202.778,
+            "prompt_ms": 207.641,
             "prompt_n": 4,
             "tokens": [
               17,
@@ -1265,7 +1269,7 @@
               }
             },
             "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-            "export_seconds": 0.6062040328979492,
+            "export_seconds": 0.715235710144043,
             "hybrid_support": false,
             "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
             "import_ok": null,
@@ -1297,7 +1301,7 @@
           "cold": {
             "cache_n": 0,
             "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1493.754,
+            "prompt_ms": 1512.217,
             "prompt_n": 2048,
             "tokens": [
               17,
@@ -1309,14 +1313,14 @@
               733,
               279
             ],
-            "wall_s": 1.7249603271484375
+            "wall_s": 1.740941047668457
           },
           "control_after_restart": {
             "cache_n": 0,
             "prompt_n": 2048
           },
           "expect_patched": false,
-          "first_pid": 412829,
+          "first_pid": 677828,
           "kv_dtype_k": "",
           "kv_dtype_v": "",
           "launch_argv": [
@@ -1326,7 +1330,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "47883",
+            "52921",
             "-ngl",
             "99",
             "-c",
@@ -1346,16 +1350,16 @@
           "leg": "unpatched",
           "logprob_tolerance": 1e-06,
           "memory": {
-            "runner_peak_rss_bytes": 69292032,
-            "server_peak_rss_bytes_first": 18318716928,
-            "server_peak_rss_bytes_second": 18318360576,
+            "runner_peak_rss_bytes": 69607424,
+            "server_peak_rss_bytes_first": 18318462976,
+            "server_peak_rss_bytes_second": 18319892480,
             "vram_used_bytes_after_load": [
-              9396289536,
-              9901703168
+              9669967872,
+              10173284352
             ],
             "vram_used_bytes_after_restore": [
-              9396289536,
-              9901703168
+              9669967872,
+              10173284352
             ]
           },
           "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
@@ -1442,17 +1446,17 @@
             "n_read": 291628804,
             "n_restored": 2055,
             "timings": {
-              "restore_ms": 95.982
+              "restore_ms": 127.642
             }
           },
-          "restore_wall_s": 0.09737110137939453,
+          "restore_wall_s": 0.1293196678161621,
           "save_response": {
             "filename": "matrix-unpatched.bin",
             "id_slot": 0,
             "n_saved": 2055,
             "n_written": 291628804,
             "timings": {
-              "save_ms": 215.676
+              "save_ms": 233.972
             }
           },
           "second_launch_argv": [
@@ -1462,7 +1466,7 @@
             "--host",
             "127.0.0.1",
             "--port",
-            "42567",
+            "56525",
             "-ngl",
             "99",
             "-c",
@@ -1479,14 +1483,14 @@
             "/dev/shm/kvx-ladder/",
             "--no-warmup"
           ],
-          "second_pid": 417626,
-          "tail_completion_wall_s": 1.7169842720031738,
+          "second_pid": 682011,
+          "tail_completion_wall_s": 1.7130777835845947,
           "token_count": 2048,
           "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
           "warm_after_restore": {
             "cache_n": 0,
             "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1492.314,
+            "prompt_ms": 1495.928,
             "prompt_n": 2048,
             "tokens": [
               17,
@@ -1561,1583 +1565,24 @@
       },
       "repetition": 1,
       "verdict": {
-        "adapter_import_plus_tail_s": 6.436477184295654,
-        "native_cold_prefill_s": 1.710371971130371,
-        "ratio_to_cold": 3.7632031469983915,
-        "restore_is_cheaper": false
-      }
-    },
-    {
-      "legs": {
-        "patched": {
-          "acceptance_checked": true,
-          "active_checkpoint_state_classes": [
-            "target"
-          ],
-          "adapter": {
-            "active_checkpoint_state_classes": [
-              "target"
-            ],
-            "after_adapter_import": {
-              "cache_n": 2044,
-              "content": "2 the naturalist recorded. In the",
-              "prompt_n": 4,
-              "tokens": [
-                17,
-                279,
-                5629,
-                375,
-                12076,
-                13,
-                733,
-                279
-              ]
-            },
-            "after_adapter_top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ],
-            "artifact": {
-              "artifact_key": {
-                "cache_abi": "fa9d63f33e3083fdc1a09dcc6562d5527ce83332f1e4187930b6d86458a94b77",
-                "digest": "c21675c8c2d04c2f7070ce55b40f4f577ce6e54ebca92d27102c473b078fa612",
-                "encoding": "opaque",
-                "format_version": "ggsq/3+sckp/1",
-                "mapper_id": "",
-                "model": "5ad192ba605c2d4c9b02931a76d31d7461e8dbd17753c5e328c0f307bf99e2c3",
-                "prompt": "18c46bc7efc4e37211f4716003ac2cec3d254261a50dba2f77f4eb3b0b097d34",
-                "representation_digest": "8ec0e17bcb8e2006245795dcfb281c7e9ead81a50a1b578dcfc74981906096fd"
-              },
-              "checkpoint_bytes": 313788820,
-              "container_overhead_bytes": 1920,
-              "container_sha256": "bb03913028e3da165ec5f27910c3fc8f14c36f931b708a00c4afca8947573229",
-              "coverage": {
-                "checkpoint_bytes": 313788820,
-                "checkpoint_n_tokens": 2044,
-                "checkpoint_pos_max": 2043,
-                "checkpoint_pos_min": 2043,
-                "format": "ggsq/3+sckp/1",
-                "n_checkpoints": 2
-              },
-              "opaque_format": "ggsq/3+sckp/1",
-              "payload_bytes": 604958676,
-              "payload_sha256": "ef4e73e89c73a1e144c93485b2a023f4c55b545c15acde81c704870ba38890c2",
-              "sequence_bytes": 291169856,
-              "total_bytes": 604960596
-            },
-            "calls_during_capability_probe": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_export": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_import": [
-              "/slots/0?action=save",
-              "/slots/0?action=restore",
-              "/completion",
-              "/slots/0?action=erase",
-              "/slots/0?action=restore"
-            ],
-            "capabilities_export": [
-              "opaque"
-            ],
-            "capabilities_import": [
-              "opaque"
-            ],
-            "export_refused": null,
-            "export_seconds": 3.6861579418182373,
-            "hybrid_support": true,
-            "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
-            "import_ok": true,
-            "import_phases": {
-              "container_verify": 1.9872653484344482,
-              "pristine_restore": 0.47273731231689453,
-              "reuse_probe": 0.21230149269104004,
-              "runtime_restore": 0.4733459949493408,
-              "staging": 2.375140905380249
-            },
-            "import_reason": "verified reuse on slot 0: cache_n=2044 of 2048 token(s), 4 reprocessed, matching declared coverage 2044",
-            "import_reported_seconds": 6.040908098220825,
-            "import_seconds_end_to_end": 6.123401641845703,
-            "import_tokens_restored": 2048,
-            "kvx_bytes": 604960596,
-            "kvx_path": "/dev/shm/kvx-ladder/matrix-patched-adapter.kvx",
-            "staged_copies_left": []
-          },
-          "architecture": "qwen35",
-          "artifact_bytes": 605417624,
-          "artifact_sha256": "12dc375dd4322a69a6c83e1ea9c744359c2f189c224013ee893cfa892dffe789",
-          "binary": "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-          "binary_digests": {
-            "launcher_sha256": "785c69e1abd11906dd8889b1cd2546229972c787748b66eba04f88f616526870",
-            "libggml-base.so_sha256": "56f1f5e7b00a7d718615a00e8c8c4c9b9a7de076259bf44db98f408e706709df",
-            "libllama-server-impl.so_sha256": "4e89d76b6bc97f98784879a99e29552d3ccc8abf2c10341483d4c61896d1175a",
-            "libllama.so_sha256": "f1327e08bd47786072e94ba551ef19049ea4c35a0d58625391b1a5be429eca42",
-            "patch_markers": {
-              "context checkpoint appendix": 2,
-              "sckp/1": 1,
-              "slot_checkpoint_persistence": 1
-            }
-          },
-          "build_flags": {
-            "CMAKE_BUILD_TYPE": "Release",
-            "GGML_CCACHE": "OFF",
-            "GGML_CUDA": "ON",
-            "GGML_NATIVE": "ON",
-            "LLAMA_CURL": "OFF"
-          },
-          "build_info": "b10665-ca3d5a3e1",
-          "cold": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1505.225,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "wall_s": 1.738621473312378
-          },
-          "control_after_restart": {
-            "cache_n": 0,
-            "prompt_n": 2048
-          },
-          "expect_patched": true,
-          "first_pid": 422006,
-          "kv_dtype_k": "",
-          "kv_dtype_v": "",
-          "launch_argv": [
-            "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "46355",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "leg": "patched",
-          "logprob_tolerance": 1e-06,
-          "memory": {
-            "runner_peak_rss_bytes": 69677056,
-            "server_peak_rss_bytes_first": 18317316096,
-            "server_peak_rss_bytes_second": 18317201408,
-            "vram_used_bytes_after_load": [
-              9396289536,
-              9901703168
-            ],
-            "vram_used_bytes_after_restore": [
-              9396289536,
-              9901703168
-            ]
-          },
-          "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
-          "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-          "n_ctx": 8192,
-          "native_reuse": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ]
-          },
-          "native_reuse_top_logprobs": [
-            {
-              "13": -11.47443962097168,
-              "17": -0.00033372247708030045,
-              "271": -8.203950881958008,
-              "1358": -11.110616683959961,
-              "248044": -11.248639106750488
-            },
-            {
-              "13": -8.633684158325195,
-              "271": -7.390293598175049,
-              "279": -0.0010303796734660864,
-              "248044": -10.374988555908203,
-              "248046": -10.155778884887695
-            },
-            {
-              "13": -8.770419120788574,
-              "271": -7.355567455291748,
-              "1358": -10.437957763671875,
-              "5629": -0.0008882055408321321,
-              "248044": -11.38198184967041
-            },
-            {
-              "13": -9.947450637817383,
-              "271": -7.4314799308776855,
-              "284": -10.491771697998047,
-              "375": -0.0008198402356356382,
-              "248044": -10.127301216125488
-            },
-            {
-              "13": -8.550806045532227,
-              "220": -10.23660945892334,
-              "271": -7.660621166229248,
-              "1358": -10.131969451904297,
-              "12076": -0.0008598685381002724
-            },
-            {
-              "11": -9.756715774536133,
-              "13": -0.0006239572539925575,
-              "271": -8.555971145629883,
-              "1710": -9.486150741577148,
-              "5169": -9.85791015625
-            },
-            {
-              "220": -9.053094863891602,
-              "271": -5.822521209716797,
-              "733": -0.003978526685386896,
-              "1358": -8.622764587402344,
-              "248044": -8.615922927856445
-            },
-            {
-              "13": -9.588850021362305,
-              "220": -9.728483200073242,
-              "271": -8.0424165725708,
-              "279": -0.0005538208642974496,
-              "248046": -10.6768159866333
-            }
-          ],
-          "prompt_tokens_requested": 2048,
-          "protocol": {
-            "format": "sckp/1",
-            "sequence_state_version": 3,
-            "supports_draft": false,
-            "supports_speculative": false,
-            "supports_target": true
-          },
-          "restore_response": {
-            "checkpoint_bytes": 313788820,
-            "checkpoint_n_tokens": 2044,
-            "checkpoint_pos_max": 2043,
-            "checkpoint_pos_min": 2043,
-            "filename": "matrix-patched.bin",
-            "id_slot": 0,
-            "n_checkpoints_restored": 2,
-            "n_read": 605417624,
-            "n_restored": 2055,
-            "timings": {
-              "restore_ms": 454.196
-            }
-          },
-          "restore_wall_s": 0.455646276473999,
-          "save_response": {
-            "checkpoint_bytes": 313788820,
-            "checkpoint_n_tokens": 2044,
-            "checkpoint_pos_max": 2043,
-            "checkpoint_pos_min": 2043,
-            "filename": "matrix-patched.bin",
-            "id_slot": 0,
-            "n_checkpoints_saved": 2,
-            "n_saved": 2055,
-            "n_written": 605417624,
-            "timings": {
-              "save_ms": 488.229
-            }
-          },
-          "second_launch_argv": [
-            "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "36985",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "second_pid": 428404,
-          "tail_completion_wall_s": 0.42075395584106445,
-          "token_count": 2048,
-          "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
-          "warm_after_restore": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 205.682,
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ]
-          }
+        "adapter_import_plus_tail_s": 6.6643226146698,
+        "adapter_import_s": 6.234735488891602,
+        "adapter_tail_completion_s": 0.42958712577819824,
+        "native_cold_prefill_s": 1.771615982055664,
+        "phase_reconciliation": {
+          "phase_sum_s": 6.130327463150024,
+          "reconciled": true,
+          "reported_seconds": 6.135195016860962,
+          "unclassified_s": 0.0048675537109375
         },
-        "unpatched": {
-          "acceptance_checked": true,
-          "active_checkpoint_state_classes": null,
-          "adapter": {
-            "active_checkpoint_state_classes": null,
-            "calls_during_capability_probe": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_export": [],
-            "capabilities_export": [],
-            "capabilities_import": [],
-            "cross_import_refusals": {
-              "verify_reuse=False": {
-                "calls": [],
-                "ok": false,
-                "phases": {},
-                "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
-              },
-              "verify_reuse=True": {
-                "calls": [
-                  "/slots/0?action=save"
-                ],
-                "ok": false,
-                "phases": {},
-                "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
-              }
-            },
-            "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-            "export_seconds": 0.5738701820373535,
-            "hybrid_support": false,
-            "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-            "import_ok": null,
-            "import_reason": "no artifact: export was refused, as required"
-          },
-          "architecture": "qwen35",
-          "artifact_bytes": 291628804,
-          "artifact_sha256": "03c78f08b3e7f420e62653bc86ad745a44f630ac0f3925571910006346e367e2",
-          "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-          "binary_digests": {
-            "launcher_sha256": "06941ef6cec01e26751864b5439c2b865fccd6fe11b5e982b911cab5427f8849",
-            "libggml-base.so_sha256": "258329d71c2a5ff0e105790bca4c77953528c9067a2904693b38a8c716fa4c4c",
-            "libllama-server-impl.so_sha256": "4b036b5259fc5edeb16cad77f64660a785e63569dffa815289072fefed6c6292",
-            "libllama.so_sha256": "75f36bda0c495d7b4b1ae5661b11416bf7b9a0febc507492fa218eb975e885b1",
-            "patch_markers": {
-              "context checkpoint appendix": 0,
-              "sckp/1": 0,
-              "slot_checkpoint_persistence": 0
-            }
-          },
-          "build_flags": {
-            "CMAKE_BUILD_TYPE": "Release",
-            "GGML_CCACHE": "OFF",
-            "GGML_CUDA": "ON",
-            "GGML_NATIVE": "ON",
-            "LLAMA_CURL": "OFF"
-          },
-          "build_info": "b151-ca3d5a3e1",
-          "cold": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1499.84,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "wall_s": 1.726106882095337
-          },
-          "control_after_restart": {
-            "cache_n": 0,
-            "prompt_n": 2048
-          },
-          "expect_patched": false,
-          "first_pid": 433107,
-          "kv_dtype_k": "",
-          "kv_dtype_v": "",
-          "launch_argv": [
-            "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "48773",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "leg": "unpatched",
-          "logprob_tolerance": 1e-06,
-          "memory": {
-            "runner_peak_rss_bytes": 69713920,
-            "server_peak_rss_bytes_first": 18319298560,
-            "server_peak_rss_bytes_second": 18317324288,
-            "vram_used_bytes_after_load": [
-              9396289536,
-              9901703168
-            ],
-            "vram_used_bytes_after_restore": [
-              9396289536,
-              9901703168
-            ]
-          },
-          "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
-          "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-          "n_ctx": 8192,
-          "native_reuse": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ]
-          },
-          "native_reuse_top_logprobs": [
-            {
-              "13": -11.47443962097168,
-              "17": -0.00033372247708030045,
-              "271": -8.203950881958008,
-              "1358": -11.110616683959961,
-              "248044": -11.248639106750488
-            },
-            {
-              "13": -8.633684158325195,
-              "271": -7.390293598175049,
-              "279": -0.0010303796734660864,
-              "248044": -10.374988555908203,
-              "248046": -10.155778884887695
-            },
-            {
-              "13": -8.770419120788574,
-              "271": -7.355567455291748,
-              "1358": -10.437957763671875,
-              "5629": -0.0008882055408321321,
-              "248044": -11.38198184967041
-            },
-            {
-              "13": -9.947450637817383,
-              "271": -7.4314799308776855,
-              "284": -10.491771697998047,
-              "375": -0.0008198402356356382,
-              "248044": -10.127301216125488
-            },
-            {
-              "13": -8.550806045532227,
-              "220": -10.23660945892334,
-              "271": -7.660621166229248,
-              "1358": -10.131969451904297,
-              "12076": -0.0008598685381002724
-            },
-            {
-              "11": -9.756715774536133,
-              "13": -0.0006239572539925575,
-              "271": -8.555971145629883,
-              "1710": -9.486150741577148,
-              "5169": -9.85791015625
-            },
-            {
-              "220": -9.053094863891602,
-              "271": -5.822521209716797,
-              "733": -0.003978526685386896,
-              "1358": -8.622764587402344,
-              "248044": -8.615922927856445
-            },
-            {
-              "13": -9.588850021362305,
-              "220": -9.728483200073242,
-              "271": -8.0424165725708,
-              "279": -0.0005538208642974496,
-              "248046": -10.6768159866333
-            }
-          ],
-          "prompt_tokens_requested": 2048,
-          "protocol": {},
-          "restore_response": {
-            "filename": "matrix-unpatched.bin",
-            "id_slot": 0,
-            "n_read": 291628804,
-            "n_restored": 2055,
-            "timings": {
-              "restore_ms": 109.37
-            }
-          },
-          "restore_wall_s": 0.11090898513793945,
-          "save_response": {
-            "filename": "matrix-unpatched.bin",
-            "id_slot": 0,
-            "n_saved": 2055,
-            "n_written": 291628804,
-            "timings": {
-              "save_ms": 241.065
-            }
-          },
-          "second_launch_argv": [
-            "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "45449",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "second_pid": 436924,
-          "tail_completion_wall_s": 1.7286536693572998,
-          "token_count": 2048,
-          "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
-          "warm_after_restore": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1500.803,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ]
-          }
-        }
-      },
-      "repetition": 2,
-      "verdict": {
-        "adapter_import_plus_tail_s": 6.544155597686768,
-        "native_cold_prefill_s": 1.738621473312378,
-        "ratio_to_cold": 3.7639910113493578,
-        "restore_is_cheaper": false
-      }
-    },
-    {
-      "legs": {
-        "patched": {
-          "acceptance_checked": true,
-          "active_checkpoint_state_classes": [
-            "target"
-          ],
-          "adapter": {
-            "active_checkpoint_state_classes": [
-              "target"
-            ],
-            "after_adapter_import": {
-              "cache_n": 2044,
-              "content": "2 the naturalist recorded. In the",
-              "prompt_n": 4,
-              "tokens": [
-                17,
-                279,
-                5629,
-                375,
-                12076,
-                13,
-                733,
-                279
-              ]
-            },
-            "after_adapter_top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ],
-            "artifact": {
-              "artifact_key": {
-                "cache_abi": "fa9d63f33e3083fdc1a09dcc6562d5527ce83332f1e4187930b6d86458a94b77",
-                "digest": "c21675c8c2d04c2f7070ce55b40f4f577ce6e54ebca92d27102c473b078fa612",
-                "encoding": "opaque",
-                "format_version": "ggsq/3+sckp/1",
-                "mapper_id": "",
-                "model": "5ad192ba605c2d4c9b02931a76d31d7461e8dbd17753c5e328c0f307bf99e2c3",
-                "prompt": "18c46bc7efc4e37211f4716003ac2cec3d254261a50dba2f77f4eb3b0b097d34",
-                "representation_digest": "8ec0e17bcb8e2006245795dcfb281c7e9ead81a50a1b578dcfc74981906096fd"
-              },
-              "checkpoint_bytes": 313788820,
-              "container_overhead_bytes": 1920,
-              "container_sha256": "bb03913028e3da165ec5f27910c3fc8f14c36f931b708a00c4afca8947573229",
-              "coverage": {
-                "checkpoint_bytes": 313788820,
-                "checkpoint_n_tokens": 2044,
-                "checkpoint_pos_max": 2043,
-                "checkpoint_pos_min": 2043,
-                "format": "ggsq/3+sckp/1",
-                "n_checkpoints": 2
-              },
-              "opaque_format": "ggsq/3+sckp/1",
-              "payload_bytes": 604958676,
-              "payload_sha256": "ef4e73e89c73a1e144c93485b2a023f4c55b545c15acde81c704870ba38890c2",
-              "sequence_bytes": 291169856,
-              "total_bytes": 604960596
-            },
-            "calls_during_capability_probe": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_export": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_import": [
-              "/slots/0?action=save",
-              "/slots/0?action=restore",
-              "/completion",
-              "/slots/0?action=erase",
-              "/slots/0?action=restore"
-            ],
-            "capabilities_export": [
-              "opaque"
-            ],
-            "capabilities_import": [
-              "opaque"
-            ],
-            "export_refused": null,
-            "export_seconds": 3.5422496795654297,
-            "hybrid_support": true,
-            "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
-            "import_ok": true,
-            "import_phases": {
-              "container_verify": 1.8841285705566406,
-              "pristine_restore": 0.4811561107635498,
-              "reuse_probe": 0.2098405361175537,
-              "runtime_restore": 0.46086812019348145,
-              "staging": 2.378077507019043
-            },
-            "import_reason": "verified reuse on slot 0: cache_n=2044 of 2048 token(s), 4 reprocessed, matching declared coverage 2044",
-            "import_reported_seconds": 6.025400638580322,
-            "import_seconds_end_to_end": 6.1013712882995605,
-            "import_tokens_restored": 2048,
-            "kvx_bytes": 604960596,
-            "kvx_path": "/dev/shm/kvx-ladder/matrix-patched-adapter.kvx",
-            "staged_copies_left": []
-          },
-          "architecture": "qwen35",
-          "artifact_bytes": 605417624,
-          "artifact_sha256": "12dc375dd4322a69a6c83e1ea9c744359c2f189c224013ee893cfa892dffe789",
-          "binary": "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-          "binary_digests": {
-            "launcher_sha256": "785c69e1abd11906dd8889b1cd2546229972c787748b66eba04f88f616526870",
-            "libggml-base.so_sha256": "56f1f5e7b00a7d718615a00e8c8c4c9b9a7de076259bf44db98f408e706709df",
-            "libllama-server-impl.so_sha256": "4e89d76b6bc97f98784879a99e29552d3ccc8abf2c10341483d4c61896d1175a",
-            "libllama.so_sha256": "f1327e08bd47786072e94ba551ef19049ea4c35a0d58625391b1a5be429eca42",
-            "patch_markers": {
-              "context checkpoint appendix": 2,
-              "sckp/1": 1,
-              "slot_checkpoint_persistence": 1
-            }
-          },
-          "build_flags": {
-            "CMAKE_BUILD_TYPE": "Release",
-            "GGML_CCACHE": "OFF",
-            "GGML_CUDA": "ON",
-            "GGML_NATIVE": "ON",
-            "LLAMA_CURL": "OFF"
-          },
-          "build_info": "b10665-ca3d5a3e1",
-          "cold": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1507.104,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "wall_s": 1.749908208847046
-          },
-          "control_after_restart": {
-            "cache_n": 0,
-            "prompt_n": 2048
-          },
-          "expect_patched": true,
-          "first_pid": 441734,
-          "kv_dtype_k": "",
-          "kv_dtype_v": "",
-          "launch_argv": [
-            "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "51129",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "leg": "patched",
-          "logprob_tolerance": 1e-06,
-          "memory": {
-            "runner_peak_rss_bytes": 69787648,
-            "server_peak_rss_bytes_first": 18317496320,
-            "server_peak_rss_bytes_second": 18318458880,
-            "vram_used_bytes_after_load": [
-              9396289536,
-              9901703168
-            ],
-            "vram_used_bytes_after_restore": [
-              9396289536,
-              9901703168
-            ]
-          },
-          "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
-          "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-          "n_ctx": 8192,
-          "native_reuse": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ]
-          },
-          "native_reuse_top_logprobs": [
-            {
-              "13": -11.47443962097168,
-              "17": -0.00033372247708030045,
-              "271": -8.203950881958008,
-              "1358": -11.110616683959961,
-              "248044": -11.248639106750488
-            },
-            {
-              "13": -8.633684158325195,
-              "271": -7.390293598175049,
-              "279": -0.0010303796734660864,
-              "248044": -10.374988555908203,
-              "248046": -10.155778884887695
-            },
-            {
-              "13": -8.770419120788574,
-              "271": -7.355567455291748,
-              "1358": -10.437957763671875,
-              "5629": -0.0008882055408321321,
-              "248044": -11.38198184967041
-            },
-            {
-              "13": -9.947450637817383,
-              "271": -7.4314799308776855,
-              "284": -10.491771697998047,
-              "375": -0.0008198402356356382,
-              "248044": -10.127301216125488
-            },
-            {
-              "13": -8.550806045532227,
-              "220": -10.23660945892334,
-              "271": -7.660621166229248,
-              "1358": -10.131969451904297,
-              "12076": -0.0008598685381002724
-            },
-            {
-              "11": -9.756715774536133,
-              "13": -0.0006239572539925575,
-              "271": -8.555971145629883,
-              "1710": -9.486150741577148,
-              "5169": -9.85791015625
-            },
-            {
-              "220": -9.053094863891602,
-              "271": -5.822521209716797,
-              "733": -0.003978526685386896,
-              "1358": -8.622764587402344,
-              "248044": -8.615922927856445
-            },
-            {
-              "13": -9.588850021362305,
-              "220": -9.728483200073242,
-              "271": -8.0424165725708,
-              "279": -0.0005538208642974496,
-              "248046": -10.6768159866333
-            }
-          ],
-          "prompt_tokens_requested": 2048,
-          "protocol": {
-            "format": "sckp/1",
-            "sequence_state_version": 3,
-            "supports_draft": false,
-            "supports_speculative": false,
-            "supports_target": true
-          },
-          "restore_response": {
-            "checkpoint_bytes": 313788820,
-            "checkpoint_n_tokens": 2044,
-            "checkpoint_pos_max": 2043,
-            "checkpoint_pos_min": 2043,
-            "filename": "matrix-patched.bin",
-            "id_slot": 0,
-            "n_checkpoints_restored": 2,
-            "n_read": 605417624,
-            "n_restored": 2055,
-            "timings": {
-              "restore_ms": 446.543
-            }
-          },
-          "restore_wall_s": 0.4477806091308594,
-          "save_response": {
-            "checkpoint_bytes": 313788820,
-            "checkpoint_n_tokens": 2044,
-            "checkpoint_pos_max": 2043,
-            "checkpoint_pos_min": 2043,
-            "filename": "matrix-patched.bin",
-            "id_slot": 0,
-            "n_checkpoints_saved": 2,
-            "n_saved": 2055,
-            "n_written": 605417624,
-            "timings": {
-              "save_ms": 465.464
-            }
-          },
-          "second_launch_argv": [
-            "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "53989",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "second_pid": 449443,
-          "tail_completion_wall_s": 0.426516056060791,
-          "token_count": 2048,
-          "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
-          "warm_after_restore": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 212.049,
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ]
-          }
-        },
-        "unpatched": {
-          "acceptance_checked": true,
-          "active_checkpoint_state_classes": null,
-          "adapter": {
-            "active_checkpoint_state_classes": null,
-            "calls_during_capability_probe": [
-              "/slots/0?action=save"
-            ],
-            "calls_during_export": [],
-            "capabilities_export": [],
-            "capabilities_import": [],
-            "cross_import_refusals": {
-              "verify_reuse=False": {
-                "calls": [],
-                "ok": false,
-                "phases": {},
-                "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
-              },
-              "verify_reuse=True": {
-                "calls": [
-                  "/slots/0?action=save"
-                ],
-                "ok": false,
-                "phases": {},
-                "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
-              }
-            },
-            "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-            "export_seconds": 0.5856287479400635,
-            "hybrid_support": false,
-            "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-            "import_ok": null,
-            "import_reason": "no artifact: export was refused, as required"
-          },
-          "architecture": "qwen35",
-          "artifact_bytes": 291628804,
-          "artifact_sha256": "03c78f08b3e7f420e62653bc86ad745a44f630ac0f3925571910006346e367e2",
-          "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-          "binary_digests": {
-            "launcher_sha256": "06941ef6cec01e26751864b5439c2b865fccd6fe11b5e982b911cab5427f8849",
-            "libggml-base.so_sha256": "258329d71c2a5ff0e105790bca4c77953528c9067a2904693b38a8c716fa4c4c",
-            "libllama-server-impl.so_sha256": "4b036b5259fc5edeb16cad77f64660a785e63569dffa815289072fefed6c6292",
-            "libllama.so_sha256": "75f36bda0c495d7b4b1ae5661b11416bf7b9a0febc507492fa218eb975e885b1",
-            "patch_markers": {
-              "context checkpoint appendix": 0,
-              "sckp/1": 0,
-              "slot_checkpoint_persistence": 0
-            }
-          },
-          "build_flags": {
-            "CMAKE_BUILD_TYPE": "Release",
-            "GGML_CCACHE": "OFF",
-            "GGML_CUDA": "ON",
-            "GGML_NATIVE": "ON",
-            "LLAMA_CURL": "OFF"
-          },
-          "build_info": "b151-ca3d5a3e1",
-          "cold": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1509.063,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "wall_s": 1.737886905670166
-          },
-          "control_after_restart": {
-            "cache_n": 0,
-            "prompt_n": 2048
-          },
-          "expect_patched": false,
-          "first_pid": 454705,
-          "kv_dtype_k": "",
-          "kv_dtype_v": "",
-          "launch_argv": [
-            "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "45927",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "leg": "unpatched",
-          "logprob_tolerance": 1e-06,
-          "memory": {
-            "runner_peak_rss_bytes": 69787648,
-            "server_peak_rss_bytes_first": 18319290368,
-            "server_peak_rss_bytes_second": 18313637888,
-            "vram_used_bytes_after_load": [
-              9396289536,
-              9901703168
-            ],
-            "vram_used_bytes_after_restore": [
-              9394192384,
-              9897508864
-            ]
-          },
-          "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
-          "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-          "n_ctx": 8192,
-          "native_reuse": {
-            "cache_n": 2044,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_n": 4,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ]
-          },
-          "native_reuse_top_logprobs": [
-            {
-              "13": -11.47443962097168,
-              "17": -0.00033372247708030045,
-              "271": -8.203950881958008,
-              "1358": -11.110616683959961,
-              "248044": -11.248639106750488
-            },
-            {
-              "13": -8.633684158325195,
-              "271": -7.390293598175049,
-              "279": -0.0010303796734660864,
-              "248044": -10.374988555908203,
-              "248046": -10.155778884887695
-            },
-            {
-              "13": -8.770419120788574,
-              "271": -7.355567455291748,
-              "1358": -10.437957763671875,
-              "5629": -0.0008882055408321321,
-              "248044": -11.38198184967041
-            },
-            {
-              "13": -9.947450637817383,
-              "271": -7.4314799308776855,
-              "284": -10.491771697998047,
-              "375": -0.0008198402356356382,
-              "248044": -10.127301216125488
-            },
-            {
-              "13": -8.550806045532227,
-              "220": -10.23660945892334,
-              "271": -7.660621166229248,
-              "1358": -10.131969451904297,
-              "12076": -0.0008598685381002724
-            },
-            {
-              "11": -9.756715774536133,
-              "13": -0.0006239572539925575,
-              "271": -8.555971145629883,
-              "1710": -9.486150741577148,
-              "5169": -9.85791015625
-            },
-            {
-              "220": -9.053094863891602,
-              "271": -5.822521209716797,
-              "733": -0.003978526685386896,
-              "1358": -8.622764587402344,
-              "248044": -8.615922927856445
-            },
-            {
-              "13": -9.588850021362305,
-              "220": -9.728483200073242,
-              "271": -8.0424165725708,
-              "279": -0.0005538208642974496,
-              "248046": -10.6768159866333
-            }
-          ],
-          "prompt_tokens_requested": 2048,
-          "protocol": {},
-          "restore_response": {
-            "filename": "matrix-unpatched.bin",
-            "id_slot": 0,
-            "n_read": 291628804,
-            "n_restored": 2055,
-            "timings": {
-              "restore_ms": 114.301
-            }
-          },
-          "restore_wall_s": 0.11569881439208984,
-          "save_response": {
-            "filename": "matrix-unpatched.bin",
-            "id_slot": 0,
-            "n_saved": 2055,
-            "n_written": 291628804,
-            "timings": {
-              "save_ms": 272.285
-            }
-          },
-          "second_launch_argv": [
-            "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
-            "--model",
-            "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "42049",
-            "-ngl",
-            "99",
-            "-c",
-            "8192",
-            "--parallel",
-            "1",
-            "-fa",
-            "on",
-            "--split-mode",
-            "layer",
-            "--tensor-split",
-            "1,1",
-            "--slot-save-path",
-            "/dev/shm/kvx-ladder/",
-            "--no-warmup"
-          ],
-          "second_pid": 468771,
-          "tail_completion_wall_s": 1.710085153579712,
-          "token_count": 2048,
-          "token_ids_sha256": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
-          "warm_after_restore": {
-            "cache_n": 0,
-            "content": "2 the naturalist recorded. In the",
-            "prompt_ms": 1490.443,
-            "prompt_n": 2048,
-            "tokens": [
-              17,
-              279,
-              5629,
-              375,
-              12076,
-              13,
-              733,
-              279
-            ],
-            "top_logprobs": [
-              {
-                "13": -11.47443962097168,
-                "17": -0.00033372247708030045,
-                "271": -8.203950881958008,
-                "1358": -11.110616683959961,
-                "248044": -11.248639106750488
-              },
-              {
-                "13": -8.633684158325195,
-                "271": -7.390293598175049,
-                "279": -0.0010303796734660864,
-                "248044": -10.374988555908203,
-                "248046": -10.155778884887695
-              },
-              {
-                "13": -8.770419120788574,
-                "271": -7.355567455291748,
-                "1358": -10.437957763671875,
-                "5629": -0.0008882055408321321,
-                "248044": -11.38198184967041
-              },
-              {
-                "13": -9.947450637817383,
-                "271": -7.4314799308776855,
-                "284": -10.491771697998047,
-                "375": -0.0008198402356356382,
-                "248044": -10.127301216125488
-              },
-              {
-                "13": -8.550806045532227,
-                "220": -10.23660945892334,
-                "271": -7.660621166229248,
-                "1358": -10.131969451904297,
-                "12076": -0.0008598685381002724
-              },
-              {
-                "11": -9.756715774536133,
-                "13": -0.0006239572539925575,
-                "271": -8.555971145629883,
-                "1710": -9.486150741577148,
-                "5169": -9.85791015625
-              },
-              {
-                "220": -9.053094863891602,
-                "271": -5.822521209716797,
-                "733": -0.003978526685386896,
-                "1358": -8.622764587402344,
-                "248044": -8.615922927856445
-              },
-              {
-                "13": -9.588850021362305,
-                "220": -9.728483200073242,
-                "271": -8.0424165725708,
-                "279": -0.0005538208642974496,
-                "248046": -10.6768159866333
-              }
-            ]
-          }
-        }
-      },
-      "repetition": 3,
-      "verdict": {
-        "adapter_import_plus_tail_s": 6.527887344360352,
-        "native_cold_prefill_s": 1.749908208847046,
-        "ratio_to_cold": 3.7304170077934264,
+        "ratio_to_cold": 3.7617196289553494,
+        "raw_endpoint_tail_s": 0.42079782485961914,
         "restore_is_cheaper": false
       }
     }
   ],
-  "repo_commit": "67efd9813f4ce068779eddf77d07d3bf474dd76a",
-  "runner_sha256": "bf4fbe0817e053ac789661a630fdd74cbcd8c964618ed2fc1f9c578c8c98b400",
+  "repo_commit": "481470206c73d2c4ee13699cd2e558990ac1d285",
+  "runner_sha256": "053f2b9d5a00f5f4eaf81fbbe3da675af83c4e8900f0cb7685bdc656b1fa2248",
   "slots_path": "/dev/shm/kvx-ladder",
   "source_trees": {
     "patched": {
@@ -3153,5 +1598,5 @@
       "worktree_diff_sha256": null
     }
   },
-  "storage_note": "tmpfs (/dev/shm): isolates compute and serialization from disk"
+  "storage_note": "tmpfs on /dev/shm (findmnt: tmpfs)"
 }
