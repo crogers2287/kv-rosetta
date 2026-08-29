@@ -581,8 +581,15 @@ class LlamaCppHTTPAdapter(Adapter):
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
                                     reason="no slot_save_path configured")
+            # Header integrity only. The payload is hashed during extraction below, in
+            # the same pass that writes the staged copy, and compared before any restore
+            # POST - so verifying it here as well would read the whole artifact twice to
+            # learn the same fact once. Segmented artifacts fall back to the full check,
+            # because extraction does not cover their per-segment digests.
             phase_started = time.time()
-            ok, reason = container.verify(artifact)
+            ok, reason = container.verify_header(artifact)
+            if not ok and "use verify()" in reason:
+                ok, reason = container.verify(artifact)
             phases["container_verify"] = time.time() - phase_started
             phase_started = time.time()
             if not ok:
@@ -707,7 +714,18 @@ class LlamaCppHTTPAdapter(Adapter):
             phases["preflight"] = (phases.get("preflight", 0.0)
                                    + time.time() - phase_started)
             phase_started = time.time()
-            container.extract_payload(artifact, staged)
+            try:
+                # Hashes every byte as it writes and refuses before publishing the staged
+                # file, so a payload mismatch is caught here rather than by the runtime.
+                container.extract_payload(artifact, staged)
+            except container.ContainerError as exc:
+                phases["staging"] = time.time() - phase_started
+                staged.unlink(missing_ok=True)
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=f"payload failed verification while staging: {exc}",
+                    seconds=time.time() - started, phases=dict(phases))
             phases["staging"] = time.time() - phase_started
             phase_started = time.time()
             result = self._post(f"/slots/{slot}?action=restore", {"filename": artifact_name})

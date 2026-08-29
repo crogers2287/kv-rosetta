@@ -413,6 +413,55 @@ def read(path: Path | str, mmap: bool = True) -> KVXArtifact:
     return KVXArtifact(header=header, path=path, buffer=buffer)
 
 
+def verify_header(path: Path | str) -> tuple[bool, str]:
+    """Everything verify() checks except reading the payload.
+
+    Structure, the header digest, blob field presence, payload alignment, and that the file
+    is long enough for the payload it declares. What is deliberately NOT done here is the
+    full payload hash - extract_payload() already hashes every byte as it writes the staged
+    copy and refuses before publishing it, so verifying the payload separately means reading
+    a gigabyte-scale artifact twice to learn the same fact once.
+
+    A segmented artifact still needs the whole-payload pass, because its per-segment digests
+    are not covered by extraction; callers are told to use verify() for those.
+    """
+    path = Path(path)
+    try:
+        if not path.is_file():
+            return False, "not a file"
+        with open(path, "rb") as handle:
+            header, header_len = _read_header(handle)
+            blob = header["blob"]
+            for key in ("encoding", "offset", "nbytes", "sha256"):
+                if key not in blob:
+                    return False, f"blob.{key} missing"
+            integrity = header.get("integrity")
+            if not isinstance(integrity, dict) or \
+                    not isinstance(integrity.get("header_sha256"), str):
+                return False, "integrity.header_sha256 missing"
+            handle.seek(0)
+            raw_header = handle.read(_PREAMBLE + header_len)[_PREAMBLE:]
+            try:
+                zeroed, _ = _digest_placeholder(raw_header)
+            except ContainerError as exc:
+                return False, str(exc)
+            if hashlib.sha256(zeroed).hexdigest() != integrity["header_sha256"]:
+                return False, "header sha256 mismatch"
+            offset, nbytes = int(blob["offset"]), int(blob["nbytes"])
+            if offset % ALIGNMENT:
+                return False, f"payload offset {offset} is not {ALIGNMENT}-byte aligned"
+            if path.stat().st_size < offset + nbytes:
+                return False, "file is shorter than the declared payload"
+        if blob.get("encoding") == "segmented":
+            return False, ("segmented artifacts carry per-segment digests that extraction "
+                           "does not check; use verify()")
+        return True, "ok"
+    except ContainerError as exc:
+        return False, str(exc)
+    except OSError as exc:
+        return False, f"unreadable: {exc}"
+
+
 def verify(path: Path | str) -> tuple[bool, str]:
     """Structural + integrity check. Never raises: callers get a reason, not a traceback."""
     path = Path(path)
