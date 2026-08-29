@@ -139,3 +139,83 @@ KVX_HYBRID_URL=http://127.0.0.1:8785 KVX_HYBRID_SLOTS=/path/to/slots \
 - **Inferred:** that persisting one exact-boundary checkpoint is sufficient for the
   fixed-prefix workload. Not yet proven.
 - **Untested:** anything involving a patched binary, `data_dft`, or `data_spec`.
+
+## R1: choice of persistence path
+
+Audited before writing anything, as the steer requires. Three implementations exist, not the
+two the steer listed.
+
+### What is actually out there
+
+| | approach | status |
+|---|---|---|
+| Issue #25913 option 1 | separate `filepath + ".ckpt"` sidecar file | proposal |
+| Issue #25913 option 2 | serialize a whole `server_prompt_cache_state` | proposal |
+| **PR #26004** (`Tough-Respawn`) | tagged payload **appended inside** the slot save file: `SCKP` magic, version, count, per-checkpoint fields and blobs, read back at the offset `llama_state_seq_load_file` returns | **open**, not draft, 1 commit, +195/-2 across 2 files, base `adb55e5`, updated 2026-08-16 |
+| `headbouyJB`'s patch | the option-1 sidecar, `.ckpt` file | not a PR; reported working in issue comments |
+
+### An attribution that must not be blurred
+
+The working confirmations in the issue thread are for the **sidecar**, not for PR #26004.
+`WinPooh32` quotes `restored 3 context checkpoint(s) from sidecar .../qwen3.6-27b.bin.ckpt` -
+a `.ckpt` file, which is `headbouyJB`'s implementation. `headbouyJB` reports it running on
+Qwen3.5 122B A10B with MTP, and describes it as an AI-led fix.
+
+PR #26004 has no third-party confirmation visible in the thread. So "someone proved this
+works on qwen3.6-27b" is true of the sidecar and **not** of the PR we are about to adopt.
+Our own restart test decides it, not either author's report.
+
+### Decision: base the work on PR #26004
+
+Against the steer's decision rule:
+
+| criterion | PR #26004 |
+|---|---|
+| versioned | yes - explicit `SLOT_CKPT_VERSION` beside a magic |
+| bounded | yes - buffer reads reject `n > 1<<34` before allocating |
+| validated before allocation | yes, same guard |
+| restored into one exact slot | yes - reattached to the slot being restored |
+| backward compatible | yes, in both directions: an old file has no magic and is skipped silently; a new file's trailing bytes are ignored by an old build, because `llama_state_seq_load_file` reports where its own payload ended |
+| testable without a large refactor | yes - it ships `tools/server/tests/unit/test_slot_save.py` |
+
+It is also smaller than either issue option, and being one file rather than two removes a
+failure mode the steer explicitly worried about: a sequence file paired with the wrong
+checkpoint sidecar. There is nothing to pair. That also simplifies the KVX side - the
+artifact stays a single opaque blob rather than two segments needing atomic co-publication,
+though the representation label must still change, since these bytes are no longer plain
+`ggsq/2`.
+
+It carries `data_tgt`, `data_dft` **and** `data_spec`, so it does not have the draft and
+speculative gap the issue notes ("`ctx_dft` state is also not saved").
+
+### What PR #26004 does NOT do, and remains our work
+
+- **It persists whatever checkpoints already exist** - `if (slot.prompt.checkpoints.empty())
+  return` - and does not force one at the stable-prefix boundary. The issue is explicit that
+  reuse after a fix is bounded by `--ctx-checkpoints` and `--checkpoint-min-step`, so it
+  "should match in-memory behaviour, not necessarily produce a full-prefix hit". Steer R2
+  (an exact-boundary checkpoint) is therefore additional work, not something adopting the PR
+  gives us.
+- **No capability advertisement.** Steer R3 requires the binary to report something like
+  `slot_checkpoint_persistence = true` so support is never inferred from a version string.
+  The PR adds no such field.
+- **It does not apply cleanly to our pinned revision.** PR base is `adb55e5`; we are pinned
+  at `ca3d5a3`. It needs a deliberate rebase, and the guarded build script must refuse an
+  unexpected upstream revision rather than applying fuzzily.
+
+### The caveat that governs R2
+
+From the issue, and it is a correctness trap rather than a performance note: synthesising a
+checkpoint at `pos_min = 0` in the restore handler is **not** a valid shortcut. The matcher
+takes the `cur.pos_min == 0` branch and decodes on top of a recurrent state that has already
+consumed that token - silently corrupt output rather than merely slow. Any boundary-checkpoint
+work must create a *real* checkpoint, never relabel one.
+
+### Status of these claims
+
+- **Confirmed by upstream source and API:** the existence, state, size, base SHA and file
+  list of PR #26004; its magic, version, bounds check and the three blob fields; that it
+  returns early on an empty checkpoint list.
+- **Reported by third parties, for a different implementation:** the sidecar working on
+  qwen3.6-27b and on Qwen3.5 122B with MTP.
+- **Untested here:** everything. No patched binary has been built or run on this host.

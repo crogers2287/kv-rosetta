@@ -112,7 +112,9 @@ the conclusion that hybrid architectures are a dead end.
 | R0. Pin source truth at the exact revision | ✅ done | `docs/hybrid-checkpoint-research.md`: llama.cpp `ca3d5a3`, binary `b1-3e73446`, sequence-state version 2 emitted vs 3 declared |
 | R0. Retain the unpatched failure as a live negative control | ✅ done | `tests/test_hybrid_negative_control.py`, 5 tests passing against a live `qwen35` server |
 | Correct the earlier over-broad interpretation | ✅ done | findings §13/§15, README and `gguf.py` now state the narrower truth; refusal behaviour unchanged |
-| R1. Choose the smallest correct llama.cpp persistence patch | 🔴 next | Audit issue #25913 options A (sidecar) and B (serialize `server_prompt_cache_state`) |
+| R1. Choose the smallest correct llama.cpp persistence patch | ✅ decided | Base on upstream PR #26004 (appends a versioned `SCKP` payload inside the slot save file). Smaller than both issue options, no file-pairing failure mode, carries `data_tgt`/`data_dft`/`data_spec`, ships a server test. See `hybrid-checkpoint-research.md` §R1 |
+| R2. Exact-boundary checkpoint | 🔴 next | PR #26004 persists only checkpoints that already exist; reuse is bounded by `--ctx-checkpoints`/`--checkpoint-min-step`. Synthesising `pos_min = 0` is a correctness trap, not a shortcut |
+| R3. Reproducible patch + guarded build + capability probe | 🔴 outstanding | PR base `adb55e5` differs from our pinned `ca3d5a3`; PR adds no capability field |
 | R2–R10 | 🔴 outstanding | Gated behind R1 |
 
 #### Correction recorded
