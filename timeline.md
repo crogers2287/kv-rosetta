@@ -874,3 +874,57 @@ Status: **measured three times on this host** (this gate). **Proven by retained 
 offline, all four new guards mutation-checked. **Untested**: NVMe, 8K, and everything the
 steer lists as prerequisites for calling this production-ready — the same-UID/root basename
 race, model variants beyond the tested digest, and active draft/speculative state.
+
+## REQ-033 — The 2K admitted path passes on persistent NVMe
+
+Steer b76bc8c, P0 and P1. Its audit of the tmpfs record was accurate — the three paired wins
+there were 2.2%, 10.4% and 13.1%, not a uniform 10.6% — so ranges are carried below rather
+than a median alone.
+
+**The record now identifies its own mount.** Naming the device from a pathname would have
+been wrong on this host: `/mnt/storage` is a **FUSE-mounted SATA** volume, while the NVMe is
+`nvme0n1` mounted at `/`. The runner walks `lsblk` toward the parents so LVM and partitions
+resolve to a disk, and `--require-persistent` refuses tmpfs, ramfs, overlay, and any target
+whose mount cannot be identified.
+
+| field | value |
+|---|---|
+| resolved path | `/home/crogers2287/kvx-nvme-store` |
+| mount source | `/dev/mapper/ubuntu--vg-ubuntu--lv` |
+| mount target / fs | `/` / `ext4` |
+| mount options | `rw,relatime` |
+| backing device | `nvme0n1` (rotational: False) |
+| same mount as model | False |
+| available | 16.6 GiB |
+| page-cache policy | natural page-cache state after admission and process restarts; no eviction forced |
+
+**Result — 3 of 3 paired wins:**
+
+| rep | restore | tail | total | cold | faster |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1.120 | 0.427 | **1.548** | 1.739 | 11.0% |
+| 2 | 1.048 | 0.428 | **1.477** | 1.723 | 14.3% |
+| 3 | 1.061 | 0.425 | **1.486** | 1.731 | 14.2% |
+
+Median 1.486 s (range 1.477–1.548)
+against cold 1.731 s (range 1.723–1.739),
+a **14.2%** margin — above the steer's 5% marginal threshold,
+so this is a Pass rather than a marginal result. For comparison the tmpfs rung was
+10.6%; NVMe is not slower here, and every phase
+matches tmpfs within noise.
+
+All correctness and safety gates held: `cache_n=2044 prompt_n=4` every run, restore metadata
+equal to admitted metadata, token/content/probability-vector parity against native reuse,
+**zero request-path payload bytes**, the admitted object unchanged, `hybrid_support` timed
+inside the request path at 0.0028 s,
+and the unpatched control refusing with **zero endpoint calls**.
+
+**What this does and does not prove.** It is the immediate llama-server restart case: the
+process dies, the file persists on NVMe, and the page cache may survive. Admission costs
+3.883 s and saves 0.246 s per restore, so it
+breaks even after **16 restores**. It is **not** evidence for a host
+reboot or a long-idle cache eviction — that is the next experiment, and it is labelled
+state-file cold-cache sensitivity rather than host restart.
+
+Status: **measured three times on this host**. **Proven by retained test**: 476 offline.
+**Untested**: state-cold behaviour, host restart, 8K.
