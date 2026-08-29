@@ -11,6 +11,7 @@ which is precisely vLLM prefilling as it would without any connector at all.
 """
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -18,6 +19,8 @@ from kv_rosetta.adapters.vllm_connector import (
     CanonicalBridge,
     ConnectorError,
     ShardIdentity,
+    artifact_shard,
+    select_artifact,
 )
 
 
@@ -172,3 +175,153 @@ class ConnectorConstructionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArtifactSelectionTest(unittest.TestCase):
+    """Which admitted artifact, if any, may serve a request.
+
+    The connector's scheduler hook used to return a hardcoded zero. This is the logic that
+    replaced it, kept out of the vLLM class so it can be tested without a worker: the class
+    is a shell, and every decision it makes is made here.
+    """
+
+    def obj(self, digest, tokens, model="qwen", **extra):
+        manifest = {"runtime_model": model, **extra}
+        if tokens is not None:
+            manifest["prompt_token_ids"] = tokens
+        return SimpleNamespace(digest=digest, manifest=manifest)
+
+    def bridge(self, tp_rank=0, tp_size=1):
+        return CanonicalBridge(ShardIdentity(tp_rank=tp_rank, tp_size=tp_size))
+
+    def select(self, objects, request, model="qwen", bridge=None):
+        return select_artifact(objects, live_model=model, request_tokens=request,
+                               bridge=bridge or self.bridge())
+
+    def test_it_takes_the_longest_matching_prefix(self):
+        chosen = self.select([self.obj("a" * 64, [1, 2]),
+                              self.obj("b" * 64, [1, 2, 3, 4]),
+                              self.obj("c" * 64, [1])], [1, 2, 3, 4, 5])
+        self.assertEqual(chosen.digest, "b" * 64)
+        self.assertEqual(chosen.matched, 4)
+        self.assertTrue(chosen)
+
+    def test_an_artifact_with_no_recorded_tokens_is_refused(self):
+        """Reuse is a claim about which tokens are cached; without them it is unverifiable."""
+        chosen = self.select([self.obj("a" * 64, None)], [1, 2, 3])
+        self.assertFalse(chosen)
+        self.assertIn("cannot be verified", " ".join(chosen.refusals))
+
+    def test_a_different_model_is_refused_and_the_reason_kept(self):
+        chosen = self.select([self.obj("a" * 64, [1, 2], model="llama")], [1, 2])
+        self.assertFalse(chosen)
+        self.assertIn("does not match", " ".join(chosen.refusals))
+
+    def test_a_shard_is_not_a_whole_cache(self):
+        chosen = self.select([self.obj("a" * 64, [1, 2], tp_rank=0, tp_size=2)], [1, 2])
+        self.assertFalse(chosen)
+        self.assertIn("not a whole cache", " ".join(chosen.refusals))
+
+    def test_an_artifact_longer_than_the_request_is_refused(self):
+        """A prefix cache is valid only for the exact prefix it holds."""
+        chosen = self.select([self.obj("a" * 64, [1, 2, 3, 4])], [1, 2])
+        self.assertFalse(chosen)
+
+    def test_a_diverging_artifact_is_refused(self):
+        chosen = self.select([self.obj("a" * 64, [1, 2, 9])], [1, 2, 3, 4])
+        self.assertFalse(chosen)
+        self.assertIn("diverges", " ".join(chosen.refusals))
+
+    def test_an_empty_store_selects_nothing_and_blames_nobody(self):
+        chosen = self.select([], [1, 2, 3])
+        self.assertFalse(chosen)
+        self.assertEqual(chosen.refusals, ())
+
+    def test_equal_length_matches_break_on_the_digest(self):
+        """An unstable choice would make one bad artifact look like an intermittent fault."""
+        pair = [self.obj("f" * 64, [1, 2]), self.obj("0" * 64, [1, 2])]
+        first = self.select(pair, [1, 2, 3]).digest
+        self.assertEqual(first, "0" * 64)
+        self.assertEqual(self.select(list(reversed(pair)), [1, 2, 3]).digest, first)
+
+    def test_refusals_from_several_artifacts_are_all_reported(self):
+        """"nothing matched" and "three things were refused" are different facts."""
+        chosen = self.select([self.obj("a" * 64, None),
+                              self.obj("b" * 64, [7, 7], model="llama"),
+                              self.obj("c" * 64, [9])], [1, 2])
+        self.assertFalse(chosen)
+        self.assertEqual(len(chosen.refusals), 3)
+
+    def test_a_shard_matching_this_worker_is_allowed(self):
+        chosen = self.select([self.obj("a" * 64, [1, 2], tp_rank=1, tp_size=2)], [1, 2, 3],
+                             bridge=self.bridge(tp_rank=1, tp_size=2))
+        self.assertEqual(chosen.matched, 2)
+
+    def test_a_manifest_without_shard_fields_reads_as_whole(self):
+        self.assertEqual(artifact_shard({}), ShardIdentity(0, 1))
+        self.assertEqual(artifact_shard({"tp_rank": 1, "tp_size": 4}), ShardIdentity(1, 4))
+
+    def test_a_malformed_shard_is_refused_rather_than_read_as_whole(self):
+        """tp_size 0 is not "one worker" - coercing it invents the fact under test."""
+        for manifest in ({"tp_size": 0}, {"tp_rank": 5, "tp_size": 2},
+                         {"tp_size": "two"}, {"tp_rank": -1, "tp_size": 4}):
+            with self.subTest(manifest=manifest):
+                chosen = self.select([self.obj("a" * 64, [1, 2], **manifest)], [1, 2, 3])
+                self.assertFalse(chosen)
+                self.assertIn("not a whole cache", " ".join(chosen.refusals))
+
+    def test_explicit_nulls_read_as_a_whole_cache(self):
+        """A serialiser that writes null for an absent field still means single worker."""
+        self.assertEqual(artifact_shard({"tp_rank": None, "tp_size": None}),
+                         ShardIdentity(0, 1))
+
+
+class BufferBoundsTest(unittest.TestCase):
+    """extract and inject must refuse the same slot mappings.
+
+    A mutation run found both bounds checks on the inject side undefended, and adding the
+    tests showed inject had no negative-slot check at all. numpy reads a negative index as
+    an offset from the end, so injecting at slot -1 would have silently overwritten the last
+    token in the buffer - the failure mode this whole connector exists to avoid.
+    """
+
+    def setUp(self):
+        self.bridge = CanonicalBridge()
+        self.layer = paged(pages=4, page_size=8, width=6)      # 32 slots
+        self.canonical = np.zeros((2, 2, 3), dtype=self.layer.dtype)
+
+    def test_extract_refuses_an_empty_mapping(self):
+        with self.assertRaises(ConnectorError) as caught:
+            self.bridge.extract(self.layer, [], n_head=2, head_dim=3)
+        self.assertIn("empty slot mapping", str(caught.exception))
+
+    def test_inject_refuses_an_empty_mapping(self):
+        with self.assertRaises(ConnectorError) as caught:
+            self.bridge.inject(self.layer, [], np.zeros((0, 2, 3), dtype=self.layer.dtype))
+        self.assertIn("empty slot mapping", str(caught.exception))
+
+    def test_inject_refuses_a_slot_past_the_end(self):
+        with self.assertRaises(ConnectorError) as caught:
+            self.bridge.inject(self.layer, [0, 32], self.canonical)
+        self.assertIn("outside the 32-slot buffer", str(caught.exception))
+
+    def test_inject_refuses_a_negative_slot_instead_of_wrapping(self):
+        before = self.layer.copy()
+        with self.assertRaises(ConnectorError) as caught:
+            self.bridge.inject(self.layer, [0, -1], self.canonical + 7)
+        self.assertIn("negative slot", str(caught.exception))
+        np.testing.assert_array_equal(self.layer, before)
+
+    def test_extract_refuses_a_negative_slot(self):
+        with self.assertRaises(ConnectorError):
+            self.bridge.extract(self.layer, [0, -1], n_head=2, head_dim=3)
+
+    def test_the_two_sides_agree_on_what_is_out_of_range(self):
+        """A mapping one side accepts and the other rejects is a corruption waiting."""
+        for mapping in ([], [0, -1], [0, 32], [99]):
+            with self.subTest(mapping=mapping):
+                canonical = np.zeros((len(mapping), 2, 3), dtype=self.layer.dtype)
+                with self.assertRaises(ConnectorError):
+                    self.bridge.extract(self.layer, mapping, n_head=2, head_dim=3)
+                with self.assertRaises(ConnectorError):
+                    self.bridge.inject(self.layer, mapping, canonical)
