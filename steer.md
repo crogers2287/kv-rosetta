@@ -1,6 +1,6 @@
 # KV Rosetta research steer: productionize hybrid checkpoint persistence
 
-Status basis: default-branch head 6b0fd5e1d8b9afbf877b18a5f3b8ab2b3a0d4e56.
+Status basis: default-branch head 4a302d9133de86ade65a898fc33505f115f51ab6.
 
 This steer supersedes bdaa391. The hybrid checkpoint seam is no longer hypothetical. The next work is to turn a successful one-time experiment into a reproducible, detectable, fail-closed production path on the actual Qwen3.5/Qwen3.6 27B model.
 
@@ -20,7 +20,8 @@ The repository now contains:
 - a guarded build script;
 - a patched llama-server built on Fred;
 - an in-process hybrid save, erase, restore, and reuse result;
-- a one-time full-process restart result on a qwen35 hybrid model.
+- a one-time full-process restart result on a qwen35 hybrid model;
+- a bounded-tail import invariant that accepts exact-prompt reuse only when 1–8 tokens are uncovered and prompt_n equals that exact tail.
 
 Measured on OpenMythos-Q6_K:
 
@@ -29,7 +30,9 @@ Measured on OpenMythos-Q6_K:
 - restored checkpoint: about 149.626 MiB;
 - post-restore reuse: cache_n=252, prompt_n=4 for a 256-token prompt;
 - output and token IDs matched the recorded cold run;
-- the same result survived a manually controlled full server restart.
+- the same result survived a manually controlled full server restart;
+- the uncovered tail remained exactly four tokens at 256, 1,024, and 4,096 tokens under two substantially different checkpoint policies;
+- ordinary-attention live tests still report the established one-token tail.
 
 This proves the architecture is restorable when checkpoint state travels with the slot file.
 
@@ -73,9 +76,11 @@ This is the first item to fix because every later benchmark depends on knowing t
 
 ## Steering decision
 
-Do not spend the next cycle forcing cache_n from 252 to 255.
+Do not spend another cycle forcing cache_n from 252 to 255.
 
-The four-token tail is visible checkpoint granularity, not evidence of corrupted restoration. Forcing an endpoint checkpoint is extra invasive and has no demonstrated economic value yet.
+Commit 4a302d9 tested 256, 1,024, and 4,096-token prompts while changing checkpoint density by roughly 16x. The uncovered tail remained four tokens. It is a stable runtime resume rule for this tested hybrid path, not a checkpoint-density problem. The adapter now verifies a bounded tail and requires prompt_n to equal the exact uncovered count.
+
+Forcing an endpoint checkpoint is removed from the plan unless the production model falsifies this result.
 
 Prioritize:
 
@@ -169,9 +174,9 @@ Do not enable hybrid capabilities from:
 
 The current static refusal remains correct until this protocol exists and the live test passes.
 
-## P0-C: define the hybrid reuse contract
+## P0-C: validate and bind the bounded-tail contract
 
-The standard-attention invariant cache_n=L-1 and prompt_n=1 is too strict for recurrent checkpoint restoration.
+The default branch now replaces the standard-attention-only invariant cache_n=L-1 and prompt_n=1 with a bounded-tail rule. Preserve that correction, but do not treat one class-level bound as universal proof for every architecture.
 
 For a checkpoint-aware artifact, bind the following into the manifest:
 
@@ -184,6 +189,8 @@ For a checkpoint-aware artifact, bind the following into the manifest:
 - context and speculative configuration.
 
 Import succeeds only when the post-restore request agrees with the persisted checkpoint coverage.
+
+The current default max_uncovered_tail of 8 is acceptable as a fail-closed experimental ceiling for Qwen3.5. Before general adapter capability is advertised, bind the supported bound to the tested runtime/architecture contract rather than silently applying it to every future hybrid family.
 
 A positive cache_n alone remains insufficient.
 
@@ -344,18 +351,18 @@ The upstream loader intentionally ignores an unusable appendix and may still ret
 
 Do not rely on the server's HTTP status alone.
 
-## P5: decide whether exact endpoint checkpoints are worth adding
+## P5: keep exact-boundary work closed
 
-Only after the production ladder:
+The four-token tail stayed constant across prompt length and checkpoint-policy changes. Do not implement forced endpoint checkpoints.
 
-- measure the maximum uncovered tail;
-- measure its latency;
-- compare it with the complexity and memory cost of forcing an endpoint checkpoint;
-- determine whether a checkpoint already lands at the stable Hermes prefix boundary under practical checkpoint flags.
+Reopen this question only if the actual production model:
 
-If exact-boundary work is justified, create a real checkpoint at the correct state boundary. Never relabel or synthesize pos_min/pos_max around state captured elsewhere.
+- exceeds the bounded-tail contract;
+- shows tail growth with context;
+- loses meaningful latency to tail reprocessing;
+- or diverges from native in-memory checkpoint reuse.
 
-If the existing policy delivers greater than 99% reuse and restore economics are favorable, keep the smaller upstream patch.
+A production result inside the verified bound closes this line of research.
 
 ## Work still deferred
 
@@ -382,7 +389,7 @@ The upstream CUDA-to-Metal observation is a research lead, not authorization to 
 6. Prove the exact production 27B at 256 tokens after a full restart.
 7. Prove or withhold MTP/speculative support.
 8. Run 2K, 8K, and 32K production ladders.
-9. Decide from measurements whether exact-boundary checkpoints are necessary.
+9. Keep exact-boundary checkpoint work closed unless production measurements falsify the bounded-tail result.
 10. Attempt 131K only if artifact size, restore latency, and memory remain viable.
 11. Resume canonical and cross-backend work only after those gates.
 
@@ -418,4 +425,5 @@ Current status must be stated precisely:
 - hybrid checkpoint persistence is feasible;
 - one manual full-restart run succeeded locally;
 - the retained test does not yet automate that restart;
+- the bounded four-token hybrid tail is now measured across 256–4,096 tokens and enforced by the adapter;
 - the exact production 27B and its economics remain unproven.
