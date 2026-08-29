@@ -1,12 +1,12 @@
-# KV Rosetta research steer: validate the 27B proof, seal import, then measure economics
+# KV Rosetta research steer: seal compound import, prove the adapter path, then run 2K
 
-Status basis: default-branch head 652471486061f0a9f004a29570d0135a7999a5db.
+Status basis: default-branch head 7c8e32bd1a981b268157b7581c8d1df38119a73e.
 
-This steer supersedes 53c390a. A paired patched/unpatched process-owned 27B result now exists and the export-side fail-closed gaps were substantially repaired. The next work is not to repeat the checkpoint-persistence discovery. It is to correct two evidence defects in the retained record, apply the same gate to import and capability reporting, remove a new full-file memory cost, and then start the production context ladder at 2K.
+This steer supersedes cd2afb0. The corrected 256-token runtime matrix, one configuration-aware support predicate, complete restore-metadata comparison, mandatory hybrid reuse verification, and bounded appendix parsing have landed. Do not repeat those discoveries. Close the remaining compound-header bypass, then prove the actual KVX export/import path across owned process lifetimes before widening to 2K.
 
 ## Mission
 
-Deliver persistent exact-prefix restoration for the deployed 27B qwen35-family hybrid model across a complete llama-server restart, with one auditable artifact contract and no path that succeeds on an unpatched runtime, incomplete SCKP state, unsupported protocol tuple, unproven active state class, or unverifiable restore.
+Deliver persistent exact-prefix restoration for the deployed 27B qwen35-family hybrid model across a complete llama-server restart, with an auditable compound artifact and no path that advertises, exports, restores, or reports success on an unpatched runtime, incomplete SCKP state, inconsistent manifest, unsupported protocol tuple, or unproven active state class.
 
 Primary upstream evidence:
 
@@ -14,282 +14,191 @@ Primary upstream evidence:
 - https://github.com/ggml-org/llama.cpp/pull/26004
 - https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
-Keep upstream patch 0001 pinned and unchanged. Do not post upstream during this track.
+Keep llama.cpp patch 0001 pinned. Do not post upstream during this track.
 
-## Major result now retained
+## Evidence now retained
 
-bench/production-27b-matrix.json records a paired experiment on:
+### Corrected process-owned 256-token matrix
 
-- Qwen3.8-27B-UD-Q4_K_XL.gguf;
-- general.architecture qwen35;
-- exact model digest 9bf3b07e…;
+`bench/production-27b-matrix.json` was rerun from committed runner `56600b98b0ac3e9584c8b04942310b46ef1ae560` on the exact file:
+
+- `Qwen3.8-27B-UD-Q4_K_XL.gguf`;
+- architecture `qwen35`;
+- model content digest `9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886`;
+- current deployed llama.cpp fleet SKU on the measured host;
 - 256 exact prompt tokens;
-- the same upstream source revision ca3d5a3e1 for both binaries;
-- two owned process lifetimes per leg.
+- upstream llama.cpp source revision `ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc` for both builds.
 
-Measured:
+Do not transfer the model claim to a Qwen3.5-27B or Qwen3.6-27B digest. Those exact variants remain untested.
 
-Patched:
+Measured once on Fred:
 
-- first process PID 2281304, second PID 2283813;
-- save/restore both report 2 checkpoints;
-- checkpoint bytes 313,788,820;
-- total slot bytes 487,926,936;
-- declared checkpoint coverage 252 tokens;
-- post-restart cache_n=252, prompt_n=4;
-- generated token IDs and content match native in-memory reuse.
+| Result | Patched | Same-source unpatched |
+|---|---:|---:|
+| Native in-process reuse | 252/256 | 252/256 |
+| Fresh process before restore | 0/256 | 0/256 |
+| Fresh process after restore | 252/256 | 0/256 |
+| Tail reprocessed | 4 | 256 |
+| Artifact bytes | 487,926,936 | 174,138,116 |
+| Checkpoint appendix bytes | 313,788,820 | 0 |
 
-Unpatched control:
+The retained vectors are now non-vacuous: eight generated positions, five `top_logprobs` alternatives per position, generated token present in each vector, native and restored vectors exactly equal within the declared `1e-6` tolerance. Token IDs and content also match.
 
-- first process PID 2286310, second PID 2289098;
-- no checkpoint protocol advertised;
-- sequence restore still reports n_restored=263;
-- artifact bytes 174,138,116;
-- post-restart cache_n=0, prompt_n=256.
+The runner refuses a dirty kv-rosetta worktree and records its own digest, repository HEAD, launch argv, build flags, binary digests, source-tree HEADs, and patched-tree diff digest. The patched llama.cpp tree is intentionally modified by the retained patch set; do not describe that source tree as clean.
 
-This is strong behavioral evidence that checkpoint persistence, not ordinary sequence restoration, is the load-bearing variable on the tested 27B qwen35 architecture.
+### One fail-closed support decision
 
-The runner now enforces PID replacement, port closure, fresh-process zero reuse, artifact digest continuity, save/restore metadata equality, bounded tail, and the patched/unpatched contrast.
+`hybrid_support()` now governs capability, export, and import. On the target hybrid path it requires:
 
-## Export-side work now complete enough to retain
+- complete `sckp/1` advertisement;
+- exact tested tuple `ggsq/3+sckp/1`;
+- reported active state classes;
+- target-only active state;
+- proven state classes only.
 
-The current branch also adds:
+Active state and the protocol tuple are bound into `CacheABIIdentity`. Import refuses unsupported configurations before any restore POST, compares all five checkpoint metadata fields with the manifest, forces reuse verification for a recognized compound artifact, and returns `ok=false` plus erasure when pristine restoration fails.
 
-- explicit OPAQUE export refusal on an unpatched hybrid runtime before any save POST;
-- an exact tested compound tuple allowlist, currently ggsq/3+sckp/1;
-- target-only active-state gating;
-- exact appendix-offset validation from n_written - checkpoint_bytes;
-- EOF and byte-count agreement;
-- structured SCKP parsing with corruption cases;
-- preservation of checkpoint position zero.
+Keep all 14 tests in `tests/test_hybrid_support_predicate.py`.
 
-Keep these properties and their red tests.
+### Appendix validation is bounded
 
-## Audit corrections before claiming the 256 gate complete
+Production validation now seeks directly to `n_written - checkpoint_bytes`, reads only framing, skips payloads arithmetically, bounds individual and aggregate lengths, and requires exact EOF termination. The general classifier scans in bounded 4 MiB chunks.
 
-### 1. Probability-vector parity is currently vacuous
+Retained evidence:
 
-The retained record stores eight empty objects under warm_after_restore.top_probs.
+- 4 GiB sparse artifact: no more than 256 bytes read at the known boundary;
+- 400 MiB measured artifact: 0.0 MiB peak RSS growth after the change, versus 400 MiB before;
+- oversized and past-EOF lengths fail without allocation.
 
-scripts/production_matrix.py looks for top_probs or probs directly inside each completion_probabilities entry. The llama.cpp response contract places the alternatives under top_logprobs by default. If post_sampling_probs=true is requested, the nested field becomes top_probs.
+Keep these properties and tests.
 
-Therefore:
+## P0: close the remaining compound-header bypass
 
-- probs(native) and probs(warm) currently both evaluate to eight empty objects;
-- the equality check passes without comparing a single probability;
-- the commit’s claim that probability vectors match is not yet proven.
+Source review at `7c8e32b` found one remaining fail-open mismatch in `import_()`:
 
-Fix one of these exact ways:
+- compatibility is checked from `header["blob"]["opaque_format"]`;
+- compound behavior is selected independently from whether `header["coverage"]["format"]` contains `+`;
+- `container.verify()` verifies header and payload integrity but does not require those two format fields to agree.
 
-- keep the default response and parse each entry’s top_logprobs with id and logprob; or
-- send post_sampling_probs=true and parse each entry’s top_probs with id and prob.
+Therefore a correctly hashed artifact whose blob says `ggsq/3+sckp/1` but whose coverage format is absent or plain `ggsq/3` reaches the compound-capable runtime with `is_compound=False`. That skips nonzero coverage, restore-metadata equality, and forced reuse verification; a caller passing `verify_reuse=False` can receive success based only on sequence-state `n_restored`.
 
-Require:
+Fix red-test first:
 
-- one vector per generated token;
-- each vector nonempty;
-- the generated token itself present;
-- the expected n_probs count unless the API explicitly returns fewer;
-- native and persisted vectors equal within a declared numeric tolerance.
-
-Store both native and persisted vectors in the JSON. Empty vectors must fail the run.
-
-### 2. Runner provenance in the record is inconsistent
-
-The record says repo_commit=a0540a7, while the acceptance-enforcing runner and final record landed in 6524714.
-
-That happened because the modified runner was executed before it was committed. The record is evidence from an uncommitted implementation even though acceptance_checked=true.
-
-Repair by:
-
-1. running from a clean committed tree;
-2. refusing a dirty worktree before the experiment;
-3. recording git HEAD;
-4. recording the SHA-256 of scripts/production_matrix.py;
-5. recording the full launch argv for both legs;
-6. recording source-tree HEADs and build flags for both llama.cpp builds;
-7. rerunning the 256 matrix;
-8. committing the new record after the runner is already committed.
-
-The record’s repo_commit may name the prior commit containing the runner. That is valid when runner_sha256 proves the exact file used. It must not name a commit that lacks the acceptance logic.
-
-### 3. Model naming must remain exact
-
-The retained model is named Qwen3.8-27B, while the earlier project wording named Qwen3.5/Qwen3.6 27B. It exercises the qwen35 hybrid architecture and appears to be the current deployed 27B target, but do not blur model names.
-
-Report:
-
-- exact model filename and content digest;
-- architecture separately;
-- whether this is the currently deployed production SKU.
-
-If the production service still uses a different Qwen3.5/Qwen3.6 27B file, run the same corrected 256 matrix on that exact digest before transferring the claim. Do not discard the Qwen3.8 evidence; classify it as architecture-level evidence until the deployment identity matches.
-
-## P0: make one predicate govern capability, export, and import
-
-The export boundary is now gated, but capabilities() and import_() do not yet enforce the same full predicate.
-
-Current gaps:
-
-- capabilities can advertise OPAQUE for an active draft/speculative configuration and only append a warning;
-- capabilities can advertise a compound tuple that export would refuse;
-- active_checkpoint_state_classes is not included in CacheABIIdentity;
-- import does not re-check active state classes or the tested compound tuple;
-- import does not compare the restore response’s checkpoint metadata with the manifest;
-- verify_reuse=False can bypass the behavioral proof;
-- _restore_pristine() swallows a failed re-restore and the caller can receive ok=true with a verification token left in the slot.
-
-Create one configuration-aware decision function used by all three surfaces.
-
-For a hybrid/recurrent artifact it must require:
-
-- complete protocol;
-- exact tested compound tuple;
-- active state classes present and all behaviorally proven;
-- exact model and prompt identity;
-- active state classes and protocol tuple bound into CacheABIIdentity;
-- complete nonzero manifest coverage;
-- exact restore-response equality for checkpoint count, bytes, n_tokens, pos_min, and pos_max;
-- observed cache_n equal to declared checkpoint_n_tokens;
-- prompt_n equal to the exact bounded tail.
-
-For hybrid compound import, reuse verification is mandatory. Remove the public bypass or ignore verify_reuse=False for this path.
-
-If restoring the pristine prefix after the probe fails:
-
-- erase the slot if possible;
-- return ok=false;
-- never report a usable imported cache.
+1. Derive the compound decision from the authoritative blob format, not from optional coverage text.
+2. Require `coverage.format == blob.opaque_format` for opaque artifacts.
+3. If the blob format is compound, require a coverage object and complete nonzero checkpoint fields before staging or restore.
+4. Refuse missing, plain, malformed, or mismatched coverage format before any restore POST.
+5. Keep `verify_reuse=False` ineffective on every artifact whose blob format is compound.
+6. Validate numeric coverage types fail closed; do not let malformed strings raise out of the report boundary.
+7. Bind the exact compound format used for the decision into the artifact key and cache ABI as already intended.
 
 Required retained tests:
 
-1. active draft/speculative state yields empty capabilities;
-2. the same configuration refuses explicit import before a restore POST;
-3. ggsq/2+sckp/1 is absent from capabilities and refused on import;
-4. each restore-metadata field mismatch independently returns ok=false;
-5. zero/missing compound coverage is refused before restore;
-6. verify_reuse=False cannot bless a hybrid compound import;
-7. failed pristine re-restore cannot return ok=true.
+- compound blob plus missing coverage format refuses before restore;
+- compound blob plus plain coverage format refuses before restore;
+- plain blob plus compound coverage refuses before restore;
+- malformed numeric coverage refuses cleanly before restore;
+- each case remains refused with `verify_reuse=False`;
+- the genuine exported artifact still imports.
 
-## P1: restore streaming behavior before large contexts
+Do not solve this by trusting a plus sign alone. Parse the exact supported tuple and compare exact strings.
 
-checkpoint_appendix_at() and parse_checkpoint_appendix() currently call Path.read_bytes().
+## P1: finish the 256-token end-to-end adapter gate
 
-The production 256-token patched slot is already 487,926,936 bytes. Reading the whole file into Python to validate a small amount of framing adds roughly 488 MB of transient memory and will scale badly at 2K, 8K, and 32K.
+The retained production matrix exercises raw llama.cpp save/restore endpoints. It is not evidence that the KVX container, integrity verification, staging, adapter import, mandatory probe, pristine re-restore, and unpatched refusal work together across a true restart.
 
-Replace full-file reads with seek-based bounded parsing:
+Run the next smallest process-owning experiment on the same exact Qwen3.8-27B digest and 256-token prompt:
 
-- seek directly to the declared appendix offset for production export;
-- read fixed headers only;
-- skip blobs by checked offsets or stream them in bounded chunks when a digest is needed;
-- compare the final offset with file size;
-- never allocate a declared blob length;
-- retain the 16 GiB per-buffer and aggregate bounds.
+### Patched leg
 
-The general corruption helper may scan in chunks for tests, but the production adapter knows the exact offset and must use it.
+1. Start patched server A and record PID, props, binary/source identity, launch argv, and exact token IDs.
+2. Use the public adapter path to export one `ggsq/3+sckp/1` KVX artifact.
+3. Record outer-container digest, embedded payload digest, artifact key, complete coverage, sequence bytes, checkpoint bytes, and total bytes.
+4. Stop A; prove PID death and port closure.
+5. Start fresh patched server B; prove zero reuse before import.
+6. Import through the public adapter with its mandatory reuse verification.
+7. Require observed `cache_n=252`, `prompt_n=4`, exact restore-metadata equality, and successful pristine re-restore.
+8. Issue the retained deterministic completion and require token, content, and nonempty probability-vector parity with native in-memory reuse.
+9. Prove the staged copy is removed.
 
-Add a test using a sparse multi-gigabyte fixture or a read-counting wrapper proving validation does not read the sequence body or allocate proportional to artifact size.
+### Unpatched leg
 
-## P2: rerun the corrected 256 record
+Against a same-source unpatched fresh process:
 
-Do not widen the prompt yet.
+- capabilities are empty for this hybrid model;
+- explicit export refuses before a save POST;
+- importing the patched compound artifact refuses before staging or restore;
+- `verify_reuse=False` does not change the result;
+- no response is accepted from `n_restored` alone.
 
-Acceptance:
+Record endpoint-call evidence so “before POST” is mechanically checkable.
 
-- clean committed runner provenance;
-- exact model/deployment identity;
-- both patched and unpatched process-owned legs;
-- nonempty native and persisted probability vectors;
-- metadata and cache-coverage checks enforced;
-- active classes ["target"];
-- adapter capabilities, export, and import agree on the same support decision;
-- end-to-end KVX export/import round trip succeeds patched and refuses unpatched.
+### Timing
 
-Record raw timing honestly:
+Measure end-to-end, not just runtime restore:
 
-- patched cold wall: about 0.557 s;
-- raw runtime restore: about 0.424 s;
-- restored tail completion: about 0.207 s.
+- KVX integrity verification;
+- payload staging/extraction;
+- runtime restore;
+- mandatory reuse probe;
+- pristine re-restore;
+- tail processing;
+- total user-visible adapter import latency.
 
-At 256 tokens, raw restore plus tail processing is roughly 0.631 s, slightly slower than the measured cold request. This is a correctness gate, not an economic win.
+Keep raw runtime restore timing separately. Save/export time is not restore latency, but artifact creation time and bytes still belong in the record.
 
-Do not include save time in user-visible restore latency, but do include KVX integrity verification, staging, runtime restore, and verification-probe cost in the end-to-end adapter number.
+The 256 gate is correctness evidence. The existing raw numbers—about 0.554 s cold versus about 0.358 s restore plus 0.203 s tail before outer verification, staging, probe, and pristine re-restore—do not establish an economic win.
 
-## P3: production economic ladder
+## P2: run the 2K economic rung
 
-After the corrected 256 gate, run 2K first with three clean repetitions.
+Only after P0 and P1 are green, parameterize the committed runner and run 2,048 exact prompt tokens three clean repetitions on the same model, hardware, dtypes, and launch configuration.
 
-Compare:
+For every repetition retain:
 
 - native cold prefill;
-- native in-memory checkpoint reuse;
-- KVX outer verification;
+- native in-memory reuse;
+- outer KVX verification;
 - staging;
 - runtime restore;
-- mandatory reuse verification;
-- tail prefill;
-- total user-visible adapter restore;
-- sequence bytes;
-- checkpoint bytes;
-- total bytes;
-- peak process RSS and VRAM;
-- output tokens and probability parity against native reuse.
+- mandatory reuse probe;
+- pristine re-restore;
+- tail processing;
+- total user-visible adapter import;
+- sequence bytes, checkpoint bytes, container overhead, and total bytes;
+- process RSS and VRAM peaks;
+- token/content parity;
+- nonempty probability-vector parity against native reuse;
+- exact cache and prompt token accounting.
 
-Only proceed:
+Run tmpfs first to isolate compute and serialization. Run NVMe separately to measure the deployable path. State the actual K/V cache dtypes explicitly; Q4 weight quantization does not imply K/V dtype.
 
-- 2K passes correctness and shows a credible path toward break-even -> run 8K;
-- 8K remains favorable and memory is bounded -> run 32K;
-- otherwise stop at the first failing rung and attribute the bottleneck.
+Decision rule:
 
-Run tmpfs and NVMe separately. Use the actual production KV dtypes and record them explicitly. The model’s Q4 weight quantization does not state the K/V cache dtype.
+`total verified adapter import + tail processing < native full prefill`
 
-Decision criterion:
+Proceed to 8K only if all three 2K repetitions pass correctness and show either break-even or a credible measured path toward it. Otherwise stop and attribute the dominant phase. Proceed to 32K only if 8K remains correct, favorable, and memory-bounded.
 
-total verified adapter restore + tail processing < native full prefill
+## P3: exact model transfer and active-state expansion remain deferred
 
-The new 256 record shows the fixed checkpoint payload is about 314 MB. Storage and verification cost may dominate small prefixes, so the break-even context is now the first economic question.
+The result is currently for Qwen3.8-27B with architecture `qwen35`. If the production target changes to a Qwen3.5-27B or Qwen3.6-27B file, rerun the sealed 256 gate on that exact digest before claiming support.
 
-## P4: MTP/speculative only after target economics
-
-Serialization is still not behavioral support.
-
-Before enabling another active state class:
-
-- run the process-owned restart with it actually active;
-- compare persisted behavior to native in-memory reuse;
-- remove or corrupt its required blob and require refusal or demonstrated failure;
-- bind its model identity and launch settings into CacheABIIdentity.
-
-Until then, target-only is the only supported hybrid configuration.
+Draft/MTP/speculative serialization is not behavioral support. Keep those active classes withheld until each is actually enabled in a process-owned restart experiment, compared with native reuse, subjected to required-blob corruption/removal, and bound to model and launch identity.
 
 ## Required execution order
 
-1. Fix probability extraction and make empty vectors fail.
-2. Commit the runner, then rerun the 256 record from a clean committed tree with runner provenance.
-3. Centralize the configuration-aware support predicate across capabilities, export, and import.
-4. Bind and compare full restore metadata; make hybrid reuse verification mandatory.
-5. Make failed pristine restoration fail closed.
-6. Replace full-file appendix reads with seek-based bounded validation.
-7. Run the end-to-end patched/unpatched KVX round trip on the production 27B.
-8. Run 2K three times.
-9. Run 8K and 32K only when the prior rung passes.
-10. Keep exact-boundary, 131K, cross-backend, canonical, vLLM, Transformers, and upstream submission deferred.
-
-## Definition of the next milestone
-
-The 256 production gate is complete only when:
-
-- the record is produced by an exact committed runner;
-- probability-vector parity is non-vacuous;
-- capability, export, and import share one fail-closed decision;
-- restore metadata is bound to the artifact;
-- validation is streaming;
-- patched end-to-end KVX reuse succeeds after a true restart;
-- the same-source unpatched runtime cannot advertise, export, or successfully import a hybrid artifact.
+1. Add red tests for blob/coverage compound-format disagreement.
+2. Make one exact format decision govern import semantics and fail malformed coverage closed.
+3. Run all offline tests.
+4. Commit the implementation before producing evidence.
+5. Run the patched/unpatched process-owned 256-token public-adapter matrix.
+6. Retain the end-to-end record and phase timings.
+7. Run 2K three times.
+8. Run 8K and 32K only when the previous rung passes.
+9. Keep exact-boundary work, 131K, cross-backend, canonical conversion, vLLM, Transformers, and upstream submission deferred.
 
 ## Reporting discipline
 
-Classify every claim as:
+Classify every claim as one of:
 
 - proven by retained automated test;
 - measured once on Fred;
@@ -301,11 +210,11 @@ Classify every claim as:
 
 Current truthful status:
 
-- paired checkpoint persistence is behaviorally proven on the tested Qwen3.8-27B qwen35 model;
-- patched reuse is 252/256 and unpatched reuse is 0/256;
-- token/content parity against native reuse is proven;
-- probability-vector parity is not yet proven because the stored vectors are empty;
-- export is substantially fail closed;
-- import and capability reporting do not yet enforce the complete active-state/metadata contract;
-- 256-token raw restore is slightly slower than cold;
-- production 2K, 8K, and 32K economics remain unmeasured.
+- checkpoint persistence is behaviorally proven once on the exact tested Qwen3.8-27B qwen35 model;
+- patched raw restore reuses 252/256 tokens and same-source unpatched restore reuses 0/256;
+- token, content, and nonempty probability-vector parity against native reuse are proven by the retained record;
+- target-only capability/export/import configuration gating is substantially fail closed;
+- bounded appendix parsing is proven by retained tests and a one-host RSS measurement;
+- a compound blob/coverage disagreement can still bypass compound import semantics;
+- the public KVX adapter path has not yet been proven across a true process restart;
+- 2K, 8K, and 32K verified adapter economics remain unmeasured.
