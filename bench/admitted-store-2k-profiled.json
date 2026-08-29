@@ -1,0 +1,206 @@
+{
+  "admission": {
+    "digest": "ef4e73e89c73a1e144c93485b2a023f4c55b545c15acde81c704870ba38890c2",
+    "file_facts": {
+      "ctime_ns": 1788018529010990028,
+      "device": 27,
+      "inode": 6546,
+      "mtime_ns": 1788018529009990023,
+      "nlink": 1,
+      "size": 604958676
+    },
+    "manifest": {
+      "active_state_classes": [
+        "target"
+      ],
+      "cache_abi_digest": "94df6764e4ec7e42f405b11d74e840e6d8d672407bcf3214e1f78daa2770764a",
+      "cache_dtype_k": "f16",
+      "cache_dtype_v": "f16",
+      "checkpoint": {
+        "bytes": 313788820,
+        "count": 2,
+        "n_tokens": 2044,
+        "offset": 291169856,
+        "pos_max": 2043,
+        "pos_min": 2043
+      },
+      "compound_tuple": "ggsq/3+sckp/1",
+      "experimental": true,
+      "file_facts": {
+        "ctime_ns": 1788018529010990028,
+        "device": 27,
+        "inode": 6546,
+        "mtime_ns": 1788018529009990023,
+        "nlink": 1,
+        "size": 604958676
+      },
+      "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+      "model_weights_sha256": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+      "prompt_token_count": 2048,
+      "prompt_token_digest": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
+      "raw_sha256": "ef4e73e89c73a1e144c93485b2a023f4c55b545c15acde81c704870ba38890c2",
+      "raw_size": 604958676,
+      "runtime_build_info": "b10665-ca3d5a3e1",
+      "sequence_version": 3
+    },
+    "seconds": 3.1131412982940674
+  },
+  "architecture": "qwen35",
+  "binary_digests": {
+    "launcher_sha256": "785c69e1abd11906dd8889b1cd2546229972c787748b66eba04f88f616526870",
+    "libggml-base.so_sha256": "56f1f5e7b00a7d718615a00e8c8c4c9b9a7de076259bf44db98f408e706709df",
+    "libllama-server-impl.so_sha256": "93a4ddcfba4d534e3c01d791c993cdc8acb98c845df74f970c74fcb4a89bdfe2",
+    "libllama.so_sha256": "f1327e08bd47786072e94ba551ef19049ea4c35a0d58625391b1a5be429eca42",
+    "patch_markers": {
+      "context checkpoint appendix": 2,
+      "sckp/1": 1,
+      "slot_checkpoint_persistence": 1
+    }
+  },
+  "build_flags": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "GGML_CCACHE": "OFF",
+    "GGML_CUDA": "ON",
+    "GGML_NATIVE": "ON",
+    "LLAMA_CURL": "OFF"
+  },
+  "build_info": "b10665-ca3d5a3e1",
+  "filesystem": "tmpfs",
+  "kind": "admitted-store-2k-gate",
+  "kv_dtype_k": "f16",
+  "kv_dtype_v": "f16",
+  "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+  "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "prompt_tokens": 2048,
+  "repetitions": [
+    {
+      "cache_n": 2044,
+      "cheaper_than_cold": false,
+      "cold_wall_s": 1.7331905364990234,
+      "endpoint_calls": [
+        "/slots/0?action=restore",
+        "/completion",
+        "/slots/0?action=erase",
+        "/slots/0?action=restore"
+      ],
+      "phase_sum_s": 1.75453782081604,
+      "phases": {
+        "pristine_restore": 0.44752049446105957,
+        "resolve_abi": 9.107589721679688e-05,
+        "resolve_identity": 0.0011348724365234375,
+        "resolve_store": 0.0003979206085205078,
+        "resolve_support": 0.6216104030609131,
+        "reuse_probe": 0.2048046588897705,
+        "runtime_restore": 0.47897839546203613
+      },
+      "pid": 3068469,
+      "prompt_n": 4,
+      "ratio_to_cold": 1.2588097879257085,
+      "repetition": 1,
+      "request_path_metadata_bytes": 965,
+      "request_path_payload_bytes": 0,
+      "restore_import_s": 1.7545909881591797,
+      "tail_completion_s": 0.427166223526001,
+      "total_s": 2.1817572116851807,
+      "unclassified_s": 5.316734313964844e-05
+    },
+    {
+      "cache_n": 2044,
+      "cheaper_than_cold": false,
+      "cold_wall_s": 1.7131109237670898,
+      "endpoint_calls": [
+        "/slots/0?action=restore",
+        "/completion",
+        "/slots/0?action=erase",
+        "/slots/0?action=restore"
+      ],
+      "phase_sum_s": 1.75913667678833,
+      "phases": {
+        "pristine_restore": 0.441267728805542,
+        "resolve_abi": 0.00010156631469726562,
+        "resolve_identity": 0.0012116432189941406,
+        "resolve_store": 0.0004115104675292969,
+        "resolve_support": 0.6821329593658447,
+        "reuse_probe": 0.20477581024169922,
+        "runtime_restore": 0.42923545837402344
+      },
+      "pid": 3071187,
+      "prompt_n": 4,
+      "ratio_to_cold": 1.2753300206476883,
+      "repetition": 2,
+      "request_path_metadata_bytes": 965,
+      "request_path_payload_bytes": 0,
+      "restore_import_s": 1.7591753005981445,
+      "tail_completion_s": 0.42560648918151855,
+      "total_s": 2.184781789779663,
+      "unclassified_s": 3.8623809814453125e-05
+    },
+    {
+      "cache_n": 2044,
+      "cheaper_than_cold": false,
+      "cold_wall_s": 1.7295515537261963,
+      "endpoint_calls": [
+        "/slots/0?action=restore",
+        "/completion",
+        "/slots/0?action=erase",
+        "/slots/0?action=restore"
+      ],
+      "phase_sum_s": 1.7097740173339844,
+      "phases": {
+        "pristine_restore": 0.4328134059906006,
+        "resolve_abi": 9.226799011230469e-05,
+        "resolve_identity": 0.0011692047119140625,
+        "resolve_store": 0.0004153251647949219,
+        "resolve_support": 0.6521148681640625,
+        "reuse_probe": 0.21069931983947754,
+        "runtime_restore": 0.41246962547302246
+      },
+      "pid": 3075007,
+      "prompt_n": 4,
+      "ratio_to_cold": 1.2309646807774461,
+      "repetition": 3,
+      "request_path_metadata_bytes": 965,
+      "request_path_payload_bytes": 0,
+      "restore_import_s": 1.7098140716552734,
+      "tail_completion_s": 0.4192028045654297,
+      "total_s": 2.129016876220703,
+      "unclassified_s": 4.00543212890625e-05
+    }
+  ],
+  "repo_commit": "8fbe847637f9ab1b8e7a03f7f8ea96fcb9b0221d",
+  "runner_sha256": "8b5d198df908b53abb2b9a2622d751531bd5337c18b2d6e2895f23061aa8a277",
+  "slots_path": "/dev/shm/kvx-admitted",
+  "source_trees": {
+    "patched": {
+      "head": "ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc",
+      "tree": "/mnt/storage/llama-kvx-patched",
+      "worktree_clean": false,
+      "worktree_diff_sha256": "42974e7c3b65ac56d713a97bc607b89cba8f5a8b584597f2d9650bbe2ece5256"
+    }
+  },
+  "storage_note": "tmpfs on /dev/shm; resolve split into sub-phases",
+  "summary": {
+    "break_even_restores": null,
+    "cold_range_s": [
+      1.7131109237670898,
+      1.7331905364990234
+    ],
+    "median_cold_s": 1.7295515537261963,
+    "median_ratio_to_cold": 1.2614583283075542,
+    "median_saving_s": -0.4522056579589844,
+    "median_total_s": 2.1817572116851807,
+    "paired_wins": 0,
+    "passes": false,
+    "repetitions": 3,
+    "total_range_s": [
+      2.129016876220703,
+      2.184781789779663
+    ]
+  },
+  "unpatched_control": {
+    "endpoint_calls": [],
+    "ok": false,
+    "reason": "refusing to restore into this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing."
+  },
+  "warning": "RESEARCH ONLY. Experimental local path, not a production API."
+}

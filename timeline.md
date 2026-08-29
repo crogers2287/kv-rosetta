@@ -765,3 +765,53 @@ production.
 
 Status: **measured twice on this host**. **Proven by retained test**: 413 offline.
 **Untested**: NVMe, 8K, 32K, and any admitted-artifact contract.
+
+## REQ-031 — The admitted-store 2K gate FAILS, and the cause is measured
+
+Steer 9a883d9, P0–P2. The contract and path are built and every safety gate passes; the
+economic gate does not.
+
+**Result: 0 of 3 paired wins.** Median 2.182 s
+(range 2.129–2.185) against median cold
+1.730 s (range 1.713–1.733).
+By the steer's decision rule this is a Fail: stop storage-format work and profile.
+
+**Every correctness and safety gate passed.** `cache_n=2044 prompt_n=4` in all three
+repetitions; restore metadata equal to the admitted metadata field for field; token, content
+and nonempty probability-vector parity against native in-memory reuse; the admitted object
+byte-identical across every timed window; **zero request-path payload bytes** with 965 bytes
+of metadata read; and the unpatched control refusing with **no endpoint call at all**. The
+failure is economic, not a safety failure.
+
+**Profile — and my first hypothesis was wrong.** I guessed the regression was the
+model-content digest and measured it instead: 1 ms. Splitting `resolve` into sub-phases
+located it by measurement:
+
+| phase | median | lower bound |
+|---|---:|---:|
+| **resolve_support** | **0.652** | *not in the timed window* |
+| runtime restore | 0.429 | 0.414 |
+| pristine re-restore | 0.441 | 0.452 |
+| reuse probe | 0.205 | 0.216 |
+| resolve_store | 0.000 | – |
+| resolve_abi | 0.000 | – |
+| resolve_identity | 0.001 | – |
+
+The three phases the steer asked to profile — runtime restore, reuse probe, pristine
+re-restore — all match the lower bound within noise. The entire regression is
+`hybrid_support()`, whose cost is `gguf.architecture()` re-reading the model's metadata
+block on every restore.
+
+**This also corrects how the lower bound should be read.** That 1.516 s figure did not
+include the support predicate in its timed window — it validated at admission and timed only
+restore, probe and pristine. So the lower bound was never a like-for-like comparison with a
+path that must fail closed on every request. The honest statement is that the restore
+mechanics cost ~1.08 s and the fail-closed gate currently adds ~0.65 s on top.
+
+The architecture of a given model file cannot change, so this cost looks cacheable by the
+same file-stamp mechanism `weights` already uses. **Not implemented here:** the steer's Fail
+branch says stop storage-format work and profile, which is what this is.
+
+Status: **failed** (economic gate, 0/3). **Proven by retained test**: 457 offline, every
+guard mutation-checked. **Measured three times on this host**: this gate.
+**Untested**: NVMe, 8K.
