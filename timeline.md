@@ -429,3 +429,58 @@ alone and would prove nothing about format agreement.
 
 Status: **proven by retained test** — 7 tests in
 `tests/test_compound_format_agreement.py`, 356 offline total.
+
+## REQ-025 — The sealed 256-token adapter gate
+
+Steer 233a897, P1. Run from committed runner `fd4e9d01fe0a`
+(runner digest `3581b5033e54e749`), clean worktree.
+
+Both legs pass every acceptance item. The patched leg exports one
+`ggsq/3+sckp/1` artifact through the public adapter and imports it into a fresh
+process; the unpatched leg advertises nothing, refuses the export, and refuses the patched
+artifact.
+
+**Artifact identity** — container `9564029f75cf45cb`, payload
+`744a57f7a5defef6`, key `d06a04f8ff22cd50`.
+Total 330,575,504 bytes = 173,679,168 sequence +
+156,894,416 checkpoint + 1,920 container
+overhead. Coverage: 1 checkpoint, 252 tokens, positions 251..251.
+
+**After the adapter import**: `cache_n=252
+prompt_n=4`, tokens, content and probability vectors
+all matching native in-memory reuse. Staged copies left behind: none.
+
+**Endpoint evidence** is now mechanical, and it corrected a claim. The unpatched export made
+**no calls at all**. The cross-import refusals made no restore call. Note that
+`calls_during_capability_probe` shows a save: `state_version()` probes the emitted sequence
+version by saving a slot, since no endpoint reports it - which is what I previously
+misattributed to the export.
+
+**The unpatched runtime refuses the patched artifact on cache ABI identity**, not on the
+support predicate - `artifact fa9d63f33e30 vs expected 049ccd656b97`. That is an earlier and
+stronger gate than the one the steer asked for, because the active state classes and
+protocol tuple are bound into `CacheABIIdentity`. It holds with `verify_reuse` both true and
+false.
+
+**Phase attribution — the point of this run.** At 256 tokens the adapter path loses badly,
+and now we know to what:
+
+| phase | seconds |
+|---|---:|
+| staging (extract 315 MiB payload) | 1.295 |
+| container verification (digest 315 MiB) | 1.054 |
+| pristine re-restore | 0.275 |
+| runtime restore | 0.250 |
+| reuse probe | 0.212 |
+| **total end-to-end** | **3.693** |
+| *native cold request* | *0.588* |
+
+The runtime restore is 0.250 s - faster than the 0.588 s
+cold request. Everything above it is KV Rosetta's own overhead: staging and integrity
+verification together cost 2.349 s, both linear in the
+315 MiB payload. The loss is I/O over the artifact, not the model.
+
+This is a correctness gate. It establishes no economic win at 256 tokens, and nothing here
+projects one at any other length.
+
+Status: **measured once on this host**, from a clean committed runner.

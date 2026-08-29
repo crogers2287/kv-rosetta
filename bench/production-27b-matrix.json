@@ -1,5 +1,5 @@
 {
-  "deployment_identity": "Qwen3.8-27B-UD-Q4_K_XL.gguf is the file the fleet's qwen38-27b llama.cpp entries load, so it is the deployed production SKU. Architecture qwen35.",
+  "deployment_identity": "Qwen3.8-27B-UD-Q4_K_XL.gguf is the file the fleet's qwen38-27b llama.cpp entries load, so it is the deployed production SKU. Architecture qwen35. Qwen3.5-27B is not served here; Qwen3.6-27B variants exist under other fleet entries and were not tested.",
   "kind": "production-27b-paired-restart-matrix",
   "legs": {
     "patched": {
@@ -11,6 +11,120 @@
         "active_checkpoint_state_classes": [
           "target"
         ],
+        "after_adapter_import": {
+          "cache_n": 252,
+          "content": " naturalist recorded. In the year ",
+          "prompt_n": 4,
+          "tokens": [
+            5629,
+            375,
+            12076,
+            13,
+            733,
+            279,
+            1007,
+            220
+          ]
+        },
+        "after_adapter_top_logprobs": [
+          {
+            "13": -6.614059925079346,
+            "271": -6.4454731941223145,
+            "307": -8.148539543151855,
+            "5629": -0.0044179256074130535,
+            "17064": -8.311421394348145
+          },
+          {
+            "13": -6.338602542877197,
+            "271": -5.843651294708252,
+            "284": -7.308322429656982,
+            "375": -0.007423648610711098,
+            "248044": -7.9537529945373535
+          },
+          {
+            "13": -5.8012261390686035,
+            "220": -8.076805114746094,
+            "271": -5.945891857147217,
+            "1347": -6.572084903717041,
+            "12076": -0.01074185874313116
+          },
+          {
+            "11": -6.74284553527832,
+            "13": -0.018275301903486252,
+            "271": -6.070500373840332,
+            "1149": -6.618454933166504,
+            "5169": -6.133217811584473
+          },
+          {
+            "198": -4.3044281005859375,
+            "271": -3.287198066711426,
+            "733": -0.080664724111557,
+            "1358": -5.910672187805176,
+            "248044": -5.254376411437988
+          },
+          {
+            "13": -7.002078056335449,
+            "220": -7.9993743896484375,
+            "259": -8.934941291809082,
+            "271": -6.891368865966797,
+            "279": -0.003328253049403429
+          },
+          {
+            "13": -9.09134292602539,
+            "271": -7.830075740814209,
+            "374": -8.643814086914062,
+            "1007": -0.001070416416041553,
+            "18886": -9.4281005859375
+          },
+          {
+            "13": -6.830086708068848,
+            "16": -9.071078300476074,
+            "220": -0.0036685920786112547,
+            "271": -6.313471794128418,
+            "1076": -9.075419425964355
+          }
+        ],
+        "artifact": {
+          "artifact_key": {
+            "cache_abi": "fa9d63f33e3083fdc1a09dcc6562d5527ce83332f1e4187930b6d86458a94b77",
+            "digest": "d06a04f8ff22cd50f369457dae5a1d98328058034c8d20b27022d0d5ea81687c",
+            "encoding": "opaque",
+            "format_version": "ggsq/3+sckp/1",
+            "mapper_id": "",
+            "model": "5ad192ba605c2d4c9b02931a76d31d7461e8dbd17753c5e328c0f307bf99e2c3",
+            "prompt": "c0b970b82ad06c4f780173f17deda5a59e5692aed111a1dbc1227baa617cad89",
+            "representation_digest": "0fc0ea7134acd0768aa60dbe7212fdfabee089b7c5efba627fc1bdf866096e4b"
+          },
+          "checkpoint_bytes": 156894416,
+          "container_overhead_bytes": 1920,
+          "container_sha256": "9564029f75cf45cbe6937ac3fc226f6f84997055a37ee9d134e616211fd6db33",
+          "coverage": {
+            "checkpoint_bytes": 156894416,
+            "checkpoint_n_tokens": 252,
+            "checkpoint_pos_max": 251,
+            "checkpoint_pos_min": 251,
+            "format": "ggsq/3+sckp/1",
+            "n_checkpoints": 1
+          },
+          "opaque_format": "ggsq/3+sckp/1",
+          "payload_bytes": 330573584,
+          "payload_sha256": "744a57f7a5defef6352b17d8433943716e020607ba71c5d0316ed4bef93f8e56",
+          "sequence_bytes": 173679168,
+          "total_bytes": 330575504
+        },
+        "calls_during_capability_probe": [
+          "/slots/0?action=save"
+        ],
+        "calls_during_export": [
+          "/slots/0?action=save"
+        ],
+        "calls_during_import": [
+          "/slots/0?action=save",
+          "/slots/0?action=restore",
+          "/completion",
+          "/slots/0?action=erase",
+          "/slots/0?action=restore"
+        ],
         "capabilities_export": [
           "opaque"
         ],
@@ -18,15 +132,24 @@
           "opaque"
         ],
         "export_refused": null,
-        "export_seconds": 2.2748966217041016,
+        "export_seconds": 2.3475241661071777,
         "hybrid_support": true,
         "hybrid_support_reason": "target-only sckp/1 on sequence version 3",
         "import_ok": true,
+        "import_phases": {
+          "container_verify": 1.0538735389709473,
+          "pristine_restore": 0.2748072147369385,
+          "reuse_probe": 0.21169614791870117,
+          "runtime_restore": 0.24953556060791016,
+          "staging": 1.295219898223877
+        },
         "import_reason": "verified reuse on slot 0: cache_n=252 of 256 token(s), 4 reprocessed, matching declared coverage 252",
-        "import_reported_seconds": 3.6852447986602783,
-        "import_seconds_end_to_end": 3.7948861122131348,
+        "import_reported_seconds": 3.6091623306274414,
+        "import_seconds_end_to_end": 3.6926562786102295,
         "import_tokens_restored": 256,
-        "kvx_bytes": 330575504
+        "kvx_bytes": 330575504,
+        "kvx_path": "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-matrix/matrix-patched-adapter.kvx",
+        "staged_copies_left": []
       },
       "architecture": "qwen35",
       "artifact_bytes": 487926936,
@@ -54,7 +177,7 @@
       "cold": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 318.609,
+        "prompt_ms": 355.527,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -66,14 +189,14 @@
           1007,
           220
         ],
-        "wall_s": 0.5402944087982178
+        "wall_s": 0.5879743099212646
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 256
       },
       "expect_patched": true,
-      "first_pid": 3809498,
+      "first_pid": 138440,
       "launch_argv": [
         "/mnt/storage/llama-kvx-patched/build/bin/llama-server",
         "--model",
@@ -81,7 +204,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "49803",
+        "41697",
         "-ngl",
         "99",
         "-c",
@@ -194,10 +317,10 @@
         "n_read": 487926936,
         "n_restored": 263,
         "timings": {
-          "restore_ms": 419.698
+          "restore_ms": 414.569
         }
       },
-      "restore_wall_s": 0.4213836193084717,
+      "restore_wall_s": 0.41626620292663574,
       "save_response": {
         "checkpoint_bytes": 313788820,
         "checkpoint_n_tokens": 252,
@@ -209,7 +332,7 @@
         "n_saved": 263,
         "n_written": 487926936,
         "timings": {
-          "save_ms": 379.038
+          "save_ms": 394.853
         }
       },
       "second_launch_argv": [
@@ -219,7 +342,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "46305",
+        "52625",
         "-ngl",
         "99",
         "-c",
@@ -236,14 +359,14 @@
         "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-matrix/",
         "--no-warmup"
       ],
-      "second_pid": 3813234,
-      "tail_completion_wall_s": 0.42635488510131836,
+      "second_pid": 145791,
+      "tail_completion_wall_s": 0.4107053279876709,
       "token_count": 256,
       "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
       "warm_after_restore": {
         "cache_n": 252,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 212.89,
+        "prompt_ms": 197.866,
         "prompt_n": 4,
         "tokens": [
           5629,
@@ -320,10 +443,30 @@
       "active_checkpoint_state_classes": null,
       "adapter": {
         "active_checkpoint_state_classes": null,
+        "calls_during_capability_probe": [
+          "/slots/0?action=save"
+        ],
+        "calls_during_export": [],
         "capabilities_export": [],
         "capabilities_import": [],
+        "cross_import_refusals": {
+          "verify_reuse=False": {
+            "calls": [],
+            "ok": false,
+            "phases": {},
+            "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
+          },
+          "verify_reuse=True": {
+            "calls": [
+              "/slots/0?action=save"
+            ],
+            "ok": false,
+            "phases": {},
+            "reason": "cache ABI mismatch: artifact fa9d63f33e30 vs expected 049ccd656b97"
+          }
+        },
         "export_refused": "refusing to export from this runtime: qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
-        "export_seconds": 0.5177621841430664,
+        "export_seconds": 0.5452535152435303,
         "hybrid_support": false,
         "hybrid_support_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
         "import_ok": null,
@@ -355,7 +498,7 @@
       "cold": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 357.935,
+        "prompt_ms": 328.083,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -367,14 +510,14 @@
           1007,
           220
         ],
-        "wall_s": 0.5839071273803711
+        "wall_s": 0.5524156093597412
       },
       "control_after_restart": {
         "cache_n": 0,
         "prompt_n": 256
       },
       "expect_patched": false,
-      "first_pid": 3817694,
+      "first_pid": 150067,
       "launch_argv": [
         "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
         "--model",
@@ -382,7 +525,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "58819",
+        "35007",
         "-ngl",
         "99",
         "-c",
@@ -484,17 +627,17 @@
         "n_read": 174138116,
         "n_restored": 263,
         "timings": {
-          "restore_ms": 67.677
+          "restore_ms": 70.797
         }
       },
-      "restore_wall_s": 0.06923031806945801,
+      "restore_wall_s": 0.07209563255310059,
       "save_response": {
         "filename": "matrix-unpatched.bin",
         "id_slot": 0,
         "n_saved": 263,
         "n_written": 174138116,
         "timings": {
-          "save_ms": 153.306
+          "save_ms": 156.159
         }
       },
       "second_launch_argv": [
@@ -504,7 +647,7 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "49673",
+        "37145",
         "-ngl",
         "99",
         "-c",
@@ -521,14 +664,14 @@
         "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-matrix/",
         "--no-warmup"
       ],
-      "second_pid": 3820436,
-      "tail_completion_wall_s": 0.5167708396911621,
+      "second_pid": 152989,
+      "tail_completion_wall_s": 0.5210824012756348,
       "token_count": 256,
       "token_ids_sha256": "a2a5749a0fa438c5b5d6f036f3dfc728930a3ea81b230f60c93a86846857859c",
       "warm_after_restore": {
         "cache_n": 0,
         "content": " naturalist recorded. In the year ",
-        "prompt_ms": 302.285,
+        "prompt_ms": 305.261,
         "prompt_n": 256,
         "tokens": [
           5629,
@@ -606,8 +749,8 @@
     "0002-advertise-checkpoint-capability.patch": "132acd3e3013d90f634ccbcbcb7dcb7e168128a5157ae28378b2a598eca0491f"
   },
   "prompt_tokens": 256,
-  "repo_commit": "a9e617e54200dc3159c1baa7efef76a31aa03a49",
-  "runner_sha256": "7b0465796f7ba7130fc4e75918ad8b3242ba16c3345bf41d092834af2644130d",
+  "repo_commit": "fd4e9d01fe0ad6f99ad4cacd7d01bebf2b44c326",
+  "runner_sha256": "3581b5033e54e749fdfd729a9fd6516bcb4bd1c413be8d0f5398139ef55b20be",
   "source_trees": {
     "patched": {
       "head": "ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc",
