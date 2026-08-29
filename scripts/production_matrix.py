@@ -35,6 +35,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from kv_rosetta import gguf, weights  # noqa: E402
+from kv_rosetta.adapters.base import (  # noqa: E402
+    AdapterError,
+    ExportRequest,
+    ImportRequest,
+    Representation,
+)
+from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter  # noqa: E402
 
 PROMPT_TOKENS = 256
 
@@ -300,6 +307,43 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         artifact = Path(slots) / slot_file
         artifact_digest = sha256_file(artifact)
         artifact_bytes = artifact.stat().st_size
+
+        # The adapter's own view of this runtime, and a real KVX export through it. This
+        # is the contract a caller actually uses; the raw endpoint measurements above say
+        # nothing about whether the adapter would let them near it.
+        adapter = LlamaCppHTTPAdapter(first.url, slots)
+        supported, support_reason, _ = adapter.hybrid_support()
+        caps = adapter.capabilities()
+        adapter_view = {
+            "hybrid_support": supported,
+            "hybrid_support_reason": support_reason,
+            "capabilities_export": sorted(r.value for r in caps.export),
+            "capabilities_import": sorted(r.value for r in caps.import_),
+            "active_checkpoint_state_classes": first.props().get(
+                "active_checkpoint_state_classes"),
+        }
+        kvx_path = Path(slots) / f"matrix-{name}.kvx"
+        export_started = time.time()
+        try:
+            adapter.export(ExportRequest(model=model, out_path=kvx_path,
+                                         representation=Representation.OPAQUE, slot=0))
+            adapter_view["export_refused"] = None
+            adapter_view["export_seconds"] = time.time() - export_started
+            adapter_view["kvx_bytes"] = kvx_path.stat().st_size
+        except AdapterError as exc:
+            adapter_view["export_refused"] = str(exc)
+            adapter_view["export_seconds"] = time.time() - export_started
+        # Capability and export must not disagree on a live runtime either.
+        advertised = Representation.OPAQUE.value in adapter_view["capabilities_export"]
+        if advertised != (adapter_view["export_refused"] is None):
+            raise RuntimeError(
+                f"{name}: capabilities advertised export={advertised} but export "
+                f"{'refused' if adapter_view['export_refused'] else 'succeeded'}")
+        if expect_patched and adapter_view["export_refused"]:
+            raise RuntimeError(f"{name}: adapter refused to export from the patched "
+                               f"runtime: {adapter_view['export_refused']}")
+        if not expect_patched and not adapter_view["export_refused"]:
+            raise RuntimeError(f"{name}: adapter exported from an unpatched runtime")
     finally:
         first.stop()
 
@@ -331,7 +375,28 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         t0 = time.time()
         restored = second.post("/slots/0?action=restore", {"filename": slot_file})
         restore_wall = time.time() - t0
+        t0 = time.time()
         warm = second.post("/completion", request2)
+        tail_wall = time.time() - t0
+
+        # End-to-end through the adapter: outer KVX verification, staging, runtime
+        # restore, and the mandatory reuse probe. Save time is deliberately excluded -
+        # it is not paid on the request path - but everything a caller waits for is in.
+        adapter2 = LlamaCppHTTPAdapter(second.url, slots)
+        if expect_patched:
+            second.post("/slots/0?action=erase", {})
+            started_import = time.time()
+            report = adapter2.import_(kvx_path, ImportRequest(model=model, slot=0))
+            adapter_view["import_seconds_end_to_end"] = time.time() - started_import
+            adapter_view["import_ok"] = report.ok
+            adapter_view["import_reason"] = report.reason
+            adapter_view["import_reported_seconds"] = report.seconds
+            adapter_view["import_tokens_restored"] = report.tokens_restored
+            if not report.ok:
+                raise RuntimeError(f"{name}: adapter import failed: {report.reason}")
+        else:
+            adapter_view["import_ok"] = None
+            adapter_view["import_reason"] = "no artifact: export was refused, as required"
     finally:
         second.stop()
 
@@ -458,6 +523,8 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         "native_reuse_top_logprobs": native_vectors,
         "logprob_tolerance": LOGPROB_TOLERANCE,
         "restore_wall_s": restore_wall,
+        "tail_completion_wall_s": tail_wall,
+        "adapter": adapter_view,
     }
 
 
