@@ -557,3 +557,47 @@ then the honest position is the one the code now takes: probe the architecture a
 the capability.
 
 The classification is therefore **proven by the runtime's own trace**, not inferred.
+
+## 16. P2 completed for the measurable model: three repetitions, medians and ranges
+
+Section 14 reported medians from two runs. The steer asks for at least three clean
+repetitions with medians *and* ranges, plus throughputs, break-even context and peak
+memory. Re-run at three repetitions per rung, both media, q4_0 KV, CPU inference.
+
+**tmpfs (/dev/shm)**
+
+| tokens | native prefill (range) | total restore (range) | speedup | ms saved | read | restore |
+|---|---|---|---|---|---|---|
+| 256 | 351 ms [347-386] | 138 ms [133-140] | 2.5x | 210 | 150 MB/s | 22 MB/s |
+| 2048 | 1624 ms [1578-1633] | 376 ms [336-400] | 4.2x | 1224 | 245 MB/s | 70 MB/s |
+| 8192 | 6678 ms [6569-6748] | 1163 ms [1145-1266] | 5.6x | 5412 | 297 MB/s | 91 MB/s |
+
+**ext4 / NVMe**
+
+| tokens | native prefill (range) | total restore (range) | speedup | ms saved | read | restore |
+|---|---|---|---|---|---|---|
+| 256 | 349 ms [342-410] | 146 ms [109-155] | 2.3x | 196 | 128 MB/s | 21 MB/s |
+| 2048 | 1534 ms [1483-1561] | 408 ms [369-409] | 3.8x | 1126 | 233 MB/s | 65 MB/s |
+| 8192 | 6685 ms [6171-6784] | 1212 ms [1154-1328] | 5.3x | 5357 | 255 MB/s | 91 MB/s |
+
+- **Break-even: none in this range.** Restore wins at every rung on both media, so there is
+  no crossing to interpolate. Reported as `null` rather than as a fabricated number.
+- **Storage medium is not the variable.** tmpfs leads NVMe by 3-6%, inside the run-to-run
+  ranges. The cost is verification and the runtime restore, not the read - which is why
+  restore throughput (22-91 MB/s) is far below read throughput (128-297 MB/s).
+- **Peak RSS 51-52 MB** for artifacts up to 84 MB, confirming the streaming path holds.
+- Speedup grows with context because prefill is linear in tokens while the fixed costs of
+  verification and the restore call are amortised.
+
+### Two limits of these records, recorded in the records
+
+- `llama-server /props` does not report `type_k`/`type_v`, so the KV type cannot be probed.
+  The records carry `kv_type_declared` from the launch flag, corroborated by 10.1 KB/token
+  against the 36 KB/token measured at f16 - not by the server's own word.
+- `peak_vram_mb` comes from `nvidia-smi` and is host-wide, not attributed to this process.
+  These runs used `-ngl 0`, so that figure reflects other models resident on the host and
+  says nothing about this benchmark. It is kept because a GPU run would want it, and
+  labelled so it cannot be misread.
+
+Both caveats are written into `bench/*.json` alongside the numbers, so a later reader does
+not have to reconstruct them.

@@ -55,7 +55,7 @@ Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
 | 15. Context ladder 2K / 8K / 32K | ✅ measured | 3B parity held at every rung; restore slower than prefill with f16 KV. See `docs/research-findings.md` §11 |
 | 16. Steer P0-A..F (version labelling, slot binding, identity, streaming, conformance, CI) | ✅ done | Commits 6bc7566, b343c82, b40fe35, f479edc, 2375989, 953c8c3, 827d316 |
 | 17. Diagnose 27B cache_n=0 | ✅ classified | Hybrid attention+recurrent architecture (`qwen35`), NOT MTP. One variable at a time; MTP, flash attention, tensor split, GPU offload and size all exonerated. See §13 |
-| 18. Measure real q4 economics (3B) | ✅ measured | q4_0 KV: 10.1 KB/token, restore ~5.4x cheaper than prefill at 8192, tmpfs and NVMe within noise. See `docs/research-findings.md` §14 and `bench/*.json` |
+| 18. Measure real q4 economics (3B), 3 repetitions with ranges | ✅ measured | q4_0 KV: 10.1 KB/token, restore ~5.4x cheaper than prefill at 8192, tmpfs and NVMe within noise. See `docs/research-findings.md` §14 and §16, and `bench/*.json` |
 | 19. Quantized KV is not token-exact | ✅ measured | llama.cpp's OWN cache reuse diverges from a cold prefill at q4_0; model is deterministic; parity and native_cache_parity move together. Attribution controlled |
 | 20. 27B q4 ladder | 🔴 blocked | Every large model on this host is qwen35/qwen35moe (hybrid). Only non-hybrid model above 3 GB is a 5.8 GB f16 build of the same 3B |
 | 21. Hybrid failure mechanism | ✅ proven | Runtime's own trace: "forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory)". Context checkpoints are server-side state that `llama_state_seq_save_file` does not carry. See `docs/research-findings.md` §15 |

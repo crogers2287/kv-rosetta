@@ -1,63 +1,95 @@
 {
   "architecture": "qwen2",
+  "break_even_tokens": null,
   "cache_abi": {},
+  "caveats": [
+    "kv_type_k/kv_type_v are empty because llama-server /props does not report them; kv_type_declared is the launch flag (--cache-type-k q4_0 --cache-type-v q4_0), corroborated by 10.1 KB/token against 36 KB/token measured at f16",
+    "peak_vram_mb is host-wide from nvidia-smi and is NOT attributed to this process; this run used -ngl 0, so the figure reflects other models resident on the host"
+  ],
   "identity": {
     "build_info": "b1-3e73446",
     "cache_abi_digest": "43367938c51c1ea779d369bf67d463ada38d1aad129d0ffa9617ce2349160444",
     "model_digest": "27373f517965c807d845b021d72b224777257b40c8ba99b4ab2618bb5491fc14",
     "weights_sha256": "42b010fba4fca198e212f86422230b3d5c9a97f6d163a165ee9054d55ad3d421"
   },
+  "kv_type_declared": "q4_0",
   "kv_type_k": "",
   "kv_type_v": "",
   "llama_build": "b1-3e73446",
   "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
   "n_ctx": 16384,
   "opaque_format": "ggsq/2",
-  "repo_commit": "f6b3ab6a51dc9e075205d911af5e5b91cbb4c323",
+  "repeats": 3,
+  "repo_commit": "3c556d2c5eb6095abaf56865b0e5df9f609419e8",
   "rungs": [
     {
       "artifact_bytes": 2733628,
       "artifact_digest": "b3bb5e2eae0f748b8f6115cc46c5b22de8e1e61b0919f24f80a13ccb00ca07a4",
       "bytes_per_token": 10678.234375,
       "cache_n": 255,
-      "export_s": 0.020590901374816895,
+      "export_s": 0.022818565368652344,
       "export_s_range": [
-        0.020560264587402344,
-        0.020621538162231445
+        0.019227266311645508,
+        0.02864813804626465
       ],
-      "import_s": 0.11272251605987549,
+      "import_s": 0.12050771713256836,
       "import_s_range": [
-        0.09988808631896973,
-        0.12555694580078125
+        0.11590814590454102,
+        0.12082624435424805
       ],
       "model_is_deterministic": true,
+      "ms_saved": 210.2440004425049,
+      "ms_saved_range": [
+        208.77282318115232,
+        252.79508700561524
+      ],
       "native_cache_parity": false,
-      "native_prefill_ms": 372.231,
+      "native_prefill_ms": 350.658,
       "native_prefill_ms_range": [
-        355.491,
-        388.971
+        346.965,
+        385.877
       ],
       "parity": false,
-      "peak_rss_mb": 50.68359375,
+      "peak_rss_mb": 51.51171875,
+      "peak_vram_mb": 22835.0,
+      "peak_vram_mb_range": [
+        22835.0,
+        22835.0
+      ],
       "prompt_n": 1,
-      "repeats": 2,
+      "read_throughput_mb_s": 150.12098080672178,
+      "read_throughput_mb_s_range": [
+        130.96321847340496,
+        151.80075521990227
+      ],
+      "repeats": 3,
       "restore_cheaper_than_prefill": true,
+      "restore_throughput_mb_s": 21.63339308254492,
+      "restore_throughput_mb_s_range": [
+        21.57636222280981,
+        22.49186883168708
+      ],
+      "speedup_ratio": 2.5107427061868117,
+      "speedup_ratio_range": [
+        2.4973150904117407,
+        2.899545034465214
+      ],
       "token_ids_sha256": "cc0d0342bbf19ac21a4d9ddc287ab9efa83aa509761d70c969d62e64ffd9c4c0",
       "tokens": 256,
-      "total_restore_s": 0.13270270824432373,
+      "total_restore_s": 0.13819217681884766,
       "total_restore_s_range": [
-        0.11897516250610352,
-        0.14643025398254395
+        0.13308191299438477,
+        0.14041399955749512
       ],
-      "verify_s": 0.019980192184448242,
+      "verify_s": 0.01736593246459961,
       "verify_s_range": [
-        0.01908707618713379,
-        0.020873308181762695
+        0.01717376708984375,
+        0.019906282424926758
       ],
-      "warm_prefill_ms": 70.814,
+      "warm_prefill_ms": 71.552,
       "warm_prefill_ms_range": [
-        68.349,
-        73.279
+        68.469,
+        71.583
       ]
     },
     {
@@ -65,44 +97,139 @@
       "artifact_digest": "f3312ceac5c35317bf11fb29fa4a18f0dd25ce356d75105a33fde2177ac70e54",
       "bytes_per_token": 10420.779296875,
       "cache_n": 2047,
-      "export_s": 0.170965313911438,
+      "export_s": 0.1363990306854248,
       "export_s_range": [
-        0.1652061939239502,
-        0.17672443389892578
+        0.12064456939697266,
+        0.14479970932006836
       ],
-      "import_s": 0.2674003839492798,
+      "import_s": 0.29215240478515625,
       "import_s_range": [
-        0.2611124515533447,
-        0.27368831634521484
+        0.2683727741241455,
+        0.31723999977111816
       ],
       "model_is_deterministic": true,
+      "ms_saved": 1223.598166152954,
+      "ms_saved_range": [
+        1202.5721699523926,
+        1296.7542943267822
+      ],
       "native_cache_parity": true,
-      "native_prefill_ms": 1581.296,
+      "native_prefill_ms": 1623.897,
       "native_prefill_ms_range": [
-        1575.64,
-        1586.952
+        1578.43,
+        1632.703
       ],
       "parity": true,
-      "peak_rss_mb": 50.68359375,
+      "peak_rss_mb": 51.51171875,
+      "peak_vram_mb": 22835.0,
+      "peak_vram_mb_range": [
+        22835.0,
+        22835.0
+      ],
       "prompt_n": 1,
-      "repeats": 2,
+      "read_throughput_mb_s": 245.04418814262831,
+      "read_throughput_mb_s_range": [
+        243.15131905003332,
+        301.1883683679446
+      ],
+      "repeats": 3,
       "restore_cheaper_than_prefill": true,
+      "restore_throughput_mb_s": 69.66598333899147,
+      "restore_throughput_mb_s_range": [
+        64.156741201908,
+        75.83885746470665
+      ],
+      "speedup_ratio": 4.199540022353854,
+      "speedup_ratio_range": [
+        4.056711793021337,
+        4.859977051342338
+      ],
       "token_ids_sha256": "1039f4b0ebf44d6cb7656dd538a04ce02d25290f2977bc1240f5a1d7ee322035",
       "tokens": 2048,
-      "total_restore_s": 0.33408892154693604,
+      "total_restore_s": 0.3758578300476074,
       "total_restore_s_range": [
-        0.32767629623413086,
-        0.3405015468597412
+        0.3359487056732178,
+        0.4002988338470459
       ],
-      "verify_s": 0.06668853759765625,
+      "verify_s": 0.08305883407592773,
       "verify_s_range": [
-        0.06656384468078613,
-        0.06681323051452637
+        0.06757593154907227,
+        0.08370542526245117
       ],
-      "warm_prefill_ms": 87.545,
+      "warm_prefill_ms": 87.489,
       "warm_prefill_ms_range": [
-        87.325,
-        87.765
+        84.912,
+        92.04
+      ]
+    },
+    {
+      "artifact_bytes": 85141052,
+      "artifact_digest": "4e80bd7afc024768ad7d4ee11b45f059bfcf8bdf31910d9f35024d57133bb678",
+      "bytes_per_token": 10393.19482421875,
+      "cache_n": 8191,
+      "export_s": 0.583040714263916,
+      "export_s_range": [
+        0.4739069938659668,
+        0.5877358913421631
+      ],
+      "import_s": 0.8933494091033936,
+      "import_s_range": [
+        0.8717358112335205,
+        0.9020345211029053
+      ],
+      "model_is_deterministic": true,
+      "ms_saved": 5412.437322631836,
+      "ms_saved_range": [
+        5405.903470230102,
+        5603.051896850586
+      ],
+      "native_cache_parity": true,
+      "native_prefill_ms": 6678.316,
+      "native_prefill_ms_range": [
+        6569.075,
+        6748.142
+      ],
+      "parity": true,
+      "peak_rss_mb": 51.51171875,
+      "peak_vram_mb": 22835.0,
+      "peak_vram_mb_range": [
+        22835.0,
+        22835.0
+      ],
+      "prompt_n": 1,
+      "read_throughput_mb_s": 297.0388136038188,
+      "read_throughput_mb_s_range": [
+        223.1637726373509,
+        300.92727150627894
+      ],
+      "repeats": 3,
+      "restore_cheaper_than_prefill": true,
+      "restore_throughput_mb_s": 90.89034339397152,
+      "restore_throughput_mb_s_range": [
+        90.01521855829944,
+        93.14385564740553
+      ],
+      "speedup_ratio": 5.6475548376768785,
+      "speedup_ratio_range": [
+        5.275636693624234,
+        5.893110054344332
+      ],
+      "token_ids_sha256": "142c9950f4ac467cdd5f1d0b8bb973490989117085d4a1c82f269da08c05aaaf",
+      "tokens": 8192,
+      "total_restore_s": 1.1631715297698975,
+      "total_restore_s_range": [
+        1.145090103149414,
+        1.265878677368164
+      ],
+      "verify_s": 0.27335429191589355,
+      "verify_s_range": [
+        0.2698221206665039,
+        0.3638441562652588
+      ],
+      "warm_prefill_ms": 159.039,
+      "warm_prefill_ms_range": [
+        144.764,
+        159.595
       ]
     }
   ],

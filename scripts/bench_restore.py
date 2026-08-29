@@ -34,6 +34,36 @@ from kv_rosetta.adapters.base import ExportRequest, ImportRequest, Representatio
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter  # noqa: E402
 
 
+def vram_peak_mb() -> float:
+    """Peak VRAM in use across visible devices, or 0 when there is no GPU."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=20).stdout.split()
+        return max((float(x) for x in out), default=0.0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0.0
+
+
+def break_even_tokens(rungs: list[dict]) -> float | None:
+    """Context length where total restore latency equals native prefill.
+
+    Both grow roughly linearly in tokens, so the crossing is interpolated from the two
+    rungs that straddle it. Returns None when every rung falls on the same side - which is
+    itself the answer: the cache path either always wins or always loses in this range.
+    """
+    ordered = sorted(rungs, key=lambda r: r["tokens"])
+    for lo, hi in zip(ordered, ordered[1:]):
+        lo_delta = lo["total_restore_s"] * 1000 - lo["native_prefill_ms"]
+        hi_delta = hi["total_restore_s"] * 1000 - hi["native_prefill_ms"]
+        if lo_delta == 0:
+            return float(lo["tokens"])
+        if (lo_delta > 0) != (hi_delta > 0):
+            span = hi["tokens"] - lo["tokens"]
+            return lo["tokens"] + span * abs(lo_delta) / (abs(lo_delta) + abs(hi_delta))
+    return None
+
+
 def git_commit() -> str:
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -113,6 +143,12 @@ def rung(adapter: LlamaCppHTTPAdapter, ids: list[int], slot: int, out_dir: Path)
         "native_cache_parity": native_cache_parity,
         "model_is_deterministic": deterministic,
         "peak_rss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+        "peak_vram_mb": vram_peak_mb(),
+        "ms_saved": cold["timings"]["prompt_ms"] - total_restore_s * 1000,
+        "speedup_ratio": (cold["timings"]["prompt_ms"] / (total_restore_s * 1000)
+                          if total_restore_s > 0 else 0.0),
+        "read_throughput_mb_s": (nbytes / 2**20) / verify_s if verify_s > 0 else 0.0,
+        "restore_throughput_mb_s": (nbytes / 2**20) / import_s if import_s > 0 else 0.0,
     }
 
 
@@ -122,10 +158,18 @@ def main() -> int:
     ap.add_argument("--slots", required=True)
     ap.add_argument("--medium", required=True, help="tmpfs or nvme; reported, never mixed")
     ap.add_argument("--rungs", default="256,2048,8192")
-    ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="three or more; medians and ranges are reported, never a single run")
     ap.add_argument("--slot", type=int, default=0)
+    ap.add_argument("--kv-type", default="",
+                    help="KV cache type this server was launched with; /props does not "
+                         "report type_k/type_v, so it cannot be probed and must be stated")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
+    if args.repeats < 3:
+        print(f"refusing --repeats {args.repeats}: a median of fewer than three runs is a "
+              f"single noisy measurement wearing a statistic", file=sys.stderr)
+        return 2
 
     adapter = LlamaCppHTTPAdapter(args.url, args.slots)
     props = adapter.props()
@@ -151,7 +195,8 @@ def main() -> int:
         runs = [rung(adapter, ids, args.slot, out_dir) for _ in range(args.repeats)]
         merged = dict(runs[0])
         for field in ("native_prefill_ms", "export_s", "verify_s", "import_s",
-                      "total_restore_s", "warm_prefill_ms"):
+                      "total_restore_s", "warm_prefill_ms", "ms_saved", "speedup_ratio",
+                      "read_throughput_mb_s", "restore_throughput_mb_s", "peak_vram_mb"):
             values = [r[field] for r in runs]
             merged[field] = statistics.median(values)
             merged[f"{field}_range"] = [min(values), max(values)]
@@ -168,7 +213,8 @@ def main() -> int:
               f"restore {merged['total_restore_s']*1000:8.0f} ms | "
               f"{merged['bytes_per_token']/1024:6.1f} KB/tok | "
               f"cheaper={merged['restore_cheaper_than_prefill']} "
-              f"parity={merged['parity']} native_cache_parity={merged['native_cache_parity']}",
+              f"x{merged['speedup_ratio']:.1f} parity={merged['parity']}/"
+              f"{merged['native_cache_parity']}",
               flush=True)
 
     record = {
@@ -181,12 +227,21 @@ def main() -> int:
         if hasattr(adapter.cache_abi_identity(), "as_dict") else {},
         "kv_type_k": str(props.get("type_k", settings.get("type_k", ""))),
         "kv_type_v": str(props.get("type_v", settings.get("type_v", ""))),
+        "kv_type_declared": args.kv_type,
+        "caveats": [
+            "kv_type_k/kv_type_v are empty because llama-server /props does not report "
+            "them; kv_type_declared is the launch flag, corroborated by bytes_per_token",
+            "peak_vram_mb is host-wide from nvidia-smi and is NOT attributed to this "
+            "process; it is meaningless when the server runs with -ngl 0",
+        ],
         "n_ctx": settings.get("n_ctx"),
         "slot": args.slot,
         "storage_medium": args.medium,
         "slot_save_path": args.slots,
         "opaque_format": adapter.opaque_format(),
         "rungs": results,
+        "break_even_tokens": break_even_tokens(results),
+        "repeats": args.repeats,
     }
     out = Path(args.out) if args.out else Path("bench") / f"restore-{args.medium}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
