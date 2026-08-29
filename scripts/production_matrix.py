@@ -322,7 +322,9 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
             "active_checkpoint_state_classes": first.props().get(
                 "active_checkpoint_state_classes"),
         }
-        kvx_path = Path(slots) / f"matrix-{name}.kvx"
+        # A distinct stem: export() derives its slot filename from the artifact stem and
+        # unlinks that file afterwards, which would delete the raw artifact under test.
+        kvx_path = Path(slots) / f"matrix-{name}-adapter.kvx"
         export_started = time.time()
         try:
             adapter.export(ExportRequest(model=model, out_path=kvx_path,
@@ -333,12 +335,14 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         except AdapterError as exc:
             adapter_view["export_refused"] = str(exc)
             adapter_view["export_seconds"] = time.time() - export_started
-        # Capability and export must not disagree on a live runtime either.
+        # Capability and the support predicate must agree on a live runtime as they do
+        # offline. An artifact-level refusal - incomplete checkpoint coverage on this
+        # particular save - is a different thing and is reported separately.
         advertised = Representation.OPAQUE.value in adapter_view["capabilities_export"]
-        if advertised != (adapter_view["export_refused"] is None):
+        if advertised != supported:
             raise RuntimeError(
-                f"{name}: capabilities advertised export={advertised} but export "
-                f"{'refused' if adapter_view['export_refused'] else 'succeeded'}")
+                f"{name}: capabilities advertised export={advertised} but the support "
+                f"predicate said {supported} ({support_reason})")
         if expect_patched and adapter_view["export_refused"]:
             raise RuntimeError(f"{name}: adapter refused to export from the patched "
                                f"runtime: {adapter_view['export_refused']}")
