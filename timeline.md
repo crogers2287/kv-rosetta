@@ -238,3 +238,43 @@ and restore responses.
 
 Status: **proven by retained test** (offline gate) and **measured once on this host**
 (the 27B matrix). Deliberately not done, per the steer: the context ladder stays deferred.
+
+## REQ-020 — Correcting two evidence defects in the 27B record
+
+Steer cd2afb0, audit corrections 1-3. Both defects verified against the retained record
+before acting; both were real, and the first was a false claim of mine.
+
+**Defect 1 - the probability parity was vacuous.** REQ-019 claimed restored probability
+vectors matched native in-memory reuse. llama.cpp returns the per-token alternatives under
+`top_logprobs` (carrying `logprob`) by default; `top_probs`/`prob` appear only when
+`post_sampling_probs=true` is requested. The runner read `top_probs`, got nothing, and built
+a list of empty dicts for both sides - so the equality compared nothing. The retained record
+showed it plainly: eight empty objects. Token-ID and content parity in that record were real;
+the probability parity was not, and should not have been claimed.
+
+Now enforced: one vector per generated token, each nonempty, the generated token present in
+its own vector, no more entries than requested, and logprobs equal within a declared 1e-6
+tolerance. Both native and restored vectors are stored. Measured: 8 tokens x 5 alternatives,
+native and restored **exactly** equal.
+
+**Defect 2 - the record named a commit that lacked the runner.** It said `repo_commit
+a0540a7`, but the acceptance logic landed in `6524714`: the modified runner was executed
+before it was committed. The runner now refuses to start with a dirty worktree and records
+its own SHA-256 (`1f8e36acc997bfdc`), the HEAD and worktree-diff digest of both
+llama.cpp source trees, both builds' cmake flags, and the full launch argv of all four
+processes. This record is from commit `56600b98b0ac`, clean tree.
+
+**Defect 3 - model naming.** The tested file is `Qwen3.8-27B-UD-Q4_K_XL.gguf`, digest
+`9bf3b07e1fb6531e91d97038...`, architecture `qwen35`. It is the file
+loaded by the fleet's `qwen38-27b` llama.cpp entries, so it is the deployed production SKU
+for llama.cpp serving. No Qwen3.5-27B is served on this host; Qwen3.6-27B variants exist
+under other fleet entries and were not tested. The evidence is stated for this exact digest,
+not transferred to any other 27B.
+
+Result unchanged and now properly evidenced: patched `cache_n=252
+prompt_n=4`, control `cache_n=0
+prompt_n=256`.
+
+Status: **measured once on this host**, from a clean committed runner.
+Still outstanding from this steer: P0 (one predicate across capability/export/import),
+P1 (streaming appendix validation), P2 acceptance items not yet covered, P3 ladder.
