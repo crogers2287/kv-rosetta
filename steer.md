@@ -1,171 +1,185 @@
-# KV Rosetta research steer: harden canonical ingestion against the real 8K artifact
+# KV Rosetta research steer: prove real-artifact canonical decode before wiring the sidecar
 
-Status basis: default-branch head d58777db689f6796cf34d76df22d276726dc646c.
+Status basis: default-branch head bf2202663bc5191e65ec1712d56b042e769c2e3e.
 
-This steer supersedes c867cda. The production-shape opaque gate has passed. The immediate critical path is no longer opaque-store economics; it is making the canonical decoder trustworthy enough to inspect the retained 8K artifact without guessing, allocating from attacker-controlled counts, or accepting bytes it never verified.
+This steer supersedes 92546ba. The 8K opaque path remains proven and closed. Canonical parsing has expanded to recurrent state and SCKP, and a demand-driven sidecar skeleton has landed. Neither change yet proves portable reuse: the parser has only synthetic structural fixtures and inherited unresolved fail-open boundaries, while the sidecar's `ensure` method always falls back and performs no restore.
 
 ## Mission
 
-Deliver one canonical KVX prefix artifact that a sidecar can transform for multiple cache dtypes, inference runtimes, and CUDA/ROCm/Vulkan backends, with quality-gated cross-model transformation later.
+Deliver one canonical KVX prefix artifact that can be transformed across cache dtypes, inference runtimes, and CUDA/ROCm/Vulkan backends, with quality-gated cross-model transformation later.
 
-The opaque llama.cpp admitted-store path remains a strict source/runtime-specific foundation for qwen35-family hybrid models. Do not relax CacheABIIdentity, compound-tuple allowlists, model and GGUF identity, checkpoint metadata, store ownership/file guards, or unpatched-runtime refusals to simulate portability.
+The opaque llama.cpp admitted-store path remains a strict exact-tuple foundation for qwen35-family hybrids. Preserve refusal on unpatched, incomplete, mismatched, or unsupported runtimes and artifacts. Do not weaken its CacheABIIdentity, compound tuple, model/GGUF identity, checkpoint metadata, or admitted-store file/ownership guards to simulate portability.
 
-Primary opaque-runtime track:
+Primary opaque-runtime evidence remains:
 
 - https://github.com/ggml-org/llama.cpp/issues/25913
 - https://github.com/ggml-org/llama.cpp/pull/26004
 
-Keep checkpoint patches 0001 and 0002 pinned and identified. Do not post upstream.
+Keep patches 0001 and 0002 pinned and identified. Do not post upstream.
 
-## Evidence that changes the priority
+## Retained evidence
 
-### 8K production-shape gate: passed
+### Production-shape opaque gate
 
-The retained three-repetition record on the exact tested Qwen3.8-27B/qwen35 model reports:
+The exact tested Qwen3.8-27B/qwen35 8K gate passed 3/3:
 
-- 8,188/8,192 tokens reused in every repetition, with the four-token tail derived from checkpoint metadata;
-- median restored total 1.848 s versus 4.876 s cold, a 62.1% reduction;
-- three of three paired wins;
+- 8,188/8,192 tokens reused;
+- median 1.848 s restored versus 4.876 s cold, 62.1% faster;
 - output and nonempty probability-vector parity;
-- complete fail-closed unpatched control with zero state-endpoint calls;
-- zero request-path payload copying and unchanged admitted-object facts;
-- persistent ext4 on nvme0n1 under explicitly recorded natural page-cache conditions;
-- a 1,007,783,892-byte artifact and approximately two-restore admission break-even.
+- persistent ext4/NVMe, natural page-cache conditions recorded;
+- zero request-path payload copying;
+- unpatched refusal with zero state-endpoint calls.
 
-This is process-restart evidence on one host and exact model/runtime tuple. It is not host-restart, cross-dtype, cross-runtime, or cross-backend evidence. It nevertheless closes the required 8K economic gate and justifies moving the main track to canonical conversion.
+This proves exact-tuple process-restart economics, not host restart or portability.
 
-### Canonical schema and first reader slice landed
+### Canonical parser status
 
-`kvx-hybrid/1` now has explicit source geometry, recurrent layer mapping, checkpoint records, canonical attention layout, and draft/speculative refusal. The first GGSQ reader locates attention payload spans without materializing them.
+Commit bf22026 adds source-layer-map-driven recurrent R/S spans and recursively parses each SCKP target payload rather than forwarding opaque recurrent bytes. It correctly refuses draft/speculative payloads and requires exact declared target consumption.
 
-These are useful foundations, not yet a trustworthy decode. Source review finds trust-boundary defects that must be made red before the reader touches the retained 8K object:
+This is meaningful structural progress, but all fixtures are constructed by the same repository from the documented field order. No retained record demonstrates the parser against the admitted 1,007,783,892-byte 8K artifact.
 
-1. `Reader.skip()` checks only the caller-declared section end. It does not verify physical file length. A final payload truncated on disk can be accepted if the declared end remains unchanged because no later header read forces EOF.
-2. `cell_count` is a raw uint32 used to drive a loop and grow `positions` before any count bound. A tiny malicious section can demand billions of iterations.
-3. `has_cell_ext=True` accepts the default `cell_ext_size=0`. Because the file carries no cell-extension flag or width, that is an ambiguous architecture descriptor and must refuse.
-4. The source-derived writer inventory says transposed V stores `v_size_el = ggml_type_size(v_type)`. The reader currently compares against bytes-per-block divided by block-size. For q8_0 that accepts 1 instead of the writer's 34. Existing transposed tests do not exercise a quantized type.
-5. The module-level statement that unexplained trailing body bytes are refused is not implemented by this slice. For a hybrid body, attention is intentionally followed by recurrent state, so exact composition belongs in the top-level parser, not in an attention-only helper.
+The prior P0 was not completed before parser expansion. Current source still:
 
-The schema loader also coerces untrusted JSON values with `bool()`, `str()`, `int()`, and `float()`. In particular, `"false"` becomes true. Digests are checked only for length, RoPE theta is not checked for finiteness or positivity, and recurrent widths can be negative. These are fail-open canonical identity defects.
+- lets `Reader.skip()` authorize bytes beyond physical EOF when the caller's declared end is larger;
+- loops and allocates from unbounded attention and recurrent `cell_count`;
+- permits `has_cell_ext=True` with `cell_ext_size=0`;
+- interprets transposed q8_0 `v_size_el` as 1 although the pinned writer contract records `ggml_type_size(q8_0)=34`;
+- accepts recurrent layer maps that are not in source-writer order;
+- validates attention/recurrent layer counts only as 1..512, not against exact bound source geometry;
+- accepts an empty checkpoint appendix and a checkpoint with `n_tokens=0`, although the canonical hybrid schema requires at least one positive-coverage checkpoint;
+- retains coercive schema decoding, including `bool("false") == True`, length-only digests, non-finite/non-positive RoPE theta, and negative recurrent widths.
+
+Do not add more parser surface until these defects are red-tested and closed.
 
 ## RA-003 — answered
 
-Withdraw the categorical statement that a 32K artifact cannot fit the current NVMe. Its premise was a linear bytes-per-token projection contradicted by the measured 2K and 8K artifacts.
+The categorical claim that 32K cannot fit the current NVMe is withdrawn. Do not admit 32K from a two-point affine fit. Later replace the conservative guard with a componentized estimator derived from the pinned writer and exact source geometry, then validate it against retained 2K and 8K sizes.
 
-Do not replace that guard with a two-point affine fit. Two points exactly determine a line and do not validate the model. The production predictor should be componentized from the pinned writer and exact source geometry:
+32K remains deferred by product priority and an unvalidated estimator, not by a claim of known storage insufficiency.
 
-- attention K/V bytes derived from cell count, per-layer row geometry, and cache dtypes;
-- recurrent R/S bytes derived separately from layer map and recurrent widths;
-- checkpoint appendix bytes derived from checkpoint count and canonical/native recurrent payload geometry;
-- container metadata and atomic-admission peak factors added explicitly;
-- the safety margin applied after those components.
+## RA-004 — answered
 
-Test the estimator against the retained 2K and 8K sizes before allowing it to admit a larger generation. Keep the existing conservative refusal until that replacement is proven.
+Scheduled or proactive warming of arbitrary models is excluded from the sidecar contract. The sidecar must be demand-driven and may act only for a model already reported ready because waking an unused model recreates the eviction harm regardless of whether the work is prefill or restore.
 
-Do not run a 32K opaque benchmark now. The 8K result already proves production-shaped economics, while canonical portability is the product-critical path. A future 32K run is deferred by priority and by an unvalidated size guard, not by a claim that available storage is known to be insufficient.
+The staged order is:
 
-## P0 — red-test and close canonical trust-boundary defects
+1. retain the inert demand-driven API skeleton and its offline tests;
+2. complete and behaviorally prove the canonical conversion seam;
+3. then connect one proven exact-tuple or canonical restore action;
+4. only afterward use the service in a harness.
 
-Make the smallest causal fixes before expanding the decoder.
+Do not expand the HTTP surface while `ensure` always falls back. Commit 7998bda is scaffolding, not a functional kvwarm replacement.
 
-### Bounded reader
+Before any live restore wiring, close the identity/race gap:
 
-Add independent tests that fail on current head for all of these cases:
+- a model name returned by llama-swap `/running` is not CacheABIIdentity;
+- obtain build, model digest, cache dtypes, architecture, checkpoint protocol, and active-state facts only through a path behaviorally proven not to wake an unloaded model;
+- bind those facts to the same ready runtime instance used for restore, using a generation/PID/instance token or an equivalent before-and-after check;
+- if readiness or instance continuity cannot be proven atomically enough, refuse and prefill natively;
+- never restore based only on a caller-supplied model string and slot number.
 
-1. The section's declared end is unchanged while bytes are removed from the final K or V payload. The reader must refuse before returning spans. Validate physical extent at reader construction or before a skip can authorize an unread region; do not force payload materialization.
-2. A huge `cell_count` in a tiny declared section must refuse before looping or allocating. Bound it both by the bytes remaining under a conservative minimum cell record and by an explicit expected maximum from the resolved source geometry/runtime context.
-3. `has_cell_ext=True, cell_ext_size=0` and all unsupported cell-extension sizes must refuse. The exact size must come from the pinned architecture descriptor; do not infer it from payload alignment.
-4. A transposed q8_0 header using the writer's 34-byte `ggml_type_size` contract must be interpreted correctly. A header using 1 must refuse. If quantized transposed-V semantics cannot be independently confirmed from the pinned writer and a real or source-authored fixture, explicitly refuse that combination rather than guess.
-5. The top-level parser, once added, must account for every byte as envelope, attention, recurrent state, or SCKP appendix. The attention helper should report its consumed end and must not pretend recurrent trailing bytes are an error.
+The current `models_woken` counter is initialized to zero and has no path that increments it, so observing zero is not evidence. Keep the offline URL-interception tests, but add a live llama-swap integration gate using a sacrificial unloaded model: capture swap/runtime request logs, exercise every public sidecar route, and prove the model remains unloaded and no waking endpoint was called. Run this only when an active restore is about to be connected; it does not preempt canonical decode.
 
-Keep reads bounded and measure actual metadata bytes read. A sparse multi-GiB test must not become a multi-GiB read.
+## P0 — close inherited parser and schema trust boundaries
 
-### Schema decoding
+Write mutation-sensitive red tests first.
 
-Make malformed JSON values red, then:
+### Reader and section parsers
 
-- require booleans to be JSON booleans; never use truthiness for `has_cell_ext`, draft, or speculative flags;
-- require integer fields to be integers without string/float coercion and reject booleans as integers;
-- require RoPE theta to be finite and positive;
-- require digests to be exactly 64 lowercase hexadecimal characters;
-- require recurrent dimensions to be nonnegative, and require the qwen35 descriptor's expected recurrent fields to be positive and internally consistent;
-- validate named segment references against the actual container segment table at integration time, including role and uniqueness;
-- reject unknown fields or version them deliberately; do not silently preserve an identity the decoder did not understand.
+Require:
 
-Do not weaken the opaque path or connect this schema to production import in P0.
+1. A final K, V, R, or S payload physically truncated while the declared section end remains unchanged must refuse without materializing the payload. Verify file extent independently of declared bounds before returning spans.
+2. Attention and recurrent `cell_count` must be bounded before looping or allocating, both by conservative bytes remaining and an explicit expected maximum from bound source geometry/context.
+3. Cell-extension presence and exact positive width must come from the pinned architecture descriptor. Ambiguous or zero width when present must refuse.
+4. Transposed q8_0 must follow the pinned writer's 34-byte `ggml_type_size` contract; a declared value of 1 must refuse. If independent confirmation is unavailable, refuse quantized transposed V explicitly.
+5. Expected attention and recurrent `n_layer` must equal the bound source geometry.
+6. The recurrent layer map must be unique, ascending in writer order, in range, and tied to the exact GGUF/model digest. A merely size-compatible caller map is not evidence.
+7. For qwen35 hybrid artifacts, SCKP count and checkpoint `n_tokens` must be positive; draft/speculative payloads remain refused.
+8. A top-level parser must account for every byte as envelope, attention, recurrent state, or SCKP. No scanning for magic inside payloads and no unexplained trailing bytes.
 
-Acceptance: every new guard has a mutation-sensitive red test, the offline suite passes, and no fixture obtains its expected offsets or values from the parser under test.
+Keep reads and peak memory bounded independently of payload size. Retain sparse multi-GiB tests that assert a small maximum metadata-byte count.
 
-## P1 — break-first structural parse of the retained 8K artifact
+### Canonical schema
 
-After P0, run the largest currently justified falsifiable experiment: parse the exact admitted 8K GGSQ/3+SCKP/1 object identified by digest `2af6ca68737a1888bd65c67cf4d36746123cf18e51824e50f94c888f6be80c72`, using the bound source GGUF digest and pinned patched-writer source.
+Require exact JSON types rather than `str`, `int`, `float`, or `bool` coercion:
 
-This gate locates structure only; it does not yet allocate or convert tensor payloads.
+- booleans are JSON booleans;
+- integer fields are integers and booleans are rejected as integers;
+- RoPE theta is finite and positive;
+- digests are exactly 64 lowercase hexadecimal characters;
+- recurrent dimensions are nonnegative, with qwen35-required fields positive and descriptor-consistent;
+- segment references resolve to unique segments with the required roles when integrated with the container;
+- unknown fields refuse unless deliberately versioned.
 
-Require a retained machine-readable record containing:
+Acceptance: each guard fails red on current head, survives mutation checking, and the full offline suite passes. Do not alter opaque import/export behavior.
 
-- artifact digest and before/after file facts;
-- exact source GGUF/model digests and resolved architecture geometry;
-- physical file length, declared sequence body, attention end, recurrent section bounds, and SCKP appendix bounds;
-- cell count, layer count, K/V types, strides, transposition status, and every payload span;
-- proof that spans are in-bounds, non-overlapping, in writer order, and collectively leave no unexplained bytes;
-- agreement between parsed checkpoint count/coverage/positions and the admitted manifest;
-- total bytes actually read and peak memory, both bounded independently of payload size;
-- refusal controls for wrong source geometry, wrong tuple/version, a physically truncated copy, and a one-byte boundary shift.
+## P1 — largest justified break-first gate: parse the retained real 8K artifact
 
-Never mutate the admitted store object. Use private copies or sparse fixtures for corruption controls.
+After P0, parse the exact admitted GGSQ/3+SCKP/1 object with digest `2af6ca68737a1888bd65c67cf4d36746123cf18e51824e50f94c888f6be80c72`, using the bound GGUF/model digest and pinned writer source.
+
+Locate structure only; do not materialize tensor payloads.
+
+Retain a machine-readable record with:
+
+- parser and repository commit;
+- artifact digest and unchanged before/after file facts;
+- exact source GGUF/model identity and resolved geometry;
+- physical file length and exact envelope, attention, recurrent, and SCKP boundaries;
+- cell/layer counts, types, strides, transposition, recurrent layer map, checkpoint extents, and every span;
+- proof spans are in-bounds, non-overlapping, writer-ordered, and collectively account for all bytes;
+- parsed checkpoint facts equal to the admitted manifest;
+- total actual bytes read and peak memory;
+- refusal controls for wrong geometry, wrong recurrent map, wrong tuple/version, physical truncation, and one-byte boundary shifts.
+
+Never mutate the admitted store object. Use private or sparse copies for corruptions.
 
 Decision rule:
 
-- Any mismatch: retain the record, stop, identify the earliest divergent field against the pinned writer, and fix only that cause.
-- Exact structural agreement: proceed to recurrent/SCKP decoding.
-- A missing field that cannot be uniquely recovered from the exact source GGUF plus pinned architecture descriptor fires the upstream-seam falsifier. Record the exact field and request the smallest versioned export metadata addition; do not infer from model name or byte patterns.
+- First mismatch: retain it, identify the earliest divergent writer field, make only the causal fix, and rerun the identical gate.
+- Exact structural agreement: proceed to numeric canonical materialization.
+- Any field not uniquely recoverable from the exact source GGUF plus pinned descriptor fires the upstream-seam falsifier. Record that exact field; do not infer from model names or byte patterns.
 
-## P2 — decode recurrent state and SCKP, then prove numbers
+## P2 — prove canonical numbers on an independent oracle
 
-Extend the parser in writer order:
+Materialize only a deterministic small fixture into canonical little-endian attention and recurrent tensors. Normalize transposed V during decode.
 
-1. Parse the recurrent R/S section with the explicit source-layer map.
-2. Parse each 16-byte SCKP record and recursively decode its PARTIAL_ONLY recurrent target state.
-3. Materialize only a deterministic small fixture into canonical little-endian `layer,kv,token,head,dim` attention tensors and canonical recurrent tensors.
-4. Normalize transposed V during decode; backend-native layout is not canonical identity.
-5. Compare exact offsets, shapes, and decoded numeric values with an independent oracle derived from the pinned writer or a separate reference implementation. A decoder/encoder self-round-trip is not evidence.
+The expected offsets, shapes, and numeric values must come from the pinned writer, a separate reference implementation, or HF where appropriate—not the decoder or an encoder paired with it. A self-consistent round trip is not evidence.
 
-Require truncation, overlap, impossible count/shape/stride, unsupported dtype, bad layer map, wrong source identity, nonempty draft/speculative state, and trailing-byte mutation tests.
+Require exact and quantized dtype cases plus corruption, truncation, wrong geometry/map, unsupported type, and trailing-byte controls. After the small oracle passes, decode a bounded sample from the retained 8K artifact; do not allocate the complete 8K canonical cache merely to test the decoder.
 
-Only after the small numeric oracle passes may a bounded sample of the retained 8K artifact be decoded and compared. Do not materialize the full 8K cache merely to prove the parser.
+## P3 — prove same-model f16-to-q8_0 conversion
 
-## P3 — same-model cross-dtype conversion
+Add the narrowest target encoder/import seam for the exact same model. The opaque path must refuse the dtype mismatch; only the canonical route may transform it.
 
-After canonical decode is trustworthy, add one narrow target encoder/import seam for f16 source to q8_0 target of the exact same model.
+Fix quality thresholds before the run and compare with target-native q8_0 reuse:
 
-The opaque route must continue refusing the dtype mismatch. Only the canonical route may transform it.
-
-Fix quality thresholds before the live run. Gate against target-native q8_0 reuse on:
-
-- exact prompt and target model identity;
 - successful target prefix reuse;
-- output and nonempty probability/logit divergence versus target-native reuse;
-- clean fallback to native target prefill on every unsupported or failed case;
-- explicit source/target runtime, dtype, backend, and device provenance outside canonical cache identity.
+- output and nonempty probability/logit divergence;
+- exact prompt and target model identity;
+- source/target runtime, dtype, backend, and device provenance recorded outside canonical cache identity;
+- native target prefill fallback on every unsupported or failed case.
 
-A pass unlocks one same-model CUDA/ROCm/Vulkan transfer matrix. It does not unlock cross-model projection.
+A pass unlocks one same-model CUDA/ROCm/Vulkan matrix. It does not unlock cross-model transformation.
 
-## P4 — minimal sidecar
+## P4 — connect the minimal demand-driven sidecar
 
-After one canonical dtype conversion passes, expose only:
+After P3, connect only the proven seam to `/v1/ensure`.
 
-- canonical prefix resolution;
-- transfer/import into a named target runtime;
+Require:
+
+- the model is already ready;
+- exact runtime identity and same-instance continuity;
+- no scheduled target enumeration or warming mode;
+- live proof that every route leaves an unloaded sacrificial model unloaded;
 - reused-token count, transfer mode, gate verdict, and fallback reason;
-- automatic native target prefill on failure.
+- native prefill on refusal or failure.
 
-Do not build broad daemon, authentication, multi-tenant, or distributed scheduling surfaces before the proven transfer seam is reachable.
+Do not add broad daemon, authentication, multi-tenant, or distributed scheduling surfaces.
 
 ## Deferred
 
-- 32K opaque benchmarking until canonical parsing reaches its real-artifact gate and the componentized estimator is validated;
-- host-restart/cold-boot persistence claims;
+- 32K opaque benchmarking;
+- host-restart/cold-boot claims;
 - 131K;
 - learned cross-model projection and token alignment;
 - production vLLM/HF adapters;
@@ -176,8 +190,8 @@ HF may be used earlier only as an independent numeric oracle.
 
 ## Required execution order
 
-1. Red-test and close the bounded-reader and strict-schema defects in P0.
-2. Structurally parse the retained real 8K artifact and retain the gate record.
-3. Decode recurrent/SCKP structure and prove numeric decoding on an independent small oracle.
-4. Add one narrow target encoder and prove same-model f16-to-q8_0 conversion.
-5. Exercise the proven seam through the minimal sidecar.
+1. Close inherited reader and strict-schema defects.
+2. Retain an exact structural parse of the real 8K artifact.
+3. Prove canonical numeric decoding with an independent oracle.
+4. Prove same-model f16-to-q8_0 conversion.
+5. Wire that proven seam into the demand-driven sidecar and run the no-wake live gate.
