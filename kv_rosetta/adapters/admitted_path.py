@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kv_rosetta import weights
+from kv_rosetta import gguf, weights
 from kv_rosetta.admitted_store import AdmissionError, AdmittedObject, AdmittedStore
 from kv_rosetta.adapters import ggsq_envelope
 from kv_rosetta.adapters.base import AdapterError
@@ -75,6 +75,15 @@ class AdmittedPath:
         supported, reason, protocol = self.adapter.hybrid_support()
         if not supported:
             raise AdmissionError(f"runtime cannot support this state: {reason}")
+        # Admission is off the request path, so it can afford the exhaustive header scan
+        # that refuses an ambiguous architecture. The request path uses the early-exit
+        # form; an ambiguous header is rejected here and never becomes an admitted object.
+        model_path = str(self.adapter.props().get("model_path", "")) or str(model)
+        if model_path and Path(model_path).is_file():
+            try:
+                gguf.architecture_exhaustive(model_path)
+            except gguf.GGUFError as exc:
+                raise AdmissionError(f"model header is not unambiguous: {exc}") from exc
 
         with open(raw, "rb") as handle:
             head = handle.read(12)

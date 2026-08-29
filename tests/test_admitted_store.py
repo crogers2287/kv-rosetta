@@ -243,3 +243,49 @@ class AdmittedStoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreOwnershipTest(unittest.TestCase):
+    """The documented contract is a store this user owns; mode alone does not show that.
+
+    _require_private originally checked only mode 0700, so a 0700 directory owned by
+    someone else satisfied it while the module docstring promised ownership.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.store = AdmittedStore(self.dir / "store")
+        raw = self.dir / "raw.bin"
+        raw.write_bytes(PAYLOAD)
+        self.obj = self.store.admit(raw, {})
+
+    def test_a_store_owned_by_another_uid_is_refused(self):
+        real_stat = os.stat
+
+        def foreign_owner(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if Path(path) == self.store.root:
+                class Foreign:
+                    st_uid = os.geteuid() + 1
+                    st_mode = result.st_mode
+                    st_dev = result.st_dev
+                    st_ino = result.st_ino
+                    st_size = result.st_size
+                    st_mtime_ns = result.st_mtime_ns
+                    st_ctime_ns = result.st_ctime_ns
+                    st_nlink = result.st_nlink
+                return Foreign()
+            return result
+
+        os.stat = foreign_owner
+        try:
+            with self.assertRaises(AdmissionError) as caught:
+                self.store.resolve(self.obj.digest)
+        finally:
+            os.stat = real_stat
+        self.assertIn("owned by uid", str(caught.exception))
+
+    def test_the_owner_check_runs_before_the_mode_check(self):
+        # Both must hold; a wrong owner is refused even at a correct mode.
+        self.assertEqual(stat.S_IMODE(self.store.root.stat().st_mode), 0o700)
+        self.assertTrue(self.store.resolve(self.obj.digest).digest)

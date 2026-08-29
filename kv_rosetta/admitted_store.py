@@ -12,7 +12,8 @@ Trust boundary, stated rather than assumed
 ------------------------------------------
 An admitted object may skip rehashing ONLY while all of these hold:
 
-* it lives in a store directory owned by this user with mode 0700;
+* it lives in a store directory whose owner is this effective uid, with mode 0700 -
+  both checked, since mode alone does not establish ownership;
 * the path resolves inside that directory, is a regular file, and is not a symlink;
 * every pinned fact still matches: device, inode, size, mtime_ns, ctime_ns, link count;
 * its manifest is present, parses, and is bound to the full SHA-256 content address.
@@ -90,7 +91,13 @@ class AdmittedStore:
     def _require_private(self) -> None:
         if not self.root.is_dir():
             raise AdmissionError(f"store {self.root} is not a directory")
-        mode = stat.S_IMODE(self.root.stat().st_mode)
+        st = self.root.stat()
+        if st.st_uid != os.geteuid():
+            raise AdmissionError(
+                f"store {self.root} is owned by uid {st.st_uid}, not {os.geteuid()}; the "
+                f"documented contract is a store this user owns, and mode alone does not "
+                f"establish that")
+        mode = stat.S_IMODE(st.st_mode)
         if mode & 0o077:
             raise AdmissionError(
                 f"store {self.root} has mode {mode:04o}; group/other access means the "

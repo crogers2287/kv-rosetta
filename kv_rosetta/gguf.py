@@ -6,6 +6,8 @@ architecture costs a few kilobytes.
 
 from __future__ import annotations
 
+import mmap
+import os
 import struct
 from pathlib import Path
 from typing import Any
@@ -82,8 +84,143 @@ def read_metadata(path: Path | str, keys: tuple[str, ...] = ()) -> dict[str, Any
         return out
 
 
+#: Byte width of each scalar GGUF type, so a value can be stepped over without decoding it.
+_SCALAR_WIDTH = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+
+class _Cursor:
+    """Walks a GGUF key/value section over an mmap, decoding nothing it is not asked for.
+
+    read_metadata() materialises every array element - a tokenizer vocabulary becomes
+    150k Python strings - even when the caller wanted one key. Measured at about 0.65 s
+    per call on the 27B, which is the entire cost of the fail-closed support check on the
+    request path.
+
+    Stepping over a value is arithmetic here: scalars and scalar arrays advance by a
+    computed width, and string arrays walk lengths through the mapping without allocating.
+    No element is turned into a Python object unless it is the value being returned.
+    """
+
+    def __init__(self, view: memoryview, size: int) -> None:
+        self.view, self.size, self.offset = view, size, 0
+
+    def take(self, count: int) -> memoryview:
+        end = self.offset + count
+        if count < 0 or end > self.size:
+            raise GGUFError(f"metadata truncated at offset {self.offset}")
+        chunk = self.view[self.offset:end]
+        self.offset = end
+        return chunk
+
+    def u32(self) -> int:
+        return struct.unpack("<I", self.take(4))[0]
+
+    def u64(self) -> int:
+        return struct.unpack("<Q", self.take(8))[0]
+
+    def string(self) -> str:
+        return bytes(self.take(self.u64())).decode("utf-8", "replace")
+
+    def skip_string(self) -> None:
+        self.take(self.u64())
+
+    def skip_value(self, kind: int) -> None:
+        if kind in _SCALAR_WIDTH:
+            self.take(_SCALAR_WIDTH[kind])
+        elif kind == _STRING:
+            self.skip_string()
+        elif kind == _ARRAY:
+            element, length = self.u32(), self.u64()
+            if element in _SCALAR_WIDTH:
+                self.take(_SCALAR_WIDTH[element] * length)     # one step, any length
+            elif element == _STRING:
+                for _ in range(length):
+                    self.skip_string()
+            elif element == _ARRAY:
+                for _ in range(length):
+                    self.skip_value(_ARRAY)
+            else:
+                raise GGUFError(f"unknown GGUF value type {element} inside an array")
+        else:
+            raise GGUFError(f"unknown GGUF value type {kind}")
+
+
+def read_string_key(path: Path | str, key: str, *, exhaustive: bool = False) -> str:
+    """The value of one string-typed metadata key, without decoding anything else.
+
+    Fails closed: a missing key, a non-string value, or a truncated header all raise rather
+    than returning a guess.
+
+    Two modes, because duplicate detection and request-path cost are in tension. Scanning
+    every key to find a later duplicate means stepping over the tokenizer vocabulary, which
+    measures about 0.4 s on the 27B even without decoding it. Returning at the first match
+    measures under a millisecond, because general.architecture is written near the front.
+
+    So `exhaustive=True` is used at admission, off the request path, where an ambiguous
+    header is rejected once and never becomes an admitted object. The default early-exit
+    mode is used on the request path and does NOT inspect keys after the match - that limit
+    is stated here rather than left implied.
+    """
+    path = Path(path)
+    try:
+        handle = open(path, "rb")
+    except OSError as exc:
+        raise GGUFError(f"cannot open {path}: {exc}") from exc
+    with handle:
+        size = os.fstat(handle.fileno()).st_size
+        if size < 24:
+            raise GGUFError(f"{path} is too short to be a GGUF file")
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            view = memoryview(mapped)
+            try:
+                cursor = _Cursor(view, size)
+                if bytes(cursor.take(4)) != MAGIC:
+                    raise GGUFError(f"{path} is not a GGUF file")
+                cursor.u32()                                    # version
+                cursor.u64()                                    # tensor count
+                n_kv = cursor.u64()
+                found: str | None = None
+                for _ in range(n_kv):
+                    name = cursor.string()
+                    kind = cursor.u32()
+                    if name != key:
+                        cursor.skip_value(kind)
+                        continue
+                    if kind != _STRING:
+                        raise GGUFError(
+                            f"{key} is GGUF type {kind}, not a string; refusing to "
+                            f"interpret it")
+                    value = cursor.string()
+                    if found is not None and found != value:
+                        raise GGUFError(
+                            f"{key} appears more than once with different values "
+                            f"({found!r} then {value!r}); refusing an ambiguous header")
+                    found = value
+                    if not exhaustive:
+                        return found
+                if found is None:
+                    raise GGUFError(f"{path} declares no {key}")
+                return found
+            finally:
+                view.release()
+
+
 def architecture(path: Path | str) -> str:
-    return str(read_metadata(path, ("general.architecture",)).get("general.architecture", ""))
+    """The model's declared architecture, read without decoding the rest of the header.
+
+    Request-path form: returns at the key and does not inspect later keys. Admission uses
+    architecture_exhaustive() instead, which refuses an ambiguous header.
+    """
+    return read_string_key(path, "general.architecture")
+
+
+def architecture_exhaustive(path: Path | str) -> str:
+    """As architecture(), but scans the whole header and refuses a conflicting duplicate.
+
+    Costs a full step over the metadata section, so it belongs at admission rather than on
+    the request path.
+    """
+    return read_string_key(path, "general.architecture", exhaustive=True)
 
 
 def supports_prefix_reuse(arch: str) -> tuple[bool, str]:
