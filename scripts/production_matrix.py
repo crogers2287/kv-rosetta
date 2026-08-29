@@ -349,6 +349,56 @@ def prompt_text(tokens: int) -> str:
     return "In the year 1892 the naturalist recorded. " * max(4, tokens // 4)
 
 
+#: Scheduling noise tolerated when reconciling named phases against the reported total.
+PHASE_TOLERANCE_S = 0.05
+
+
+def reconcile_phases(report_seconds: float, phases: dict) -> dict:
+    """How much of a reported import second is attributed to a named phase.
+
+    An economic conclusion that cannot say where its time went is not an attribution. The
+    unclassified remainder is recorded rather than absorbed into a neighbouring phase.
+    """
+    total = sum(phases.values())
+    return {
+        "phase_sum_s": total,
+        "reported_seconds": report_seconds,
+        "unclassified_s": report_seconds - total,
+        "reconciled": abs(report_seconds - total) <= PHASE_TOLERANCE_S,
+    }
+
+
+def compute_verdict(patched_leg: dict) -> dict | None:
+    """The steer's decision rule, from the timers that belong to the adapter path.
+
+    The tail must be the completion issued after the ADAPTER import, not the one after the
+    raw-endpoint restore. Substituting a neighbouring measurement would report a number for
+    a path that was never timed.
+    """
+    adapter = patched_leg.get("adapter", {})
+    if adapter.get("import_seconds_end_to_end") is None:
+        return None
+    tail = adapter.get("adapter_tail_completion_wall_s")
+    if tail is None:
+        raise RuntimeError("adapter import succeeded but its tail completion was not timed; "
+                           "refusing to substitute the raw-endpoint tail")
+    total = adapter["import_seconds_end_to_end"] + tail
+    cold = patched_leg["cold"]["wall_s"]
+    return {
+        "adapter_import_s": adapter["import_seconds_end_to_end"],
+        "adapter_tail_completion_s": tail,
+        "adapter_import_plus_tail_s": total,
+        "native_cold_prefill_s": cold,
+        "restore_is_cheaper": total < cold,
+        "ratio_to_cold": total / cold,
+        # Kept for diagnostic comparison only; never used in the verdict above.
+        "raw_endpoint_tail_s": patched_leg.get("tail_completion_wall_s"),
+        "phase_reconciliation": reconcile_phases(
+            adapter.get("import_reported_seconds", 0.0),
+            adapter.get("import_phases", {})),
+    }
+
+
 def record_calls(adapter):
     """Wrap _post so every endpoint call is recorded in order.
 
@@ -563,7 +613,11 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
                 raise RuntimeError(f"{name}: staged copies not removed: {leftover}")
             # Parity of the adapter-restored cache against native in-memory reuse, not
             # just of the raw-endpoint restore measured above.
+            # Timed here, not borrowed from the raw path. Those states should behave
+            # alike, but an economic record must measure the path it names.
+            t0 = time.time()
             after_adapter = second.post("/completion", request2)
+            adapter_view["adapter_tail_completion_wall_s"] = time.time() - t0
             adapter_view["after_adapter_import"] = {
                 "cache_n": after_adapter["timings"]["cache_n"],
                 "prompt_n": after_adapter["timings"]["prompt_n"],
@@ -751,21 +805,16 @@ def main() -> int:
                   flush=True)
         # The steer's decision rule, evaluated rather than left to the reader.
         patched = legs["patched"]
-        adapter = patched["adapter"]
-        verdict = None
-        if adapter.get("import_seconds_end_to_end") is not None:
-            total = (adapter["import_seconds_end_to_end"]
-                     + patched["tail_completion_wall_s"])
-            verdict = {
-                "adapter_import_plus_tail_s": total,
-                "native_cold_prefill_s": patched["cold"]["wall_s"],
-                "restore_is_cheaper": total < patched["cold"]["wall_s"],
-                "ratio_to_cold": total / patched["cold"]["wall_s"],
-            }
-            print(f"  decision: {total:.3f}s adapter+tail vs "
-                  f"{patched['cold']['wall_s']:.3f}s cold -> "
+        verdict = compute_verdict(patched)
+        if verdict:
+            rec = verdict["phase_reconciliation"]
+            print(f"  decision: {verdict['adapter_import_plus_tail_s']:.3f}s adapter+tail "
+                  f"vs {verdict['native_cold_prefill_s']:.3f}s cold -> "
                   f"{'CHEAPER' if verdict['restore_is_cheaper'] else 'not cheaper'}",
                   flush=True)
+            print(f"  phases account for {rec['phase_sum_s']:.3f}s of "
+                  f"{rec['reported_seconds']:.3f}s "
+                  f"({rec['unclassified_s']:.3f}s unclassified)", flush=True)
         repetitions.append({"repetition": repetition, "legs": legs, "verdict": verdict})
         if patched_artifact and Path(patched_artifact).is_file():
             Path(patched_artifact).unlink()

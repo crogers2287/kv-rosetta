@@ -584,11 +584,14 @@ class LlamaCppHTTPAdapter(Adapter):
             phase_started = time.time()
             ok, reason = container.verify(artifact)
             phases["container_verify"] = time.time() - phase_started
+            phase_started = time.time()
             if not ok:
                 return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                     representation=Representation.OPAQUE,
                                     reason=f"artifact failed verification: {reason}")
             header = container.read_header(artifact)
+            phases["preflight"] = (phases.get("preflight", 0.0)
+                                   + time.time() - phase_started)
             blob = header.get("blob", {})
             recorded = header.get("identity") or {}
             header_abi = recorded.get("cache_abi_digest", "")
@@ -616,7 +619,11 @@ class LlamaCppHTTPAdapter(Adapter):
             # Refuse a version this runtime cannot load, before touching the restore
             # endpoint. Relabelling a version-2 artifact as version 3 would be a lie the
             # loader discovers only after the state is already in flight.
+            phase_started = time.time()
             live_format = self.opaque_format()
+            phases["preflight"] = (phases.get("preflight", 0.0)
+                                   + time.time() - phase_started)
+            phase_started = time.time()
             artifact_format = blob.get("opaque_format")
             if artifact_format != live_format:
                 return ImportReport(
@@ -697,6 +704,8 @@ class LlamaCppHTTPAdapter(Adapter):
             artifact_name = f"{artifact.stem}.{os.getpid()}.restore.bin"
             staged = self.slot_save_path / artifact_name
             self._staged.append(staged)
+            phases["preflight"] = (phases.get("preflight", 0.0)
+                                   + time.time() - phase_started)
             phase_started = time.time()
             container.extract_payload(artifact, staged)
             phases["staging"] = time.time() - phase_started

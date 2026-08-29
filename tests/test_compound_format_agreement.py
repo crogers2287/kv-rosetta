@@ -159,3 +159,31 @@ class PhaseTimingTest(CompoundFormatAgreementTest):
         self.assertFalse(report.ok)
         self.assertNotIn("staging", report.phases)
         self.assertNotIn("runtime_restore", report.phases)
+
+
+class PhaseCoverageTest(CompoundFormatAgreementTest):
+    """Every second of a successful import must land in a named phase."""
+
+    def test_preflight_is_a_named_phase(self):
+        adapter = self.importer()
+        report = adapter.import_(self.genuine, ImportRequest(model="", slot=0))
+        self.assertTrue(report.ok, report.reason)
+        self.assertIn("preflight", report.phases,
+                      "the state-version probe and identity checks must be attributed, "
+                      "not left unclassified or folded into staging")
+
+    def test_phases_account_for_the_reported_total(self):
+        adapter = self.importer()
+        report = adapter.import_(self.genuine, ImportRequest(model="", slot=0))
+        unclassified = report.seconds - sum(report.phases.values())
+        self.assertLess(abs(unclassified), 0.05,
+                        f"{unclassified:.4f}s of {report.seconds:.4f}s unattributed: "
+                        f"{report.phases}")
+
+    def test_a_pre_staging_refusal_still_reports_no_staging_phase(self):
+        artifact = self.variant("plain-coverage-phasecov",
+                                lambda h: h["coverage"].__setitem__("format", "ggsq/3"))
+        report = self.importer().import_(artifact, ImportRequest(model="", slot=0))
+        self.assertFalse(report.ok)
+        self.assertNotIn("staging", report.phases)
+        self.assertNotIn("runtime_restore", report.phases)
