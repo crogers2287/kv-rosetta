@@ -120,15 +120,30 @@ class LogprobDivergenceTest(unittest.TestCase):
         self.assertGreater(wrong["max_abs_logprob_delta"], 1.0)
         self.assertEqual(wrong["top1_agreement"], 0.0)
 
-    def test_a_token_present_in_only_one_vector_is_not_a_small_difference(self):
+    def test_membership_differences_are_counted_not_folded_into_the_delta(self):
+        """A top-k tail can swap members under noise far too small to matter.
+
+        The first version recorded that as an infinite delta. Both real HIP/Vulkan
+        directions then reported infinity, which was honest and told nobody anything: it
+        saturated and hid how closely every shared alternative actually agreed.
+        """
+        found = logprob_divergence(completion({1: -0.1, 2: -0.2}),
+                                   completion({1: -0.1, 99: -0.2}))
+        self.assertEqual(found["tokens_only_in_one"], 2)
+        self.assertEqual(found["shared_tokens"], 1)
+        self.assertEqual(found["max_abs_logprob_delta"], 0.0)
+
+    def test_no_shared_token_leaves_the_delta_unstated_rather_than_zero(self):
         found = logprob_divergence(completion({1: -0.1}), completion({99: -0.1}))
-        self.assertEqual(found["max_abs_logprob_delta"], float("inf"))
+        self.assertIsNone(found["max_abs_logprob_delta"])
+        self.assertEqual(found["tokens_only_in_one"], 2)
 
     def test_comparing_nothing_is_not_agreement(self):
         found = logprob_divergence(completion(), completion())
         self.assertEqual(found["positions"], 0)
         self.assertFalse(found["identical"])
         self.assertIsNone(found["top1_agreement"])
+        self.assertEqual(found["shared_tokens"], 0)
 
     def test_the_compared_count_is_reported_so_a_short_match_cannot_pass_as_full(self):
         found = logprob_divergence(completion({1: -0.1}),

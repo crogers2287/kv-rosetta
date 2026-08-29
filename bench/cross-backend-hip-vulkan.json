@@ -6,6 +6,12 @@
     {
       "artifact_bytes": 4721548,
       "artifact_sha256": "b10c05e8645ad70053055bb6a2d9d2aba8b6c7ddd3fab6221dbe9b335ea19a82",
+      "backend_vs_backend_cold": {
+        "identical": false,
+        "max_abs_logprob_delta": Infinity,
+        "positions": 8,
+        "top1_agreement": 1.0
+      },
       "cache_n": 127,
       "content_matches": true,
       "control_cache_n": 0,
@@ -35,6 +41,12 @@
         "n_read": 4721548,
         "n_restored": 128
       },
+      "restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": Infinity,
+        "positions": 8,
+        "top1_agreement": 1.0
+      },
       "reused_fraction": 0.9921875,
       "save_response": {
         "filename": "xb-hip_to_vulkan.bin",
@@ -63,6 +75,12 @@
     {
       "artifact_bytes": 4721548,
       "artifact_sha256": "3458a5c61fd97e6f20faa8c66d5af9b03dfb31b1dbdfd5c05b2e10f381b1c855",
+      "backend_vs_backend_cold": {
+        "identical": false,
+        "max_abs_logprob_delta": Infinity,
+        "positions": 8,
+        "top1_agreement": 1.0
+      },
       "cache_n": 127,
       "content_matches": true,
       "control_cache_n": 0,
@@ -91,6 +109,12 @@
         "id_slot": 0,
         "n_read": 4721548,
         "n_restored": 128
+      },
+      "restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": Infinity,
+        "positions": 8,
+        "top1_agreement": 1.0
       },
       "reused_fraction": 0.9921875,
       "save_response": {
@@ -122,7 +146,7 @@
   "llama_source_revision": "ca3d5a3",
   "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
   "prompt_tokens": 128,
-  "repo_commit": "a77aad195007bdc9e89d50c49ef3f981740f156b",
-  "runner_sha256": "bff0c025ef815507bf68c89a6c86b6c902f49656056c8b4984eb90301c9966f4",
+  "repo_commit": "c8f92e18cf8482d41698dd40561be3029429a7a6",
+  "runner_sha256": "a16d6f7a9995397a82e4c80f2f5adfc9121befe2bb4dc4e22907a3e7b9eaf829",
   "warning": "RESEARCH ONLY. Same model, same cache dtype, different compute backend."
 }

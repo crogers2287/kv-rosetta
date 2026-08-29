@@ -133,9 +133,14 @@ def logprob_divergence(left, right) -> dict:
     """How far apart two completions' logprob vectors are, position by position.
 
     A bare "the logprobs differ" cannot tell a twelfth-decimal kernel difference from a
-    restore that put the wrong numbers in the cache, and those need opposite responses. What
-    is reported is the largest absolute difference over every alternative at every compared
-    position, and how often the two agree on the most likely token.
+    restore that put the wrong numbers in the cache, and those need opposite responses.
+
+    Two facts are reported rather than one, because a single number cannot carry both. The
+    delta covers only tokens present in both vectors, which is the informative quantity. A
+    top-k list's tail can swap members under an arithmetic difference far too small to
+    matter, and an earlier version recorded that as an infinite delta - honest, but it
+    saturated and hid the magnitude on every token that did agree. Membership differences
+    are instead counted, so they stay visible without swallowing the measurement.
 
     Comparison stops at the shorter of the two, and how many positions were compared is
     reported, so a single-position agreement cannot pass as a full match.
@@ -144,22 +149,24 @@ def logprob_divergence(left, right) -> dict:
     compared = min(len(a), len(b))
     if compared == 0:
         return {"positions": 0, "max_abs_logprob_delta": None, "top1_agreement": None,
-                "identical": False}
-    worst, agreed = 0.0, 0
+                "tokens_only_in_one": 0, "shared_tokens": 0, "identical": False}
+    worst, agreed, only_one, shared = 0.0, 0, 0, 0
     for pos in range(compared):
         first, second = a[pos], b[pos]     # probs() already yields {token_id: logprob}
         for token in set(first) | set(second):
             if token in first and token in second:
                 worst = max(worst, abs(first[token] - second[token]))
+                shared += 1
             else:
-                # A token in one vector and not the other is a disagreement the numbers
-                # cannot express; recording it as infinite keeps it from reading as small.
-                worst = float("inf")
+                only_one += 1
         top_a = max(first, key=first.get) if first else None
         top_b = max(second, key=second.get) if second else None
         agreed += int(top_a == top_b)
-    return {"positions": compared, "max_abs_logprob_delta": worst,
-            "top1_agreement": agreed / compared, "identical": a == b}
+    return {"positions": compared,
+            "max_abs_logprob_delta": worst if shared else None,
+            "top1_agreement": agreed / compared,
+            "tokens_only_in_one": only_one, "shared_tokens": shared,
+            "identical": a == b}
 
 
 def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
