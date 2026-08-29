@@ -484,3 +484,69 @@ This is a correctness gate. It establishes no economic win at 256 tokens, and no
 projects one at any other length.
 
 Status: **measured once on this host**, from a clean committed runner.
+
+## REQ-026 — The 2K rung, on tmpfs
+
+Steer 233a897, P2. Three clean repetitions, fresh processes per leg, from committed runner
+`67efd9813f4c`. Slots on tmpfs to isolate compute and serialization from disk.
+
+**Correctness holds.** All three patched repetitions restore to `cache_n=2044 prompt_n=4`;
+all three unpatched controls to `cache_n=0 prompt_n=2048`. The uncovered tail is still 4 at
+2048 tokens, the same as at 256 — it tracks the checkpoint boundary, not the prompt length.
+Token, content and probability-vector parity against native in-memory reuse held in every
+repetition.
+
+**Artifact**: 604,960,596 bytes = 291,169,856 sequence +
+313,788,820 checkpoint + 1,920 container
+overhead, covering 2044 tokens in 2 checkpoints. Server peak RSS
+17.06 GiB; runner peak RSS
+61 MiB — the bounded appendix parsing holds at
+this size.
+
+**Economics: not cheaper, and the reason is ours.**
+
+| phase (median of 3) | seconds |
+|---|---:|
+| staging | 2.375 |
+| container verification | 1.987 |
+| pristine re-restore | 0.473 |
+| runtime restore | 0.465 |
+| reuse probe | 0.212 |
+| **adapter import + tail** | **6.528** |
+| *native cold prefill* | *1.739* |
+
+Repetitions are tight: 6.436, 6.544, 6.528 s against
+1.710, 1.739, 1.750 s, ratios 3.76x, 3.76x, 3.73x.
+
+The **runtime restore is 0.465 s against a 1.739 s
+cold prefill** — the runtime half is already ~3.7x cheaper than prefilling. Staging plus
+container verification cost 4.362 s, 67% of the
+total, and both are linear in the 577 MiB payload. On tmpfs, so
+this is memory bandwidth and SHA-256, not disk.
+
+Two measured points, stated without extrapolation:
+
+| tokens | cold | adapter+tail | ratio |
+|---|---:|---:|---:|
+| 256 | 0.588 | 4.103 | 6.98x |
+| 2048 | 1.739 | 6.528 | 3.76x |
+
+Cold prefill grew 3.0x over an 8x token increase; the adapter path grew 1.8x. The gap is
+narrowing. Whether it closes is the next rung's measurement, not something to be projected
+from two points.
+
+**K/V cache dtype is not recorded, because this runtime does not report it.** The steer asked
+for it explicitly and warned that Q4 weight quantization does not imply K/V dtype. Probed the
+patched build's `/props` directly: the only dtype-ish key is `model_ftype`, which is exactly
+the weight quantization being warned about. There is no `cache_type_k`/`type_k` anywhere in
+props, settings, or params.
+
+Consequence worth flagging: `CacheABIIdentity.k_dtype`/`v_dtype` are empty strings on this
+runtime, so **the cache ABI digest does not currently bind the K/V cache dtype**. Two
+runtimes differing only in KV quantization would produce the same digest. The exposure is
+cross-runtime transfer, which this track has deferred, and the GGSQ payload does encode
+per-layer `k_type`/`v_type` that could be read from the artifact bytes instead. Not fixed
+here: it is outside this steer's stated order.
+
+Status: **measured once on this host, three repetitions** (2K tmpfs).
+**Untested**: the NVMe rung, 8K, 32K.
