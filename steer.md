@@ -1,177 +1,157 @@
-# KV Rosetta research steer: prove the admitted path on persistent NVMe
+# KV Rosetta research steer: realign on portable agentic-prefix reuse
 
-Status basis: default-branch head 815930439046780605d66174038a6ea4bc8c9ece.
+Status basis: default-branch head b6d8728b6c244850a3a4bbbedc2e56738b1d6cb9.
 
-This steer supersedes 3cacbba. The exact-key GGUF lookup and store-owner guard landed, and the real admitted-store path now beats cold prefill in three of three paired 2K repetitions with hybrid_support still inside the timed request path. The next smallest falsifiable experiment is the same 2K gate on Fred's intended persistent NVMe. Do not jump to 8K, and do not describe an NVMe file served from warm Linux page cache as a cold-host-restart result.
+This steer answers re-align.md entries RA-001 and RA-002 and supersedes b76bc8c. The persistence track established an important prerequisite, but it is no longer the product roadmap. The project target is a sidecar that lets agentic harnesses reuse large, stable prefixes through a portable KVX representation across runtimes, cache dtypes, hardware backends, and—behind an explicit quality gate—model architectures.
+
+## Answers to re-align.md
+
+### RA-001 — answered: cross-backend portability and the sidecar are in scope
+
+Yes. Cross-backend portability is the core project goal, and daemon/server.py (or the smallest equivalent service boundary) is in scope.
+
+The existing opaque llama.cpp route is a source/target-specific fast path, not the portable format. Its strict CacheABIIdentity, ggsq/3+sckp/1 tuple, checkpoint appendix, and local admitted-store invariants are correct for opaque restoration and must not be relaxed. An f16 opaque artifact must continue to refuse a q8_0 target; an unpatched qwen35 runtime must continue to refuse before any state endpoint or store access.
+
+Portability comes from a separate canonical conversion path:
+
+source-native state -> canonical KVX tensors/state -> target-native state -> behavioral gate -> reuse or native-prefill fallback
+
+The missing conversion and orchestration layer is now the main research track. Same-model cross-backend/cache-dtype transfer comes before cross-model mapping. Cross-model claims require the held-out divergence/task-quality gate already described by the repository; tensor similarity alone is never admission evidence.
+
+The sidecar should be implemented only far enough to exercise a proven transfer seam. Do not build a broad daemon API around unimplemented conversions.
+
+### RA-002 — answered: measure 8K now; do not attempt 32K on the current NVMe
+
+Yes. The next live benchmark is 8K because it is the first retained measurement in the stated 8K–32K agentic-prefix range.
+
+The persistent natural-cache 2K gate already passed 3/3 on ext4/NVMe at median 1.486 s versus 1.731 s cold, with 2,044/2,048 reuse and all refusal/parity gates intact. The file-scoped eviction mechanism and residency check have also landed. Do not spend another steering cycle optimizing 2K cold-cache behavior. If a cold-cache run is already in progress, retain and classify that single result, but it does not gate 8K.
+
+Do not generate a 32K artifact on the current NVMe. The estimated approximately 9.7 GB object needs approximately 19 GB transient under the current admission copy while only 16.6 GB is free. A 32K persistent rung requires either:
+
+- a different persistent target with at least the measured transient requirement plus a safety margin; or
+- removal of the admission double-space requirement without weakening atomic full-digest admission.
+
+Tmpfs is not a substitute for the 32K persistent claim.
 
 ## Mission
 
-Deliver persistent exact-prefix restoration for the deployed 27B qwen35-family hybrid model across a complete llama-server restart, with exact artifact/runtime identity, fail-closed behavior on unpatched or incomplete runtimes, and request-path economics that beat native prefill.
+Deliver portable reuse of heavy system prompts, skills, MCP schemas, and tool definitions for agentic workloads:
 
-Primary upstream track:
+1. persistent exact-prefix restoration within a supported runtime;
+2. same-model canonical transfer across cache dtypes and hardware backends;
+3. quality-gated cross-model/architecture transformation;
+4. a small sidecar interface that orchestrates transfer, verification, and native-prefill fallback.
 
-- https://github.com/ggml-org/llama.cpp/issues/25913
-- https://github.com/ggml-org/llama.cpp/pull/26004
+The llama.cpp checkpoint-persistence work in issue #25913 and PR #26004 remains required for qwen35 hybrid source/target state. Keep patch 0001 pinned and its identity recorded. Do not post upstream from this track.
 
-Keep checkpoint-persistence patch 0001 pinned. Do not post upstream during this track.
+## What the persistence work proved
 
-## Evidence now retained
+Retain these results as the T1 foundation:
 
-### The support check is fast without being removed
+- genuine process replacement and persistent qwen35 checkpoint restoration;
+- 252/256 and 2,044/2,048 reuse with a stable four-token tail;
+- output and nonempty probability-vector parity against native reuse;
+- complete checkpoint metadata equality;
+- patched/unpatched paired controls, with the unpatched runtime refusing before endpoint calls;
+- explicit f16/f16 CacheABIIdentity;
+- a complete admitted path that beats cold prefill 3/3 on tmpfs and 3/3 on persistent NVMe under natural page-cache state;
+- atomic content admission, bounded metadata reads, file-fact pinning, owner/mode checks, and adversarial cleanup/refusal coverage.
 
-Commit 799f2ad replaces full GGUF metadata materialization with an mmap cursor that can read one exact string key without allocating later tokenizer arrays.
+These results do not establish cross-backend portability, canonical extraction, cross-model transfer, host-restart economics, or exact Qwen3.5/Qwen3.6 model-digest coverage.
 
-The safety/performance split is explicit:
+## P0 — one 8K production-shape economic rung
 
-- architecture() returns at general.architecture for the request path;
-- architecture_exhaustive() scans the complete metadata header during off-request admission and refuses conflicting duplicates;
-- malformed, missing, wrong-type, truncated, and ambiguous admission headers fail closed;
-- classification remains unchanged for ordinary, recurrent, and hybrid architectures;
-- no architecture value is cached across calls or server generations;
-- hybrid_support still runs for every restore;
-- the admitted store now requires both mode 0700 and st_uid equal to the effective UID.
+Run the existing process-owned paired harness at 8,192 prompt tokens on the exact tested Qwen3.8-27B/qwen35 model and persistent NVMe, using natural page-cache state. Before generation, record free space, predicted object size, and predicted peak transient usage; refuse if the measured safety margin is inadequate.
 
-Fifteen focused tests landed and 472 offline tests pass.
+Start with one break-first repetition. Require:
 
-### The complete tmpfs request path passes
-
-Retained bench/admitted-store-2k-fastkey.json records the same model, prompt, binaries, admitted object, timing boundaries, and refusal gates as the prior failed run:
-
-| Measurement | Result |
-|---|---:|
-| Median admitted total | 1.551 s |
-| Admitted range | 1.509–1.696 s |
-| Median native cold | 1.734 s |
-| Cold range | 1.731–1.737 s |
-| Paired wins | 3 / 3 |
-| Median ratio to cold | 0.894 |
-| Median saving | 0.183 s |
-| Median resolve_support | about 0.0022 s |
-| Admission | 2.834 s |
-| Break-even | 16 restores |
-| Reuse | 2,044 / 2,048 every run |
-| Request-path state payload read by KV Rosetta | 0 bytes |
-| Unpatched endpoint calls | 0 |
-
-Every run has cache_n=2044 and prompt_n=4, complete restore-metadata equality, token/content/nonempty probability-vector parity, pristine-prefix restoration, unchanged admitted-object facts, and reconciled phases.
-
-Classify this correctly: the experimental local path wins for a process restart when the admitted state resides on tmpfs. It does not yet prove persistent-filesystem economics or host-restart behavior. The first paired win was only 2.2%, while the other two were about 10.4% and 13.1%; retain raw ranges and do not reduce this to the median alone.
-
-## P0: make the persistent-filesystem record self-identifying
-
-The current runner records only the filesystem type and a free-form note. Before an NVMe record is accepted, add small evidence-only fields and fail if the target is memory-backed.
-
-Record at minimum:
-
-- resolved slot/store path;
-- stat device ID;
-- findmnt source, target, filesystem type, and mount options;
-- backing block-device name and rotational flag when resolvable;
-- whether the path is on the same mount as the model;
-- available bytes before admission;
-- admitted object size and file facts;
-- explicit page-cache policy for the run.
-
-Refuse the persistent rung when findmnt reports tmpfs, ramfs, overlay backed by transient storage, or an unresolved target. Do not infer NVMe from a pathname such as /mnt/storage. Evidence must identify the actual mounted source.
-
-Do not record device serial numbers or other unnecessary host identifiers.
-
-Keep the existing exact model, prompt, patch, source-diff, binary, build, K/V dtype, compound-tuple, and admitted-object digests. The patched llama.cpp tree remains a base head plus recorded diff, not a clean upstream binary.
-
-## P1: natural-cache 2K NVMe gate
-
-Use the exact committed admitted-store runner and the intended persistent NVMe slot directory. The store must be the llama-server slot directory, owned by the effective UID at mode 0700. Admit one object once, then run three paired repetitions across fresh llama-server processes.
-
-Do not force page eviction for this first rung. Label it precisely as:
-
-persistent NVMe file, natural page-cache state after admission and process restarts
-
-This matches the immediate llama-server restart use case: the process dies, the file persists, and the OS page cache may survive. It is not evidence for a machine reboot or a long-idle cache eviction.
-
-For every repetition retain and require:
-
-- a new PID and zero reuse before restore;
-- cache_n=2044 and prompt_n=4;
-- complete restore-metadata equality;
-- token, content, and nonempty probability-vector parity;
-- pristine-prefix restoration;
-- unchanged admitted-object device/inode/size/mtime/ctime/link count;
-- zero KV Rosetta state-payload bytes and bounded metadata reads;
-- hybrid_support timed, not cached or pre-warmed;
-- phase reconciliation;
-- unpatched refusal before store access with zero endpoint calls.
+- a new server PID and zero reuse before restore;
+- cache_n = 8,188 and prompt_n = 4, unless retained token evidence falsifies the stable-tail hypothesis;
+- complete save/restore metadata equality;
+- token, content, and nonempty probability-vector parity against native reuse;
+- pristine-prefix restoration after the probe;
+- unchanged admitted-object identity and zero request-path payload copying;
+- hybrid_support inside the timed path;
+- unpatched refusal before store access and with zero state-endpoint calls;
+- reconciled phase timings and truthful natural-cache labeling.
 
 Decision rule:
 
-- Pass: median admitted total beats median cold, at least 2 of 3 paired repetitions win, and all correctness/safety gates pass.
-- Marginal: median wins but fewer than 2 paired runs win, or the median margin is under 5%; retain the record and run three more repetitions before proceeding.
-- Economic fail: stop NVMe scaling and attribute the delta versus tmpfs, especially runtime_restore and pristine_restore. Do not run 8K.
-- Any correctness or refusal failure: fail regardless of speed.
+- Correctness/refusal failure: stop and diagnose; speed cannot pass the rung.
+- Restored total beats paired cold prefill: retain the record and run two more paired repetitions. Pass requires at least 2/3 wins and a winning median.
+- Restored total loses: retain the result, attribute the delta once, and do not optimize the opaque store further unless the cause would also block canonical transfer.
 
-Record admission cost and the measured break-even restore count. A request-path win does not establish lifecycle savings for prefixes restored fewer times than break-even.
+Report artifact bytes per token, admission cost, per-restore saving, and break-even restore count. Interpret break-even against repeated harness requests, not a one-shot workload.
 
-## P2: state-file cold-cache sensitivity, only after P1 passes
+## P1 — smallest falsifiable canonical-conversion experiment
 
-If the natural-cache persistent rung passes, test one deliberately state-cold repetition before considering 8K.
+After the 8K record, stop extending opaque persistence and build the smallest read-only canonical extraction proof.
 
-Evict only the admitted state file from page cache using a file-scoped mechanism such as POSIX_FADV_DONTNEED after its bytes are durable. Do not use the system-wide drop_caches control: evicting model weights and unrelated files changes the cold baseline and makes the comparison uninterpretable.
+First produce a source-backed layout inventory for ggsq/3 and sckp/1 that identifies, with byte ranges and invariants:
 
-The sensitivity record must:
+- token and sequence metadata;
+- per-layer K and V payloads, ggml type IDs, row strides, shapes, and ordering;
+- recurrent/hybrid state and checkpoint records;
+- which fields are model/runtime identity versus portable tensor/state data;
+- which data cannot yet be represented by the current KVX container.
 
-- state the exact eviction mechanism and its return status;
-- measure or otherwise verify state-file residency before restore when practical;
-- leave model/runtime warm-up policy identical to P1;
-- retain the full correctness, refusal, identity, phase, and parity gates;
-- label the result state-file cold-cache sensitivity, not host reboot.
+Then implement only enough of adapters/llamacpp_ggsq.py to decode one admitted artifact into canonical KVX segments. Do not add a general encoder, daemon, vLLM adapter, or learned mapper in this step.
 
-Branch:
+The first fixture must be deterministic, small enough for offline CI, and mutation-tested. Acceptance requires:
 
-- Cold-state still beats cold prefill: repeat to three paired runs, then persistent 2K economics are credible under both natural and state-cold page-cache conditions.
-- Cold-state loses: preserve both results. The proven win is immediate process restart with a naturally warm page cache; host-restart or long-idle persistence remains economically unproven. Profile storage read/restore before 8K.
-- Eviction cannot be verified: do not publish a cold-cache claim; retain only the natural-cache result.
+- exact bounds checking and streaming/bounded-memory reads;
+- rejection of truncation, overlap, impossible shapes/strides, unsupported ggml types, wrong tuple/version, and missing hybrid checkpoint data;
+- canonical little-endian layer,kv,token,head,dim ordering;
+- explicit source dtype and dequantization policy;
+- a retained numeric oracle derived independently from the decoder under test;
+- no weakening of the opaque import/export gates.
 
-## P3: production-boundary work after persistent economics
+Falsifier: if ggsq/3 lacks enough typed shape/layout information to reconstruct canonical tensors without model-specific inference, retain the exact missing information and pivot to the smallest upstream export primitive that supplies it. Do not guess offsets or bless a self-consistent round trip.
 
-Only after P1 passes—and after P2 is honestly classified—choose the next smallest production-hardening item.
+## P2 — prove dtype portability before hardware portability
 
-Still open:
+Once canonical extraction passes, prove one same-model cache-dtype conversion on a single available host: f16 source to q8_0 target, or the closest actually deployed pair.
 
-- llama-server opens the state by basename after KV Rosetta checks it, leaving a same-UID/root race; a general untrusted-file claim needs fs-verity or an upstream restore-from-open-fd/verified-offset primitive;
-- the manifest records runtime build_info but not a reproducible local checkpoint-patch implementation identity;
-- the exact tested model is Qwen3.8-27B-UD-Q4_K_XL.gguf, architecture qwen35, not exact Qwen3.5-27B or Qwen3.6-27B digests;
-- active draft/MTP/speculative state remains withheld and behaviorally untested.
+This is not expected to be token-exact. Gate it against the target runtime's own native q8_0 reuse:
 
-Do not conflate these with the P1 performance gate. Preserve the experimental label and fail-closed behavior.
+- same prompt tokens and target model digest;
+- target-native output/logit or probability-vector reference;
+- explicit divergence thresholds fixed before the run;
+- successful target reuse at the intended prefix;
+- native target prefill fallback on any conversion, identity, or quality failure.
 
-## Scaling rule
+The opaque route must still refuse the dtype mismatch. Only the canonical route may convert it.
 
-Do not run 8K merely because tmpfs passed.
+A pass unlocks a same-model CUDA/ROCm/Vulkan transfer using the same source artifact and gate. A fail retains the numeric evidence and identifies whether layout, quantization, RoPE treatment, or hybrid recurrent state is the blocker.
 
-An 8K rung is justified only after:
+## P3 — minimal sidecar seam
 
-1. the persistent NVMe natural-cache 2K gate passes;
-2. the state-cold sensitivity is retained and truthfully classified;
-3. no safety/refusal regression is present;
-4. the expected 8K artifact size and free-space requirement are recorded before generation.
+After one canonical dtype conversion is behaviorally accepted, add the smallest service surface needed by an agentic harness:
 
-Keep 32K, 131K, canonical conversion, cross-backend work, vLLM, Transformers, portable-KVX redesign, and upstream submission deferred.
+- resolve a canonical prefix identity;
+- request import/transfer into a named target runtime;
+- return reused-token count, transfer mode, quality-gate verdict, and fallback reason;
+- fall back to native target prefill on every unsupported, ambiguous, stale, corrupt, or failed case.
 
-## Truthful current status
+Reuse watcher.py, budget.py, resolve.py, gate.py, and metrics.py where their contracts fit. Do not create a second identity or admission system. Authentication, multi-tenant policy, distributed scheduling, and a broad management API are later work.
 
-- Persistent hybrid restoration is correct on the exact tested Qwen3.8-27B qwen35 model.
-- Patched reuse is 252/256 and 2044/2048 with a stable four-token tail.
-- Target K/V cache identity is explicit as f16/f16.
-- The admitted store enforces full content addressing, pinned file facts, current-user ownership, mode 0700, and extensive fail-closed guards.
-- Unpatched qwen35 refuses before store access and makes zero state endpoint calls.
-- The complete admitted request path on tmpfs beats cold prefill 3/3, with a median 10.6% request-latency saving.
-- Admission costs 2.834 s and currently amortizes after 16 restores.
-- Persistent NVMe economics, state-cold behavior, host restart, 8K, exact Qwen3.5/Qwen3.6 digests, and active draft/speculative state remain untested.
+## Deferred until the above gates pass
+
+- 32K on the current NVMe;
+- 131K;
+- learned cross-model projection and token alignment;
+- vLLM and Transformers production adapters;
+- MTP/speculative-state enablement;
+- general untrusted same-UID storage claims;
+- upstream submission or external comments.
+
+HF may be added earlier only as a narrow independent numeric oracle for P1/P2, not as a production adapter.
 
 ## Required execution order
 
-1. Add self-identifying persistent-filesystem evidence and a memory-backed-target refusal to the runner.
-2. Commit the runner change before evidence generation.
-3. Run the three-repetition natural-cache 2K gate on the intended persistent NVMe.
-4. Follow the P1 decision rule.
-5. If P1 passes, run one file-scoped state-cold sensitivity repetition.
-6. Do not automatically run 8K.
+1. Retain any already-running single state-cold result, but do not iterate on it.
+2. Run the break-first persistent-NVMe 8K experiment; expand to three repetitions only on a correct economic win.
+3. Produce the ggsq/3+sckp/1 canonical-layout inventory.
+4. Land the smallest fail-closed canonical decoder and independent offline oracle.
+5. Prove one same-model dtype conversion against target-native behavior.
+6. Only then expose that proven transfer seam through a minimal sidecar.
