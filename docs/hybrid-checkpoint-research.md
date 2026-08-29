@@ -7,15 +7,28 @@ one llama.cpp revision so a later patch can be diffed against a known base.
 
 | | |
 |---|---|
-| llama.cpp source | `ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc` (`~/llama.cpp`) |
-| installed server binary | reports `build_info = b1-3e73446` |
-| emitted sequence-state version | **2** (the header at this source revision declares `LLAMA_STATE_SEQ_VERSION 3`) |
+| working tree HEAD | `ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc` (`~/llama.cpp`) |
+| **source the running binary was built from** | **`3e7344670`** - the binary reports `build_info = b1-3e73446` |
+| distance | 150 commits; the checkout was fetched forward without rebuilding |
+| `LLAMA_STATE_SEQ_VERSION` at `3e7344670` | **2** |
+| `LLAMA_STATE_SEQ_VERSION` at `ca3d5a3` | **3** |
+| version observed in files the running server writes | **2** |
 | upstream issue | https://github.com/ggml-org/llama.cpp/issues/25913 |
+| upstream PR | https://github.com/ggml-org/llama.cpp/pull/26004 |
 | related | https://github.com/ggml-org/llama.cpp/issues/24055 |
 
-The binary predates the checked-out source. That gap is itself part of the cache ABI: a file
-written at sequence-state version 2 is refused by a build expecting 3, because
-`llama_context::state_seq_load_file` requires an exact match.
+An earlier note here said only that "the binary predates the checked-out source", inferred
+from the version mismatch. The chain is now verified end to end: the binary's `build_info`
+names commit `3e7344670`, that commit declares sequence-state version 2, and the files the
+running server writes carry version 2. HEAD is 150 commits ahead and declares version 3.
+
+That gap is part of the cache ABI, not trivia: `llama_context::state_seq_load_file` requires
+an exact version match, so a file written today is refused by a build from HEAD.
+
+**`~/llama.cpp` is a shallow clone** (151 commits, boundary `3e7344670`). Shallow clones fail
+ancestry queries *silently* - `git merge-base` returns nothing and `git log A..B` returns zero
+commits rather than erroring - which is how an unverified base can slip past a check. The
+build script unshallows before verifying anything.
 
 ## The correction this record exists to make
 
