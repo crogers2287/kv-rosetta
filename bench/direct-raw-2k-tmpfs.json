@@ -1,0 +1,112 @@
+{
+  "admission": {
+    "active_state_classes": [
+      "target"
+    ],
+    "admission_seconds": 3.2666046619415283,
+    "admitted_name": "admitted-ef4e73e89c73a1e144c93485b2a023f4.bin",
+    "appendix": {
+      "count": 2,
+      "nbytes": 313788820,
+      "offset": 291169856,
+      "status": "ok"
+    },
+    "cache_dtype_k": "f16",
+    "cache_dtype_v": "f16",
+    "checkpoint_coverage": {
+      "checkpoint_bytes": 313788820,
+      "checkpoint_n_tokens": 2044,
+      "checkpoint_pos_max": 2043,
+      "checkpoint_pos_min": 2043,
+      "n_checkpoints_saved": 2
+    },
+    "compound_tuple": "ggsq/3+sckp/1",
+    "file": {
+      "ctime_ns": 1788015703261727786,
+      "device": 27,
+      "inode": 6434,
+      "mtime_ns": 1788015699992707366,
+      "sha256": "ef4e73e89c73a1e144c93485b2a023f4c55b545c15acde81c704870ba38890c2",
+      "size": 604958676
+    },
+    "model_content_digest": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+    "model_weights_sha256": "9bf3b07e1fb6531e91d970384cc3bdbc34b26dcfed993a743ecb3a9773aa8886",
+    "prompt_digest": "5ba417969b756495a25fab31919fde2d3e4fdc774841116814099ad045acbf8a",
+    "sequence_version": 3,
+    "token_count": 2048
+  },
+  "architecture": "qwen35",
+  "binary_digests": {
+    "launcher_sha256": "785c69e1abd11906dd8889b1cd2546229972c787748b66eba04f88f616526870",
+    "libggml-base.so_sha256": "56f1f5e7b00a7d718615a00e8c8c4c9b9a7de076259bf44db98f408e706709df",
+    "libllama-server-impl.so_sha256": "93a4ddcfba4d534e3c01d791c993cdc8acb98c845df74f970c74fcb4a89bdfe2",
+    "libllama.so_sha256": "f1327e08bd47786072e94ba551ef19049ea4c35a0d58625391b1a5be429eca42",
+    "patch_markers": {
+      "context checkpoint appendix": 2,
+      "sckp/1": 1,
+      "slot_checkpoint_persistence": 1
+    }
+  },
+  "build_flags": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "GGML_CCACHE": "OFF",
+    "GGML_CUDA": "ON",
+    "GGML_NATIVE": "ON",
+    "LLAMA_CURL": "OFF"
+  },
+  "build_info": "b10665-ca3d5a3e1",
+  "control_before_restore": {
+    "cache_n": 0,
+    "prompt_n": 2048
+  },
+  "file_unchanged_after_restore": true,
+  "kind": "direct-raw-prefix-restore-lower-bound",
+  "kv_dtype_k": "f16",
+  "kv_dtype_v": "f16",
+  "model_path": "/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "native_cold_wall_s": 1.7311317920684814,
+  "native_reuse": {
+    "cache_n": 2044,
+    "prompt_n": 4
+  },
+  "pids": {
+    "producer": 2348303,
+    "restorer": 2352921
+  },
+  "prompt_tokens": 2048,
+  "repo_commit": "cd3722b2d39a0f4a53d98a054ce07ebb20bf3d4c",
+  "runner_sha256": "c5f980af97e469d3d873c2d4ace37a4cfcfbef25ab90622e2c950f39a60b90dc",
+  "slots_path": "/dev/shm/kvx-direct",
+  "source_trees": {
+    "patched": {
+      "head": "ca3d5a3e10d53f7ea672cb9b6178faca3e2807bc",
+      "tree": "/mnt/storage/llama-kvx-patched",
+      "worktree_clean": false,
+      "worktree_diff_sha256": "42974e7c3b65ac56d713a97bc607b89cba8f5a8b584597f2d9650bbe2ece5256"
+    }
+  },
+  "storage_note": "tmpfs on /dev/shm; content-addressed admitted state restored in place",
+  "timed": {
+    "cache_n": 2044,
+    "import_s": 1.0814306735992432,
+    "phase_sum_s": 1.081402063369751,
+    "phases": {
+      "pristine_restore": 0.45156073570251465,
+      "reuse_probe": 0.21554899215698242,
+      "runtime_restore": 0.4142923355102539
+    },
+    "prompt_n": 4,
+    "tail_completion_s": 0.43419742584228516,
+    "total_s": 1.5156280994415283,
+    "unclassified_s": 2.86102294921875e-05,
+    "uncovered": 4
+  },
+  "unpatched_control_refusal": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing, and runtime advertises no checkpoint-persistence protocol. A sequence-only artifact from a hybrid model restores and then reuses nothing.",
+  "verdict": {
+    "direct_total_s": 1.5156280994415283,
+    "native_cold_prefill_s": 1.7311317920684814,
+    "ratio_to_cold": 0.8755128329256471,
+    "restore_is_cheaper": true
+  },
+  "warning": "RESEARCH ONLY. Not a production path and not an admitted design."
+}
