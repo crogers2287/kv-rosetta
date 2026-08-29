@@ -129,6 +129,39 @@ def require_one_revision(revisions: dict[str, str]) -> str:
     return next(iter(revisions.values()))
 
 
+def logprob_divergence(left, right) -> dict:
+    """How far apart two completions' logprob vectors are, position by position.
+
+    A bare "the logprobs differ" cannot tell a twelfth-decimal kernel difference from a
+    restore that put the wrong numbers in the cache, and those need opposite responses. What
+    is reported is the largest absolute difference over every alternative at every compared
+    position, and how often the two agree on the most likely token.
+
+    Comparison stops at the shorter of the two, and how many positions were compared is
+    reported, so a single-position agreement cannot pass as a full match.
+    """
+    a, b = probs(left), probs(right)
+    compared = min(len(a), len(b))
+    if compared == 0:
+        return {"positions": 0, "max_abs_logprob_delta": None, "top1_agreement": None,
+                "identical": False}
+    worst, agreed = 0.0, 0
+    for pos in range(compared):
+        first, second = a[pos], b[pos]     # probs() already yields {token_id: logprob}
+        for token in set(first) | set(second):
+            if token in first and token in second:
+                worst = max(worst, abs(first[token] - second[token]))
+            else:
+                # A token in one vector and not the other is a disagreement the numbers
+                # cannot express; recording it as infinite keeps it from reading as small.
+                worst = float("inf")
+        top_a = max(first, key=first.get) if first else None
+        top_b = max(second, key=second.get) if second else None
+        agreed += int(top_a == top_b)
+    return {"positions": compared, "max_abs_logprob_delta": worst,
+            "top1_agreement": agreed / compared, "identical": a == b}
+
+
 def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
              log_dir: Path, prompt_tokens: int) -> dict:
     """Write a cache on one backend, restore it on the other, and require reuse."""
@@ -200,6 +233,13 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
         "content_matches": warm["content"] == native["content"],
         "tokens_match": toks(warm) == toks(native),
         "logprobs_match": probs(warm) == probs(native),
+        # Two different questions, and the earlier single boolean answered neither
+        # cleanly. Restore fidelity compares the reader against itself: same binary, same
+        # device, the only variable is whether the cache was restored or prefilled. Backend
+        # difference compares two cold runs, with no restore involved at all, and is the
+        # floor that restore fidelity has to be read against.
+        "restore_vs_cold_same_backend": logprob_divergence(warm, control),
+        "backend_vs_backend_cold": logprob_divergence(control, native),
     }
 
 
