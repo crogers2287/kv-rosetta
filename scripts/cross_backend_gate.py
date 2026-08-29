@@ -210,6 +210,22 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
         control = second.post("/completion", request2)
         if control["timings"]["cache_n"] != 0:
             raise RuntimeError(f"{name}: reader reused before any restore")
+        # The reader saves and restores its OWN cache first, by exactly the sequence the
+        # writer used. Without this leg, "restored cache differs from cold prefill" carries
+        # two causes at once - restoring at all, and restoring something foreign - and the
+        # cross-backend number cannot be separated from the cost every restore already pays.
+        own = f"self-{name}.bin"
+        second.post("/slots/0?action=erase", {})
+        second.post("/completion", dict(request2, n_predict=0))
+        second.post("/slots/0?action=save", {"filename": own})
+        second.post("/slots/0?action=erase", {})
+        second.post("/slots/0?action=restore", {"filename": own})
+        self_warm = second.post("/completion", request2)
+        if self_warm["timings"]["cache_n"] == 0:
+            raise RuntimeError(f"{name}: the reader did not reuse its own saved cache, so "
+                               f"the same-backend control measures nothing")
+        (slots / own).unlink(missing_ok=True)
+
         second.post("/slots/0?action=erase", {})
         restored = second.post("/slots/0?action=restore", {"filename": filename})
         warm = second.post("/completion", request2)
@@ -247,6 +263,11 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
         # floor that restore fidelity has to be read against.
         "restore_vs_cold_same_backend": logprob_divergence(warm, control),
         "backend_vs_backend_cold": logprob_divergence(control, native),
+        # The two legs that separate the causes the line above combines.
+        "own_restore_vs_cold_same_backend": logprob_divergence(self_warm, control),
+        "foreign_cache_vs_own_cache": logprob_divergence(warm, self_warm),
+        "own_restore_cache_n": self_warm["timings"]["cache_n"],
+        "own_restore_tokens_match": toks(self_warm) == toks(control),
     }
 
 
