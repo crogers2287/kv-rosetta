@@ -282,8 +282,18 @@ class Server:
         request = urllib.request.Request(
             self.url + path, data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=timeout) as r:
-            return json.loads(r.read())
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as exc:
+            # llama-server explains itself in the response body. Letting the bare status
+            # through cost a log dig to learn that a 32768-token prompt plus eight
+            # generated tokens does not fit a 32768-token context.
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:600]
+            except Exception:                      # pragma: no cover - body already gone
+                detail = "<no body>"
+            raise RuntimeError(f"POST {path} -> HTTP {exc.code}: {detail}") from exc
 
     def props(self) -> dict:
         with urllib.request.urlopen(self.url + "/props", timeout=60) as r:
