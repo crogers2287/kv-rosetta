@@ -386,52 +386,72 @@ _SCKP_MAX_COUNT = 1024
 _SCKP_MAX_BUF = 1 << 34    # 16 GiB, the writer's cap on a single buffer
 
 
-def _u32(blob: bytes, off: int) -> int | None:
-    return None if off + 4 > len(blob) else int.from_bytes(blob[off:off + 4], "little")
+#: The appendix framing is tiny and its payloads are skipped, so an aggregate above this
+#: means the length fields are describing something other than checkpoints.
+_SCKP_MAX_TOTAL = 1 << 38
 
 
-def _u64(blob: bytes, off: int) -> int | None:
-    return None if off + 8 > len(blob) else int.from_bytes(blob[off:off + 8], "little")
+def _read_exact(handle, offset: int, count: int) -> bytes | None:
+    """Read exactly ``count`` bytes at ``offset``, or None if the file ends first."""
+    handle.seek(offset)
+    block = handle.read(count)
+    return block if len(block) == count else None
 
 
-def _parse_at(blob: bytes, start: int) -> CheckpointAppendix | None:
-    """Parse one candidate appendix. None means 'not an appendix at this offset'.
+def _parse_stream(handle, start: int, size: int) -> CheckpointAppendix | None:
+    """Parse one candidate appendix without reading its payloads.
 
-    The appendix is the last thing in the file, so a complete one ends exactly at EOF.
-    Requiring that is what separates a real appendix from the magic occurring by chance
-    inside the KV payload - scanning for the magic alone cannot tell those apart.
+    Only the framing is read - 12 bytes of header, then 12 + 24 per checkpoint. Payload
+    lengths are skipped by arithmetic and never allocated, so validating the appendix on a
+    488 MB production slot file costs the same as on a small one. A declared length is
+    bounds-checked before it is added to the offset, so a corrupt size field cannot make
+    the parser read or reserve anything.
+
+    Returns None when this offset does not hold an appendix that ends at EOF, which is how
+    a chance occurrence of the magic inside opaque KV data is told from a real one.
     """
-    version = _u32(blob, start + 4)
-    count = _u32(blob, start + 8)
-    if version is None or count is None:
+    head = _read_exact(handle, start, 12)
+    if head is None:
+        partial = _read_exact(handle, start, 8)
+        version = int.from_bytes(partial[4:8], "little") if partial else None
         return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start, version=version)
+    if head[:4] != SCKP_MAGIC:
+        return None
+    version = int.from_bytes(head[4:8], "little")
+    count = int.from_bytes(head[8:12], "little")
     if version != SCKP_VERSION:
         return CheckpointAppendix(CheckpointStatus.UNKNOWN_VERSION, offset=start,
                                   version=version, count=count)
     if count > _SCKP_MAX_COUNT:
         return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
                                   version=version, count=count)
-    off = start + 12
+    offset = start + 12
+    total = 0
     for _ in range(count):
-        off += 12                                  # n_tokens, pos_min, pos_max (int32 each)
-        if off > len(blob):
+        if _read_exact(handle, offset, 12) is None:   # n_tokens, pos_min, pos_max
             return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
                                       version=version, count=count)
-        for _buffer in range(3):                   # data_tgt, data_dft, data_spec
-            size = _u64(blob, off)
-            if size is None:
+        offset += 12
+        for _buffer in range(3):                      # data_tgt, data_dft, data_spec
+            raw = _read_exact(handle, offset, 8)
+            if raw is None:
                 return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
                                           version=version, count=count)
-            if size > _SCKP_MAX_BUF:
+            length = int.from_bytes(raw, "little")
+            if length > _SCKP_MAX_BUF:
                 return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
                                           version=version, count=count)
-            off += 8 + size
-        if off > len(blob):
-            return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
-                                      version=version, count=count)
-    if off != len(blob):
-        return None                                # a chance magic inside the payload
-    return CheckpointAppendix(CheckpointStatus.OK, offset=start, nbytes=off - start,
+            total += length
+            if total > _SCKP_MAX_TOTAL:
+                return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
+                                          version=version, count=count)
+            offset += 8 + length                      # skipped, never read or allocated
+            if offset > size:
+                return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
+                                          version=version, count=count)
+    if offset != size:
+        return None
+    return CheckpointAppendix(CheckpointStatus.OK, offset=start, nbytes=offset - start,
                               version=version, count=count)
 
 
@@ -448,16 +468,15 @@ def parse_checkpoint_appendix(path) -> CheckpointAppendix:
     path = _Path(path)
     if not path.is_file():
         return CheckpointAppendix(CheckpointStatus.ABSENT)
-    blob = path.read_bytes()
+    size = path.stat().st_size
     rejected: list[CheckpointAppendix] = []
-    start = blob.find(SCKP_MAGIC)
-    while start != -1:
-        parsed = _parse_at(blob, start)
-        if parsed is not None:
-            if parsed.usable:
-                return parsed
-            rejected.append(parsed)
-        start = blob.find(SCKP_MAGIC, start + 1)
+    with open(path, "rb") as handle:
+        for start in _scan_for_magic(handle, size):
+            parsed = _parse_stream(handle, start, size)
+            if parsed is not None:
+                if parsed.usable:
+                    return parsed
+                rejected.append(parsed)
     if not rejected:
         return CheckpointAppendix(CheckpointStatus.ABSENT)
     # Four bytes of KV data can spell SCKP, and nothing distinguishes that from a real
@@ -496,12 +515,36 @@ def checkpoint_appendix_at(path, offset: int) -> CheckpointAppendix:
     size = path.stat().st_size
     if offset < 0 or offset + 12 > size:
         return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=offset)
-    blob = path.read_bytes()
-    if blob[offset:offset + 4] != SCKP_MAGIC:
-        return CheckpointAppendix(CheckpointStatus.ABSENT, offset=offset)
-    parsed = _parse_at(blob, offset)
+    with open(path, "rb") as handle:
+        if _read_exact(handle, offset, 4) != SCKP_MAGIC:
+            return CheckpointAppendix(CheckpointStatus.ABSENT, offset=offset)
+        parsed = _parse_stream(handle, offset, size)
     if parsed is None:
         # Magic is there but the appendix does not end at EOF, so the declared boundary
         # and the file disagree.
         return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=offset)
     return parsed
+
+
+def _scan_for_magic(handle, size: int, chunk: int = 4 << 20):
+    """Offsets where the SCKP magic appears, read in bounded chunks.
+
+    This is the general-purpose classifier for a file whose appendix boundary is not known.
+    Production export does know it - the runtime reports n_written and checkpoint_bytes -
+    and uses checkpoint_appendix_at() instead, which seeks straight to it.
+    """
+    carry = b""
+    position = 0
+    while position < size:
+        handle.seek(position)
+        block = handle.read(chunk)
+        if not block:
+            return
+        window = carry + block
+        base = position - len(carry)
+        found = window.find(SCKP_MAGIC)
+        while found != -1:
+            yield base + found
+            found = window.find(SCKP_MAGIC, found + 1)
+        carry = block[-3:]
+        position += len(block)

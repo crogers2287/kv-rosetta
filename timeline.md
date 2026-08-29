@@ -317,3 +317,32 @@ target-only one.
 Status: **proven by retained test** — 14 new tests in `tests/test_hybrid_support_predicate.py`,
 342 offline total. Not yet done from this steer: P1 (streaming appendix validation),
 remaining P2 acceptance items, P3 ladder.
+
+## REQ-022 — Bounded appendix validation
+
+Steer cd2afb0, P1. Audited and measured before changing anything: on a 400 MiB slot file,
+validating a 112-byte appendix grew peak RSS by **400 MiB**. The production 256-token
+patched slot is already 487,926,936 bytes and grows with the context, so this does not
+survive the 2K/8K/32K ladder.
+
+`parse_checkpoint_appendix()` and `checkpoint_appendix_at()` both called
+`Path.read_bytes()`. They now parse by seeking: 4 bytes of magic, a 12-byte header, then
+12 + 24 bytes of framing per checkpoint. Payload lengths are skipped by arithmetic and never
+read or allocated, and each length is bounds-checked against the 16 GiB per-buffer cap and a
+new aggregate cap before it is added to the offset — so a corrupt size field cannot make the
+parser reserve anything.
+
+Production export knows the boundary exactly, because the runtime reports `n_written` and
+`checkpoint_bytes`, and uses `checkpoint_appendix_at()`. The general classifier still scans,
+but in bounded 4 MiB chunks rather than by reading the file whole.
+
+Re-measured after the change: **0.0 MiB** peak RSS growth on the same 400 MiB file.
+
+Retained proof: a 4 GiB sparse fixture with a read-counting wrapper asserts validation reads
+at most 256 bytes; a 16 GiB declared buffer length is rejected by arithmetic (the test would
+exhaust memory rather than fail if it were ever read); a length pointing past EOF reports
+truncated without reading. The sparse tests skip themselves if the filesystem does not keep
+the fixture sparse, since the subject is the reader, not the writer.
+
+Status: **proven by retained test** (24 tests in the file, 345 offline total) and
+**measured once on this host** (400 MiB -> 0.0 MiB).

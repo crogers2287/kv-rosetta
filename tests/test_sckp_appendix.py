@@ -160,3 +160,97 @@ class SCKPAppendixTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CountingHandle:
+    """Wraps a file object and records how many bytes were actually read."""
+
+    def __init__(self, handle):
+        self._handle = handle
+        self.bytes_read = 0
+        self.reads = 0
+
+    def read(self, count=-1):
+        block = self._handle.read(count)
+        self.bytes_read += len(block)
+        self.reads += 1
+        return block
+
+    def seek(self, *args):
+        return self._handle.seek(*args)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._handle.__exit__(*exc)
+
+
+class BoundedReadTest(unittest.TestCase):
+    """Validation must cost the same on a 4 GiB artifact as on a small one.
+
+    The production 256-token patched slot file is already 487,926,936 bytes and grows with
+    the context. Reading it whole to check a few dozen bytes of framing cost that much
+    transient memory per validation, which does not survive the 2K/8K/32K ladder.
+    """
+
+    BODY = 4 << 30      # 4 GiB, sparse - larger than any artifact measured so far
+
+    def sparse_artifact(self, directory: Path, appendix: bytes) -> Path:
+        path = Path(directory) / "slot.bin"
+        with open(path, "wb") as handle:
+            handle.truncate(self.BODY)      # sparse: consumes no disk blocks
+            handle.seek(self.BODY)
+            handle.write(appendix)
+        allocated = path.stat().st_blocks * 512
+        if allocated > (64 << 20):
+            self.skipTest(f"filesystem did not keep the fixture sparse "
+                          f"({allocated >> 20} MiB allocated); the point of the test is "
+                          f"the reader, not the writer")
+        return path
+
+    def test_validation_at_a_known_offset_reads_only_the_framing(self):
+        from kv_rosetta.adapters import ggsq_envelope
+
+        with tempfile.TemporaryDirectory() as directory:
+            blob = appendix(count=2)
+            path = self.sparse_artifact(directory, blob)
+            self.assertEqual(path.stat().st_size, self.BODY + len(blob))
+
+            real_open = open
+            counters = []
+
+            def counting_open(*args, **kwargs):
+                handle = CountingHandle(real_open(*args, **kwargs))
+                counters.append(handle)
+                return handle
+
+            ggsq_envelope.open = counting_open
+            try:
+                result = ggsq_envelope.checkpoint_appendix_at(path, self.BODY)
+            finally:
+                del ggsq_envelope.open
+
+            self.assertIs(result.status, CheckpointStatus.OK)
+            self.assertEqual(result.count, 2)
+            total = sum(c.bytes_read for c in counters)
+            # 4 bytes of magic, a 12-byte header, then 12 + 24 per checkpoint.
+            self.assertLessEqual(total, 256,
+                                 f"read {total} bytes to validate {len(blob)} bytes of "
+                                 f"framing on a {self.BODY >> 30} GiB file")
+
+    def test_validation_does_not_allocate_a_declared_buffer_length(self):
+        # A 16 GiB length field must be rejected by arithmetic. If the parser ever tried to
+        # read or reserve it, this test would exhaust memory rather than fail.
+        with tempfile.TemporaryDirectory() as directory:
+            body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", (1 << 34) + 1)
+            path = self.sparse_artifact(directory, appendix(count=1, body=body))
+            result = parse_checkpoint_appendix(path)
+            self.assertIs(result.status, CheckpointStatus.MALFORMED)
+
+    def test_a_length_field_pointing_past_eof_is_truncated_not_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", 1 << 30)
+            path = self.sparse_artifact(directory, appendix(count=1, body=body))
+            self.assertIs(parse_checkpoint_appendix(path).status,
+                          CheckpointStatus.TRUNCATED)
