@@ -304,3 +304,88 @@ all drift, and this is the only test that would notice.
 
 The adapter also passes the conformance suite that rejects five separately broken adapters
 (9 tests run, 1 legitimate skip for the canonical representation it does not export).
+
+## 11. The context ladder, and what it actually showed
+
+Ran on the proven llama.cpp path, 2K / 8K / 32K, greedy decoding, parity checked at every
+rung. Two models on the same code path.
+
+**Qwen2.5-3B Q4_K_M, f16 KV, one 3090:**
+
+| tokens | cold prefill | warm prefill | artifact | restore | restore cheaper? | parity |
+|---|---|---|---|---|---|---|
+| 2048 | 218 ms | 8 ms | 72 MB | 0.59 s | no | yes |
+| 8192 | 621 ms | 9 ms | 288 MB | 2.50 s | no | yes |
+| 32000 | 3413 ms | 17 ms | 1126 MB | 7.99 s | no | yes |
+
+Parity held everywhere. But **restore cost more than recomputing the prefill at every rung**.
+The in-server prefill after a restore is near-free (17 ms at 32K); moving 1.1 GB off disk at
+~140 MB/s is not.
+
+That result is narrower than it looks. A 3B prefilling at ~9,400 tok/s with f16 KV
+(36 KB/token) is simultaneously the fastest prefill to beat and the largest artifact to move -
+the worst case for a cache path on both axes at once. Holding everything else fixed, q4_0 KV
+would cut the artifact to ~281 MB and restore to ~2.0 s, which beats the 3.41 s prefill. The
+fleet runs kvarn4/q4_0, not f16.
+
+**The 27B run did not answer the economics question, because the cache never came back.**
+
+| tokens | cold | warm | cache_n | verdict |
+|---|---|---|---|---|
+| 2048 | 1546 ms | 1510 ms | 0 | no reuse |
+| 8192 | 4745 ms | 4749 ms | 0 | no reuse |
+| 32000 | 19286 ms | 19270 ms | 0 | no reuse |
+
+`warm` equals `cold` because every token was re-prefilled. The server reported
+`n_restored=201` and set `n_prompt_tokens`, and the very next completion still returned
+`cache_n=0`. Also note 846 KB/token here against 36 KB/token on the 3B.
+
+### The bug this exposed
+
+The adapter reported `ok=True` on the strength of the server's restore count. **A restore
+count is not evidence of a usable cache.** That is a fail-open defect of exactly the class
+the steer is about, and it was in code I wrote.
+
+`import_` now verifies reuse rather than trusting the count: it recovers the prompt token IDs
+from the artifact, issues a one-token completion, and refuses unless `cache_n > 0`.
+
+    VERIFIED   -> ok=False  "restore accepted (121 cells) but the cache is not reusable: cache_n=0"
+    UNVERIFIED -> ok=True   (what the old code reported)
+
+The retained round-trip test already asserted `cache_n > 0`, so it caught this on the 27B
+while passing on the 3B. That assertion is the one that earns its place.
+
+## 12. The llama.cpp state-file envelope, corrected against reality
+
+Three constants written from the specification alone were all wrong, and one failed open.
+
+| Assumed | Actual | Consequence |
+|---|---|---|
+| magic `b"GGSQ"` | `b"qsgg"` - `LLAMA_FILE_MAGIC_GGSQ` is `0x67677371` written as a little-endian uint32 | a real state file was detected as an in-process buffer and parsed into a plausible envelope with zero tokens and body_offset 4 |
+| version 3 | the running binary writes **2**, while the checked-out header declares `LLAMA_STATE_SEQ_VERSION 3` | the installed binary (built 2026-08-19) predates the source at `ca3d5a3`; a file written today would be **refused** by a binary built from HEAD, since `state_seq_load_file` requires an exact version match |
+| the array is a token list | it is `server_tokens::serialize()` reinterpreted as `llama_token *` | reading it as tokens yields `-1` as the first token and the server rejects the request with HTTP 400 |
+
+The prompt payload layout, from `tools/server/server-common.cpp`:
+
+```
+LLAMA_TOKEN_NULL (-1)          format marker
+SERVER_TOKENS_STATE_VERSION    currently 1
+tokens      as [count][elements...]
+media_keys  as [count][elements...]
+media chunks
+```
+
+which accounts for every word of the observed header: `1 + 1 + 1 + 201 + 1 = 205`.
+`decode_prompt_tokens` implements it, falls back to a plain list for older files (as
+`server_tokens::deserialize` does), and returns nothing when media chunks are present,
+because a text-only reuse of a multimodal prompt would silently drop the media.
+
+A 2 KB slice of a real slot file is committed at
+`tests/fixtures/llamacpp_state_seq_header.bin`. Every constant above is now pinned against
+it rather than against a synthetic blob built from the same wrong assumptions as the parser.
+
+### Runtime revision belongs in the cache ABI
+
+The version-2-versus-3 split is the concrete case for what the steer required: an artifact
+written by one build of the same runtime, at the same commit, is not necessarily readable by
+another. Runtime revision is part of cache identity, not provenance.

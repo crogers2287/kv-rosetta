@@ -7,6 +7,7 @@ everything downstream.
 
 import struct
 import unittest
+from pathlib import Path
 from dataclasses import replace
 
 from kv_rosetta.adapters import ggsq_envelope as envelope
@@ -84,3 +85,63 @@ class DispatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealFixtureTests(unittest.TestCase):
+    """Parsed against a real slot file captured from llama-server, not a synthetic blob.
+
+    Every constant here was wrong when first written from the specification alone:
+    the magic is a little-endian uint32 so the bytes read "qsgg" rather than "GGSQ", the
+    running binary writes version 2 while the checked-out header declares 3, and the
+    "token" array is a serialized prompt structure rather than a token list.
+    """
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "llamacpp_state_seq_header.bin"
+
+    def setUp(self):
+        if not self.FIXTURE.is_file():
+            self.skipTest("fixture missing")
+        self.raw = self.FIXTURE.read_bytes()
+
+    def test_magic_is_little_endian_uint32(self):
+        self.assertEqual(self.raw[:4], b"qsgg")
+        self.assertEqual(envelope.GGSQ_MAGIC, (0x67677371).to_bytes(4, "little"))
+
+    def test_real_file_is_detected_as_a_file(self):
+        self.assertEqual(envelope.detect(self.raw), Source.FILE)
+
+    def test_real_file_parses(self):
+        env = envelope.parse(self.raw)
+        self.assertEqual(env.source, Source.FILE)
+        self.assertIn(env.version, envelope.SUPPORTED_VERSIONS)
+        self.assertEqual(len(env.token_ids), 205)
+        self.assertEqual(env.body_offset, 12 + 4 * 205)
+
+    def test_a_real_file_is_never_parsed_as_a_buffer(self):
+        """The fail-open case: a state file misread as an in-process buffer produced a
+        plausible envelope with zero tokens and a body offset of 4."""
+        with self.assertRaises(EnvelopeError):
+            envelope.parse_buffer_envelope(self.raw)
+
+    def test_prompt_decodes_to_real_token_ids(self):
+        packed = envelope.parse(self.raw).token_ids
+        tokens = envelope.decode_prompt_tokens(packed)
+        self.assertEqual(len(tokens), 201, "count must match the server's n_prompt_tokens")
+        self.assertTrue(all(t >= 0 for t in tokens), "a decoded token must never be the -1 marker")
+        self.assertNotEqual(tokens[0], envelope.LLAMA_TOKEN_NULL)
+
+    def test_plain_token_list_is_still_accepted(self):
+        self.assertEqual(envelope.decode_prompt_tokens([5, 6, 7]), (5, 6, 7))
+
+    def test_unsupported_prompt_state_version_is_refused(self):
+        with self.assertRaises(EnvelopeError):
+            envelope.decode_prompt_tokens([envelope.LLAMA_TOKEN_NULL, 99, 1, 42])
+
+    def test_truncated_prompt_state_is_refused(self):
+        with self.assertRaises(EnvelopeError):
+            envelope.decode_prompt_tokens([envelope.LLAMA_TOKEN_NULL, 1, 50, 1, 2])
+
+    def test_multimodal_prompt_yields_no_text_tokens(self):
+        # marker, version, 1 token, then one media key: reusing text-only would drop media.
+        packed = [envelope.LLAMA_TOKEN_NULL, 1, 1, 42, 1, 0]
+        self.assertEqual(envelope.decode_prompt_tokens(packed), ())

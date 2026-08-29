@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from kv_rosetta import container
+from kv_rosetta.adapters import ggsq_envelope
 from kv_rosetta.adapters.base import (
     Adapter,
     AdapterError,
@@ -162,7 +163,8 @@ class LlamaCppHTTPAdapter(Adapter):
         }
         return container.write_opaque(out, manifest, blob, OPAQUE_FORMAT)
 
-    def import_(self, artifact: Path | str, req: ImportRequest) -> ImportReport:
+    def import_(self, artifact: Path | str, req: ImportRequest,
+                verify_reuse: bool = True) -> ImportReport:
         started = time.time()
         artifact = Path(artifact)
         try:
@@ -196,11 +198,45 @@ class LlamaCppHTTPAdapter(Adapter):
             result = self._post(f"/slots/{req.slot or self.slot}?action=restore",
                                 {"filename": filename})
             restored = int(result.get("n_restored", 0))
+            if restored <= 0:
+                return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
+                                    representation=Representation.OPAQUE,
+                                    reason="server restored no cells",
+                                    seconds=time.time() - started)
+
+            # A restore count is NOT evidence of a usable cache. Observed on a 27B MTP
+            # model: the server reported n_restored=201 and set n_prompt_tokens, yet the
+            # very next completion re-prefilled every token (cache_n=0). Reporting ok on
+            # the server's own count would hand the caller a cache that does not exist.
+            reuse_note = ""
+            if verify_reuse:
+                token_ids = self._artifact_token_ids(art)
+                if not token_ids:
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason="cannot verify reuse: artifact carries no token IDs",
+                        nbytes=int(result.get("n_read", len(art.opaque))),
+                        seconds=time.time() - started, tokens_restored=restored)
+                probe = self._post("/completion", {
+                    "prompt": list(token_ids), "n_predict": 1, "temperature": 0.0,
+                    "top_k": 1, "cache_prompt": True})
+                cache_n = int(probe.get("timings", {}).get("cache_n", 0))
+                if cache_n <= 0:
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"restore accepted ({restored} cells) but the cache is not "
+                                f"reusable: cache_n=0 on the next completion"),
+                        nbytes=int(result.get("n_read", len(art.opaque))),
+                        seconds=time.time() - started, tokens_restored=restored)
+                reuse_note = f"verified reuse: cache_n={cache_n}"
+
             return ImportReport(
                 mode=StagingMode.HOST_STAGED,
-                ok=restored > 0,
+                ok=True,
                 representation=Representation.OPAQUE,
-                reason="" if restored > 0 else "server restored no cells",
+                reason=reuse_note,
                 nbytes=int(result.get("n_read", len(art.opaque))),
                 seconds=time.time() - started,
                 tokens_restored=restored,
@@ -209,6 +245,19 @@ class LlamaCppHTTPAdapter(Adapter):
             return ImportReport(mode=StagingMode.HOST_STAGED, ok=False,
                                 representation=Representation.OPAQUE, reason=str(exc),
                                 seconds=time.time() - started)
+
+    def _artifact_token_ids(self, art: "container.KVXArtifact") -> tuple[int, ...]:
+        """Recover the prompt token IDs from the engine-native blob.
+
+        llama-server writes a sequence-state file, whose envelope carries the exact token
+        IDs. Reusing them is what makes reuse verifiable rather than assumed.
+        """
+        try:
+            blob = art.opaque
+            packed = ggsq_envelope.parse_file_envelope(blob).token_ids
+            return ggsq_envelope.decode_prompt_tokens(packed)
+        except (ggsq_envelope.EnvelopeError, container.ContainerError):
+            return ()
 
     # -- convenience used by the parity test ------------------------------------
 

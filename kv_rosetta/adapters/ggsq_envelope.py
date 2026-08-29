@@ -55,8 +55,16 @@ class EnvelopeError(ValueError):
     """
 
 
-GGSQ_MAGIC = b"GGSQ"
-SUPPORTED_VERSIONS = frozenset({3})
+# LLAMA_FILE_MAGIC_GGSQ is 0x67677371 written as a little-endian uint32, so the bytes on
+# disk read "qsgg", not "GGSQ". Assuming the human-readable spelling parses a real state
+# file as an in-process buffer and yields a plausible but wrong envelope.
+GGSQ_MAGIC = (0x67677371).to_bytes(4, "little")   # b"qsgg"
+GGSN_MAGIC = (0x6767736E).to_bytes(4, "little")   # b"nsgg", whole-session files
+_KNOWN_MAGICS = (GGSQ_MAGIC, GGSN_MAGIC, b"GGSQ", b"GGSN")
+# Observed: a binary built 2026-08-19 writes version 2 while the checked-out header
+# declares LLAMA_STATE_SEQ_VERSION 3. The running binary is the authority, not the header,
+# so accepted versions are a set and an unknown one is refused rather than assumed.
+SUPPORTED_VERSIONS = frozenset({2, 3})
 
 
 class Source(str, Enum):
@@ -142,6 +150,14 @@ def parse_file_envelope(blob: bytes) -> Envelope:
     )
 
 
+def _reject_known_magic(blob: bytes) -> None:
+    head = blob[:4]
+    if head in _KNOWN_MAGICS:
+        raise EnvelopeError(
+            f"buffer starts with the state-file magic {head!r}; this is a sequence-state "
+            f"FILE, not an in-process buffer - parse it with parse_file_envelope")
+
+
 def parse_buffer_envelope(
     blob: bytes,
     seq_id: int = -1,
@@ -154,6 +170,8 @@ def parse_buffer_envelope(
     the optional magic is read from the buffer; ``seq_id`` overrides it when it
     is not ``-1``.  ``body_offset`` follows the ``source_seq_id``.
     """
+    if io_magic is None:
+        _reject_known_magic(blob)
     if not isinstance(blob, (bytes, bytearray)):
         raise EnvelopeError(
             f"expected bytes for a buffer envelope, got {type(blob).__name__}"
@@ -236,3 +254,56 @@ def body(blob: bytes, envelope: Envelope) -> bytes:
             f"{len(blob)}"
         )
     return blob[start:end]
+
+
+# ---------------------------------------------------------------------------
+# Prompt payload
+# ---------------------------------------------------------------------------
+
+LLAMA_TOKEN_NULL = -1
+SERVER_TOKENS_STATE_VERSION = 1
+
+
+def decode_prompt_tokens(packed: tuple[int, ...] | list[int]) -> tuple[int, ...]:
+    """Recover real token IDs from the envelope's prompt array.
+
+    llama-server does not write a plain token list. It writes
+    ``server_tokens::serialize()`` reinterpreted as ``llama_token *``
+    (tools/server/server-context.cpp), whose layout is::
+
+        LLAMA_TOKEN_NULL (-1)            format marker
+        SERVER_TOKENS_STATE_VERSION      currently 1
+        tokens        as [count][elements...]
+        media_keys    as [count][elements...]
+        media chunks
+
+    Treating that array as token IDs yields -1 as the first "token", which the server
+    rejects. Older versions wrote a plain list, which ``deserialize`` still detects by the
+    absence of the marker, so both shapes are handled.
+
+    Returns () when the prompt cannot be decoded to a pure text token list - including
+    when media chunks are present, because a text-only reuse of a multimodal prompt would
+    silently drop the media.
+    """
+    packed = list(packed)
+    if not packed:
+        return ()
+    if packed[0] != LLAMA_TOKEN_NULL:
+        return tuple(packed)                       # plain list, older format
+    if len(packed) < 3:
+        raise EnvelopeError("prompt state truncated before the token count")
+    version = packed[1]
+    if version != SERVER_TOKENS_STATE_VERSION:
+        raise EnvelopeError(
+            f"unsupported server tokens state version {version}; "
+            f"expected {SERVER_TOKENS_STATE_VERSION}")
+    count = packed[2]
+    if count < 0 or 3 + count > len(packed):
+        raise EnvelopeError(
+            f"prompt declares {count} token(s) but only {len(packed) - 3} word(s) remain")
+    tokens = tuple(packed[3:3 + count])
+    rest = packed[3 + count:]
+    media = rest[0] if rest else 0
+    if media:
+        return ()                                   # multimodal: not a pure text prompt
+    return tokens
