@@ -1,0 +1,238 @@
+"""Explicit envelope parsing for llama.cpp GGSQ sequence-state buffers.
+
+WHY this module exists
+----------------------
+``ggsq.py`` already parses the *body* of a sequence state and is verified against
+it.  The body is not self-describing: it carries no offset telling where it
+begins.  Two different sources produce these buffers and their framing differs,
+so the body starts at a different absolute offset in each:
+
+  * SOURCE A (``buffer``) comes from ``llama_state_seq_get_data()`` and is an
+    in-process byte string.  It is optionally prefixed by an implementation
+    defined ``io_magic`` and an ``int32`` ``source_seq_id`` before the body.
+  * SOURCE B (``file``) is written by ``llama_state_seq_save_file()`` and is
+    prefixed by the ``b"GGSQ"`` magic, a ``uint32`` version, a ``uint32``
+    ``n_token_count`` and that many ``int32`` token ids before the body.
+
+``ggsq.py`` must never be handed an unknown byte buffer directly: guessing the
+offset silently misparses the body.  This module inspects the framing, decides
+which source produced the buffer, and reports the *absolute* offset where the
+body begins.  ``body()`` then slices exactly the body bytes, which can be handed
+to ``ggsq.py`` with certainty.
+
+Everything is little-endian.  A truncated or malformed envelope raises
+:class:`EnvelopeError` (a :class:`ValueError`) rather than returning a
+plausible-looking but wrong envelope.  Every error names the offending field and
+the byte offset it was found at.
+"""
+
+from __future__ import annotations
+
+import struct
+from dataclasses import dataclass
+from enum import Enum
+
+__all__ = [
+    "EnvelopeError",
+    "GGSQ_MAGIC",
+    "SUPPORTED_VERSIONS",
+    "Source",
+    "Envelope",
+    "parse_file_envelope",
+    "parse_buffer_envelope",
+    "detect",
+    "parse",
+    "body",
+]
+
+
+class EnvelopeError(ValueError):
+    """Raised when a GGSQ sequence-state blob cannot be parsed as an envelope.
+
+    Subclasses :class:`ValueError` so existing ``except ValueError`` handlers keep
+    working, while callers can catch this more specific type to distinguish
+    envelope problems from unrelated value errors.
+    """
+
+
+GGSQ_MAGIC = b"GGSQ"
+SUPPORTED_VERSIONS = frozenset({3})
+
+
+class Source(str, Enum):
+    """Which framing produced the buffer."""
+
+    FILE = "file"
+    BUFFER = "buffer"
+
+
+@dataclass(frozen=True)
+class Envelope:
+    """The framing of a sequence-state buffer and where its body begins."""
+
+    source: Source
+    version: int  # 0 when the source carries no version
+    token_ids: tuple[int, ...]  # empty for BUFFER
+    seq_id: int  # -1 when unknown
+    body_offset: int  # absolute offset where the state body begins
+    body_length: int  # len(blob) - body_offset
+
+
+def _require(blob: bytes, offset: int, length: int, field: str) -> bytes:
+    """Return ``blob[offset:offset+length]`` or raise if not fully present."""
+    end = offset + length
+    if offset < 0 or end > len(blob):
+        raise EnvelopeError(
+            f"truncated envelope: need {length} byte(s) for field {field!r} at "
+            f"offset {offset}, but only {len(blob) - offset} byte(s) remain"
+        )
+    return blob[offset:end]
+
+
+def parse_file_envelope(blob: bytes) -> Envelope:
+    """Parse the envelope of a ``llama_state_seq_save_file()`` buffer.
+
+    Raises :class:`EnvelopeError` if the magic, version, or token array is
+    missing, malformed, or would read past the end of ``blob``.  Never guesses.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        raise EnvelopeError(
+            f"expected bytes for a file envelope, got {type(blob).__name__}"
+        )
+    blob = bytes(blob)
+
+    magic = _require(blob, 0, 4, "magic")
+    if magic != GGSQ_MAGIC:
+        raise EnvelopeError(
+            f"bad magic at offset 0: found {magic!r}, expected {GGSQ_MAGIC!r}"
+        )
+
+    version = struct.unpack_from("<I", _require(blob, 4, 4, "version"), 0)[0]
+    if version not in SUPPORTED_VERSIONS:
+        raise EnvelopeError(
+            f"unsupported version at offset 4: {version}; supported versions are "
+            f"{sorted(SUPPORTED_VERSIONS)}"
+        )
+
+    n_token_count = struct.unpack_from("<I", _require(blob, 8, 4, "n_token_count"), 0)[0]
+
+    ids_start = 12
+    ids_end = ids_start + n_token_count * 4
+    if ids_end > len(blob):
+        raise EnvelopeError(
+            f"token array at offset {ids_start}: declared {n_token_count} token(s) "
+            f"({n_token_count * 4} byte(s)) but only {len(blob) - ids_start} "
+            f"byte(s) remain"
+        )
+
+    token_ids: tuple[int, ...] = (
+        struct.unpack_from(f"<{n_token_count}i", blob, ids_start)
+        if n_token_count
+        else ()
+    )
+
+    body_offset = ids_end
+    return Envelope(
+        source=Source.FILE,
+        version=version,
+        token_ids=token_ids,
+        seq_id=-1,
+        body_offset=body_offset,
+        body_length=len(blob) - body_offset,
+    )
+
+
+def parse_buffer_envelope(
+    blob: bytes,
+    seq_id: int = -1,
+    io_magic: bytes | None = None,
+) -> Envelope:
+    """Parse the envelope of an in-process ``llama_state_seq_get_data()`` buffer.
+
+    When ``io_magic`` is given it must match the leading bytes or
+    :class:`EnvelopeError` is raised.  The ``int32`` ``source_seq_id`` following
+    the optional magic is read from the buffer; ``seq_id`` overrides it when it
+    is not ``-1``.  ``body_offset`` follows the ``source_seq_id``.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        raise EnvelopeError(
+            f"expected bytes for a buffer envelope, got {type(blob).__name__}"
+        )
+    blob = bytes(blob)
+
+    offset = 0
+    if io_magic is not None:
+        if len(io_magic) == 0:
+            raise EnvelopeError(
+                "io_magic at offset 0 must be a non-empty byte string"
+            )
+        head = _require(blob, 0, len(io_magic), "io_magic")
+        if head != io_magic:
+            raise EnvelopeError(
+                f"bad io_magic at offset 0: found {head!r}, expected {io_magic!r}"
+            )
+        offset += len(io_magic)
+
+    source_seq_id = struct.unpack_from(
+        "<i", _require(blob, offset, 4, "source_seq_id"), 0
+    )[0]
+
+    reported_seq_id = seq_id if seq_id != -1 else source_seq_id
+    body_offset = offset + 4
+    return Envelope(
+        source=Source.BUFFER,
+        version=0,
+        token_ids=(),
+        seq_id=reported_seq_id,
+        body_offset=body_offset,
+        body_length=len(blob) - body_offset,
+    )
+
+
+def detect(blob: bytes) -> Source:
+    """Return :attr:`Source.FILE` when ``blob`` starts with ``GGSQ_MAGIC``.
+
+    Pure prefix inspection; performs no parsing and never raises on short input.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        raise EnvelopeError(f"expected bytes, got {type(blob).__name__}")
+    return Source.FILE if bytes(blob)[:4] == GGSQ_MAGIC else Source.BUFFER
+
+
+def parse(
+    blob: bytes,
+    source: Source | None = None,
+    **kwargs,
+) -> Envelope:
+    """Parse ``blob`` into an :class:`Envelope`.
+
+    When ``source`` is ``None`` it is inferred with :func:`detect`.  Extra
+    ``kwargs`` (e.g. ``seq_id``/``io_magic``) are forwarded to the buffer parser.
+    """
+    if source is None:
+        source = detect(blob)
+    if source is Source.FILE:
+        return parse_file_envelope(blob)
+    if source is Source.BUFFER:
+        return parse_buffer_envelope(blob, **kwargs)
+    raise EnvelopeError(f"unknown source: {source!r}")
+
+
+def body(blob: bytes, envelope: Envelope) -> bytes:
+    """Return exactly the body bytes described by ``envelope``.
+
+    Raises :class:`EnvelopeError` if the declared body range is not fully inside
+    ``blob``.
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        raise EnvelopeError(f"expected bytes, got {type(blob).__name__}")
+    blob = bytes(blob)
+
+    start = envelope.body_offset
+    end = start + envelope.body_length
+    if start < 0 or end > len(blob):
+        raise EnvelopeError(
+            f"body range [{start}, {end}) is not fully inside blob of length "
+            f"{len(blob)}"
+        )
+    return blob[start:end]

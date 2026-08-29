@@ -1,171 +1,231 @@
+"""Adapter conformance suite.
+
+The previous version could be satisfied by an adapter that always returned a failed
+``ImportReport``. It checked that a report had a valid *shape*, not that the adapter could
+do anything. A conformance suite a non-functional adapter passes is worse than no suite,
+because it manufactures confidence.
+
+The rule here: an adapter must prove a successful round trip for **every capability it
+advertises**. Advertising a capability and failing to exercise it is a conformance failure,
+not a skip. Skipping is legitimate only when the capability is not advertised.
+"""
+
 from __future__ import annotations
 
+import io
 import json
+import os
+import struct
+import tempfile
+import unittest
 from pathlib import Path
 from typing import Any
 
-from .base import (
-    IMPORT_MODES,
+from kv_rosetta.adapters.base import (
     Adapter,
     AdapterError,
     Capabilities,
     ExportRequest,
-    ImportRequest,
     ImportReport,
-    Tier,
+    ImportRequest,
+    Representation,
+    StagingMode,
 )
 
+_MAGIC = b"KVX1"
+_PREAMBLE = 12
 
-def parse_kvx_header(path: Path) -> dict[str, Any]:
-    """Parse the KVX1 header of an artifact.
 
-    Layout: magic b"KVX1" at bytes 0..4, uint32 little-endian version at 4..8,
-    uint32 little-endian header_len at 8..12, then header_len bytes of UTF-8
-    JSON at offset 12.
+def read_kvx_header(path: Path | str) -> dict[str, Any]:
+    """Parse a KVX header without importing the container module.
+
+    Conformance must not depend on the writer it is checking; a shared bug would then be
+    invisible to both.
     """
-    data = Path(path).read_bytes()
-    if len(data) < 12:
-        raise AdapterError(f"KVX artifact {path} is too short ({len(data)} bytes)")
-    if data[0:4] != b"KVX1":
-        raise AdapterError(f"KVX artifact {path} has bad magic {data[0:4]!r}")
-    int.from_bytes(data[4:8], "little")  # version, retained for completeness
-    header_len = int.from_bytes(data[8:12], "little")
-    header_bytes = data[12:12 + header_len]
-    if len(header_bytes) != header_len:
-        raise AdapterError(f"KVX header truncated in {path}")
-    try:
-        return json.loads(header_bytes.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise AdapterError(f"KVX header in {path} is not valid UTF-8 JSON: {exc}") from exc
+    raw = Path(path).read_bytes()
+    if len(raw) < _PREAMBLE:
+        raise ValueError(f"{path}: shorter than the {_PREAMBLE}-byte preamble")
+    if raw[:4] != _MAGIC:
+        raise ValueError(f"{path}: bad magic {raw[:4]!r}, expected {_MAGIC!r}")
+    header_len = struct.unpack_from("<I", raw, 8)[0]
+    if len(raw) < _PREAMBLE + header_len:
+        raise ValueError(f"{path}: header truncated")
+    return json.loads(raw[_PREAMBLE:_PREAMBLE + header_len].decode("utf-8"))
 
 
-def write_kvx_artifact(path: Path, header: dict[str, Any], body: bytes = b"") -> Path:
-    """Write a KVX1 artifact carrying the given header dict and optional body."""
-    header_bytes = json.dumps(header).encode("utf-8")
-    out = bytearray()
-    out += b"KVX1"
-    out += (1).to_bytes(4, "little")
-    out += len(header_bytes).to_bytes(4, "little")
-    out += header_bytes
-    out += body
-    Path(path).write_bytes(bytes(out))
-    return Path(path)
+def _looks_like_a_path(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    return value.startswith("/") or value.startswith("\\") or (len(value) > 2 and value[1] == ":")
 
 
 class AdapterConformanceMixin:
-    """Conformance checks for Adapter implementations.
-
-    Subclass together with a unittest.TestCase and set self.adapter in setUp.
-    Every test method begins with self._skip_unless_adapter() so the mixin is
-    safe to subclass before an adapter exists.
-    """
+    """Mix into a ``unittest.TestCase``; set ``self.adapter`` and ``self.model`` in setUp."""
 
     adapter: Adapter | None = None
+    model: str = ""
 
-    def _skip_unless_adapter(self) -> None:
+    # -- helpers ----------------------------------------------------------------
+
+    def _adapter(self) -> Adapter:
         if self.adapter is None:
-            self.skipTest("no adapter configured (self.adapter is None)")
+            self.skipTest("no adapter under test")
+        return self.adapter
 
-    def _read_header(self, artifact: Path) -> dict[str, Any]:
-        return parse_kvx_header(artifact)
+    def _export(self, rep: Representation) -> Path:
+        adapter = self._adapter()
+        out = Path(tempfile.mkdtemp()) / f"conformance-{rep.value}.kvx"
+        return Path(adapter.export(ExportRequest(model=self.model, out_path=out,
+                                                 representation=rep)))
 
-    def _write_kvx_artifact(self, path: Path, header: dict[str, Any], body: bytes = b"") -> Path:
-        return write_kvx_artifact(path, header, body)
+    # -- tests ------------------------------------------------------------------
 
-    def _unlink(self, path: Path) -> None:
-        try:
-            Path(path).unlink()
-        except OSError:
-            pass
-
-    def test_capabilities_is_frozen_and_typed(self) -> None:
-        self._skip_unless_adapter()
-        caps = self.adapter.capabilities()
+    def test_capabilities_are_evidence_not_promises(self):
+        adapter = self._adapter()
+        caps = adapter.capabilities()
         self.assertIsInstance(caps, Capabilities)
-        self.assertIsInstance(caps.tier, Tier)
-        self.assertIsInstance(caps.dtypes, frozenset)
-        self.assertEqual(caps, self.adapter.capabilities())
-        with self.assertRaises(AttributeError):
-            caps.tier = Tier.PROMPT
+        self.assertTrue(caps.runtime, "capabilities must name the runtime they came from")
+        self.assertIsInstance(caps.export, frozenset)
+        self.assertIsInstance(caps.import_, frozenset)
+        for rep in caps.export | caps.import_:
+            self.assertIsInstance(rep, Representation)
+        self.assertEqual(caps, adapter.capabilities(), "probing twice must agree")
 
-    def test_identity_shape(self) -> None:
-        self._skip_unless_adapter()
-        ident = self.adapter.identity("test-model")
+    def test_identity_is_content_derived(self):
+        adapter = self._adapter()
+        ident = adapter.identity(self.model)
         self.assertIsInstance(ident, dict)
-        sha = ident["l0_sha256"]
-        self.assertEqual(len(sha), 64)
-        self.assertEqual(sha, sha.lower())
-        int(sha, 16)
+        for key in ("model_digest", "cache_abi_digest"):
+            value = ident.get(key, "")
+            self.assertRegex(value, r"\A[0-9a-f]{64}\Z", f"{key} must be 64 lowercase hex")
+        self.assertEqual(ident, adapter.identity(self.model), "identity must be stable")
+        for key, value in ident.items():
+            self.assertFalse(_looks_like_a_path(value),
+                             f"identity[{key!r}] looks like a filesystem path; identity must "
+                             f"be derived from content, not from where the weights live")
 
-    def test_export_produces_readable_artifact(self) -> None:
-        self._skip_unless_adapter()
-        if not self.adapter.capabilities().can_export:
-            self.skipTest("adapter cannot export")
-        out_path = Path("kv_rosetta_conformance_export.kvx")
-        artifact = self.adapter.export(ExportRequest(model="test-model", out_path=out_path))
-        self.assertTrue(artifact.exists())
-        self.assertEqual(artifact.read_bytes()[:4], b"KVX1")
-        self._unlink(artifact)
+    def test_every_advertised_export_representation_produces_a_readable_artifact(self):
+        caps = self._adapter().capabilities()
+        if not caps.export:
+            self.skipTest("adapter advertises no export representation")
+        for rep in sorted(caps.export, key=lambda r: r.value):
+            with self.subTest(representation=rep.value):
+                path = self._export(rep)
+                self.assertTrue(path.is_file(), f"export({rep.value}) produced no file")
+                self.assertEqual(path.read_bytes()[:4], _MAGIC)
 
-    def test_canonical_declares_raw_encoding(self) -> None:
-        self._skip_unless_adapter()
-        if self.adapter.capabilities().tier < Tier.CANONICAL:
-            self.skipTest("adapter tier below CANONICAL")
-        out_path = Path("kv_rosetta_conformance_canonical.kvx")
-        artifact = self.adapter.export(ExportRequest(model="test-model", out_path=out_path))
-        try:
-            header = self._read_header(artifact)
-            blob = header["blob"]
-            self.assertEqual(blob["encoding"], "raw")
-            shape = blob["shape"]
-            self.assertIsInstance(shape, list)
-            self.assertEqual(len(shape), 5)
-            self.assertEqual(shape[1], 2)
-        finally:
-            self._unlink(artifact)
-
-    def test_import_report_contract(self) -> None:
-        self._skip_unless_adapter()
-        if not self.adapter.capabilities().can_import:
-            self.skipTest("adapter cannot import")
-        out_path = Path("kv_rosetta_conformance_import.kvx")
-        caps = self.adapter.capabilities()
-        try:
-            if caps.can_export:
-                artifact = self.adapter.export(ExportRequest(model="test-model", out_path=out_path))
-            else:
-                artifact = self._write_kvx_artifact(
-                    out_path,
-                    {
-                        "blob": {"encoding": "raw", "shape": [1, 2, 3, 4, 5]},
-                        "identity": {"l0_sha256": "0" * 64},
-                    },
+    def test_every_advertised_import_representation_completes_a_round_trip(self):
+        """The central test: an advertised import must be demonstrable."""
+        adapter = self._adapter()
+        caps = adapter.capabilities()
+        if not caps.import_:
+            self.skipTest("adapter advertises no import representation")
+        demonstrable = caps.import_ & caps.export
+        self.assertTrue(
+            demonstrable,
+            f"adapter advertises import of {sorted(r.value for r in caps.import_)} but exports "
+            f"{sorted(r.value for r in caps.export)}; it can never demonstrate any import",
+        )
+        for rep in sorted(demonstrable, key=lambda r: r.value):
+            with self.subTest(representation=rep.value):
+                artifact = self._export(rep)
+                report = adapter.import_(artifact, ImportRequest(model=self.model))
+                self.assertIsInstance(report, ImportReport)
+                self.assertTrue(
+                    report.ok,
+                    f"advertised import of {rep.value} failed: {report.reason}",
                 )
-            report = self.adapter.import_(artifact, ImportRequest(model="test-model"))
-        finally:
-            self._unlink(artifact)
-        self.assertIsInstance(report, ImportReport)
-        self.assertIn(report.mode, IMPORT_MODES)
+                self.assertIsInstance(report.mode, StagingMode)
+                self.assertGreater(report.tokens_restored, 0,
+                                   "a successful import must restore tokens")
 
-    def test_identity_mismatch_is_refused(self) -> None:
-        self._skip_unless_adapter()
-        if not self.adapter.capabilities().can_import:
-            self.skipTest("adapter cannot import")
-        bad_path = Path("kv_rosetta_conformance_bad_identity.kvx")
-        header = {
-            "blob": {"encoding": "raw", "shape": [1, 2, 3, 4, 5]},
-            "identity": {"l0_sha256": "0" * 64},
-        }
-        self._write_kvx_artifact(bad_path, header)
+    def test_canonical_exports_are_well_formed(self):
+        caps = self._adapter().capabilities()
+        if Representation.CANONICAL not in caps.export:
+            self.skipTest("adapter does not export canonical")
+        blob = read_kvx_header(self._export(Representation.CANONICAL))["blob"]
+        self.assertIn(blob.get("encoding"), ("segmented", "raw"))
+        if blob.get("encoding") == "segmented":
+            self.assertTrue(blob.get("segments"), "segmented artifact has no segments")
+            self.assertRegex(blob.get("representation_digest", ""), r"\A[0-9a-f]{64}\Z")
+
+    def test_opaque_exports_declare_a_format_the_adapter_advertises(self):
+        caps = self._adapter().capabilities()
+        if Representation.OPAQUE not in caps.export:
+            self.skipTest("adapter does not export opaque")
+        blob = read_kvx_header(self._export(Representation.OPAQUE))["blob"]
+        fmt = blob.get("opaque_format")
+        self.assertTrue(fmt, "an opaque artifact must name its format")
+        self.assertIn(fmt, caps.opaque_formats,
+                      "exported opaque format is not among the advertised formats")
+
+    def test_import_refuses_a_mismatched_cache_abi(self):
+        adapter = self._adapter()
+        caps = adapter.capabilities()
+        demonstrable = caps.import_ & caps.export
+        if not demonstrable:
+            self.skipTest("no demonstrable import representation")
+        rep = sorted(demonstrable, key=lambda r: r.value)[0]
+        artifact = self._export(rep)
+        request = ImportRequest(model=self.model, expected_cache_abi_digest="0" * 64)
         try:
-            try:
-                report = self.adapter.import_(bad_path, ImportRequest(model="test-model"))
-                ok = bool(getattr(report, "ok", True))
-                self.assertFalse(
-                    ok,
-                    "import of mismatched identity must not silently succeed",
-                )
-            except AdapterError:
-                pass
-        finally:
-            self._unlink(bad_path)
+            report = adapter.import_(artifact, request)
+        except AdapterError:
+            return
+        self.assertFalse(report.ok,
+                         "import succeeded against a cache ABI digest that cannot match; "
+                         "state is only valid for the configuration that produced it")
+
+    def test_import_refuses_a_corrupted_artifact(self):
+        adapter = self._adapter()
+        caps = adapter.capabilities()
+        demonstrable = caps.import_ & caps.export
+        if not demonstrable:
+            self.skipTest("no demonstrable import representation")
+        rep = sorted(demonstrable, key=lambda r: r.value)[0]
+        artifact = self._export(rep)
+        blob = read_kvx_header(artifact)["blob"]
+        raw = bytearray(artifact.read_bytes())
+        offset = int(blob.get("offset", 0))
+        if offset >= len(raw):
+            self.skipTest("artifact has no payload to corrupt")
+        raw[offset] ^= 0xFF
+        broken = artifact.with_name("corrupt-" + artifact.name)
+        broken.write_bytes(bytes(raw))
+        try:
+            report = adapter.import_(broken, ImportRequest(model=self.model))
+        except AdapterError:
+            return
+        self.assertFalse(report.ok, "a corrupted artifact must never import successfully")
+
+    def test_report_numbers_are_coherent(self):
+        adapter = self._adapter()
+        caps = adapter.capabilities()
+        demonstrable = caps.import_ & caps.export
+        if not demonstrable:
+            self.skipTest("no demonstrable import representation")
+        rep = sorted(demonstrable, key=lambda r: r.value)[0]
+        report = adapter.import_(self._export(rep), ImportRequest(model=self.model))
+        if not report.ok:
+            self.fail(f"advertised import of {rep.value} failed: {report.reason}")
+        self.assertGreater(report.nbytes, 0)
+        self.assertGreaterEqual(report.seconds, 0.0)
+        self.assertGreater(report.tokens_restored + report.tokens_reprefilled, 0)
+
+
+def run_conformance(adapter: Adapter, model: str) -> unittest.TestResult:
+    """Run the suite against one adapter and return the raw result."""
+
+    case = type(
+        "GeneratedConformance",
+        (AdapterConformanceMixin, unittest.TestCase),
+        {"setUp": lambda self: (setattr(self, "adapter", adapter),
+                                setattr(self, "model", model), None)[-1]},
+    )
+    suite = unittest.TestLoader().loadTestsFromTestCase(case)
+    return unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
+
+
+def assert_suite_rejects(adapter: Adapter, model: str) -> bool:
+    """True when the suite does NOT pass — used to prove the suite is not vacuous."""
+    return not run_conformance(adapter, model).wasSuccessful()
