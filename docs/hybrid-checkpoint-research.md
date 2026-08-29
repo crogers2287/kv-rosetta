@@ -277,7 +277,31 @@ AFTER RESTART   cache_n=252  prompt_n=4
 parity          output matches the pre-restart cold run; token IDs identical
 ```
 
-Retained as `tests/test_hybrid_checkpoint_restart.py`, alongside the negative control.
+**Correction.** That run was orchestrated by a shell script run by hand.
+`tests/test_hybrid_checkpoint_restart.py` retains only in-process properties - its own
+docstring says restart orchestration is the caller's job - so reporting the restart as
+"proven by retained test" was an overclaim. It was measured once.
+
+`tests/test_hybrid_restart_harness.py` closes that gap: the harness starts llama-server,
+saves, stops it and verifies `/proc/<pid>` is gone and the port stops answering, starts a
+second server and asserts a different pid, runs a control completion proving the fresh
+process reuses nothing, then restores and checks reuse and parity. Both process lifetimes
+are owned by the test. It runs in ~58 s including two model loads.
+
+Three environment problems surfaced while building it, each worth keeping:
+
+- the fleet reclaimed the GPUs mid-run, so the server OOM-ed on boot. The harness now
+  skips with a clear reason when free VRAM is below a threshold, rather than OOM-ing or
+  unloading someone else's models as a side effect;
+- `stdout`/`stderr` went to `DEVNULL`, so the first failure reported only `rc=1`. A harness
+  that hides why the server died is worse than no harness; stderr is now captured and its
+  tail included in the error;
+- **port 8787 was already held by an unrelated service on this host.** The failure looked
+  exactly like a leaked server of our own. The harness now asks the OS for a free port.
+  A fixed port produces failures that have nothing to do with what is being tested.
+
+A real leak was also fixed on the way: `_boot()` registered the server for cleanup only
+after a successful start, so a server that died partway through boot was never cleaned up.
 
 ### The negative control did its job
 
