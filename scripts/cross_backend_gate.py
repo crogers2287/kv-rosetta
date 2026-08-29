@@ -41,10 +41,12 @@ from kv_rosetta import gguf  # noqa: E402
 class BackendServer(Server):
     """A Server whose backend is chosen by launch flags and environment."""
 
-    def __init__(self, *args, ngl: int = 99, env: dict | None = None, **kwargs):
+    def __init__(self, *args, ngl: int = 99, env: dict | None = None,
+                 extra_args: tuple[str, ...] = (), **kwargs):
         super().__init__(*args, **kwargs)
         self.ngl = ngl
         self.extra_env = env or {}
+        self.extra_args = tuple(extra_args)
 
     def build_argv(self) -> list[str]:
         argv = super().build_argv()
@@ -53,7 +55,9 @@ class BackendServer(Server):
             if flag in argv:                       # backend-specific, not portable
                 at = argv.index(flag)
                 del argv[at:at + 2]
-        return argv
+        # Selecting a device is backend-specific: HIP reads HIP_VISIBLE_DEVICES from the
+        # environment, Vulkan has no equivalent and needs --device on the command line.
+        return argv + list(self.extra_args)
 
     def _start_once(self) -> int:
         import os
@@ -131,7 +135,8 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
     filename = f"xb-{name}.bin"
     first = BackendServer(writer["binary"], model, str(slots), free_port(),
                           log_dir / f"{name}-write.log", n_ctx=prompt_tokens + 512,
-                          ngl=writer["ngl"], env=writer.get("env"))
+                          ngl=writer["ngl"], env=writer.get("env"),
+                          extra_args=writer.get("args", ()))
     first.start()
     try:
         text = "The naturalist recorded the following observations in detail. " * 24
@@ -153,7 +158,8 @@ def transfer(name: str, writer: dict, reader: dict, model: str, slots: Path,
 
     second = BackendServer(reader["binary"], model, str(slots), free_port(),
                            log_dir / f"{name}-read.log", n_ctx=prompt_tokens + 512,
-                           ngl=reader["ngl"], env=reader.get("env"))
+                           ngl=reader["ngl"], env=reader.get("env"),
+                           extra_args=reader.get("args", ()))
     second.start()
     try:
         ids2 = second.post("/tokenize", {"content": text})["tokens"][:prompt_tokens]
@@ -204,6 +210,8 @@ def main() -> int:
     ap.add_argument("--backend-b", required=True)
     ap.add_argument("--env-a", default="")
     ap.add_argument("--env-b", default="")
+    ap.add_argument("--args-a", default="", help="extra server flags, space separated")
+    ap.add_argument("--args-b", default="")
     ap.add_argument("--slots", required=True)
     ap.add_argument("--prompt-tokens", type=int, default=128)
     ap.add_argument("--out", default="bench/cross-backend.json")
@@ -213,9 +221,11 @@ def main() -> int:
     def parse(spec: str, env: str) -> dict:
         binary, label, ngl = spec.split(":")
         pairs = dict(p.split("=", 1) for p in env.split(",") if "=" in p)
-        return {"binary": binary, "label": label, "ngl": int(ngl), "env": pairs}
+        return {"binary": binary, "label": label, "ngl": int(ngl), "env": pairs,
+                "args": ()}
 
     a, b = parse(args.backend_a, args.env_a), parse(args.backend_b, args.env_b)
+    a["args"], b["args"] = tuple(args.args_a.split()), tuple(args.args_b.split())
     require_one_revision({a["label"]: source_revision(Path(a["binary"])),
                           b["label"]: source_revision(Path(b["binary"]))})
 
