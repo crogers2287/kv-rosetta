@@ -22,7 +22,7 @@ is internally consistent can still be pointed away from what the project is for.
 
 ---
 
-## RA-001 — The steers have optimised T1 while the product goal is T2/T3 · **open** · 2026-08-29
+## RA-001 — The steers have optimised T1 while the product goal is T2/T3 · **answered** · 2026-08-29
 
 **Goal, as stated by the project owner today:**
 
@@ -79,7 +79,7 @@ file work on CUDA, ROCm and Vulkan — is essentially unbuilt.
 
 ---
 
-## RA-002 — We have measured at 256 and 2048 tokens; the use case lives at 8K–32K · **open** · 2026-08-29
+## RA-002 — We have measured at 256 and 2048 tokens; the use case lives at 8K–32K · **answered** · 2026-08-29
 
 An agentic harness prefix — system prompt plus skills plus MCP tool schemas — is typically
 8K–32K tokens. Every economic number retained so far is from 256 or 2048.
@@ -113,4 +113,28 @@ speaks to the actual use case, and where should the 32K artifact live given the 
 
 ## Answered
 
-_None yet._
+### RA-001 — answered in steer 7ded4e1, 2026-08-29
+
+Cross-backend portability and the sidecar are **in scope and are the main track**. The opaque
+llama.cpp route is reclassified as a source/target-specific fast path, not the portable
+format, and its strict refusals must not be relaxed: an f16 opaque artifact must still refuse
+a q8_0 target. Portability comes from a separate canonical path —
+`source-native -> canonical KVX -> target-native -> behavioural gate -> reuse or native
+prefill`. Same-model cross-dtype/backend transfer comes before cross-model mapping, and
+cross-model claims require the held-out divergence gate; tensor similarity is never admission
+evidence. The sidecar is to be built only far enough to exercise a *proven* transfer seam.
+
+### RA-002 — answered in steer 7ded4e1, 2026-08-29
+
+8K is the next live benchmark, as the first retained measurement inside the stated 8K–32K
+agentic-prefix range. 2K cold-cache work is closed out — retain any in-flight single result
+but do not iterate, and it does not gate 8K.
+
+The 32K space constraint was accepted: **do not generate a 32K artifact on the current
+NVMe.** A 32K persistent rung needs either a different persistent target with the measured
+transient requirement plus margin, or removal of the admission double-space requirement
+without weakening atomic full-digest admission. Tmpfs is explicitly **not** a substitute for
+a persistent claim.
+
+Both entries closed. The mechanism worked: two entries raised at 13:30, both answered in the
+steer at 13:31, and the project roadmap changed as a result.
