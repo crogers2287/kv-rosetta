@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import os
 import shutil
 import subprocess
 import sys
@@ -106,6 +107,81 @@ def storage_evidence(path: Path, model: Path) -> dict:
     return evidence
 
 
+def resident_pages(path: Path) -> tuple[int, int] | None:
+    """(resident, total) pages of a file, via mincore. None when it cannot be measured.
+
+    Turns "the cache was dropped" from an assertion into a measurement. Without it an
+    eviction that silently failed would be published as a cold-cache result. The mapping is
+    made through libc rather than the mmap module because mincore needs the address, and a
+    read-only Python mmap will not surrender one.
+    """
+    import ctypes
+    import ctypes.util
+
+    PROT_READ, MAP_SHARED = 0x1, 0x01
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        libc.mmap.restype = ctypes.c_void_p
+        libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_long]
+        libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                                 ctypes.POINTER(ctypes.c_ubyte)]
+        size = path.stat().st_size
+        if size == 0:
+            return (0, 0)
+        page = os.sysconf("SC_PAGESIZE")
+        pages = (size + page - 1) // page
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            address = libc.mmap(None, size, PROT_READ, MAP_SHARED, fd, 0)
+            if address in (None, ctypes.c_void_p(-1).value, -1):
+                return None
+            try:
+                buffer = (ctypes.c_ubyte * pages)()
+                if libc.mincore(ctypes.c_void_p(address), size, buffer) != 0:
+                    return None
+                return (sum(1 for b in buffer if b & 1), pages)
+            finally:
+                libc.munmap(ctypes.c_void_p(address), size)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def evict_file(path: Path) -> dict:
+    """Drop one file from the page cache. File-scoped on purpose.
+
+    The system-wide drop_caches control would also evict the model weights, changing the
+    cold-prefill baseline and making the comparison uninterpretable. POSIX_FADV_DONTNEED
+    touches only this file.
+    """
+    before = resident_pages(path)
+    status, error = "ok", None
+    try:
+        # Dirty pages cannot be dropped, so flush first. Without this the eviction is
+        # silently partial and a warm file would be reported as cold.
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        status, error = "failed", str(exc)
+    after = resident_pages(path)
+    return {
+        "mechanism": "posix_fadvise(POSIX_FADV_DONTNEED), file-scoped",
+        "status": status, "error": error,
+        "resident_pages_before": before[0] if before else None,
+        "resident_pages_after": after[0] if after else None,
+        "total_pages": before[1] if before else (after[1] if after else None),
+        "residency_measured": before is not None and after is not None,
+        "resident_fraction_after": (after[0] / after[1] if after and after[1] else None),
+    }
+
+
 def require_persistent(evidence: dict) -> None:
     """Refuse to produce a persistent-storage record on memory-backed storage."""
     fs = evidence.get("filesystem", "")
@@ -131,6 +207,9 @@ def main() -> int:
     ap.add_argument("--storage-note", default="")
     ap.add_argument("--require-persistent", action="store_true",
                     help="refuse to run when the store is on memory-backed storage")
+    ap.add_argument("--evict-state-before-restore", action="store_true",
+                    help="drop the admitted object from page cache before each timed "
+                         "restore, file-scoped; never uses drop_caches")
     ap.add_argument("--page-cache-policy", default="natural",
                     help="explicit page-cache state for the record, e.g. "
                          "'natural after admission and process restarts'")
@@ -205,6 +284,22 @@ def main() -> int:
                                    f"any restore")
             server.post("/slots/0?action=erase", {})
 
+            eviction = None
+            if args.evict_state_before_restore:
+                eviction = evict_file(store.root / f"{obj.digest}.state")
+                if eviction["status"] != "ok":
+                    raise RuntimeError(f"rep {index}: eviction failed: {eviction['error']}")
+                if not eviction["residency_measured"]:
+                    raise RuntimeError(
+                        f"rep {index}: residency could not be measured, so a cold-cache "
+                        f"claim cannot be published")
+                if eviction["resident_fraction_after"] > 0.01:
+                    raise RuntimeError(
+                        f"rep {index}: {eviction['resident_pages_after']} of "
+                        f"{eviction['total_pages']} pages "
+                        f"({eviction['resident_fraction_after']*100:.1f}%) still resident "
+                        f"after eviction; refusing to publish a cold-cache claim")
+
             rep_adapter = LlamaCppHTTPAdapter(server.url, str(slots))
             rep_path = AdmittedPath(rep_adapter, store)
             report = rep_path.restore(obj.digest, model=args.model, token_ids=ids2)
@@ -249,6 +344,7 @@ def main() -> int:
                 "request_path_payload_bytes": report.reads.payload_bytes,
                 "request_path_metadata_bytes": report.reads.metadata_bytes,
                 "endpoint_calls": report.calls,
+                "eviction": eviction,
                 "cheaper_than_cold": total < cold_wall,
                 "ratio_to_cold": total / cold_wall,
             })
