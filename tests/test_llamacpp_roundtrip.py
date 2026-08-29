@@ -103,13 +103,26 @@ class LlamaCppSameBackendRoundTrip(unittest.TestCase):
         self.assertLess(warm["timings"]["prompt_n"], _PROMPT_TOKENS,
                         "a restored cache must avoid re-prefilling the prompt")
 
-        self.assertEqual(warm["content"], cold["content"])
-        self.assertEqual(self._tokens(warm), reference_tokens, "token IDs diverged")
-        for index, (a, b) in enumerate(zip(reference_probs, self._top_probs(warm))):
+        # The invariant is that a restored cache is indistinguishable from the runtime's
+        # OWN prompt-cache reuse - not that it is bit-identical to a cold prefill. With
+        # quantized KV those differ: a cold prefill quantizes values it just computed while
+        # any reused cache reads back already-quantized ones, so llama.cpp diverges from
+        # itself. Demanding absolute exactness would fail the adapter for the runtime's
+        # behaviour; demanding parity with native reuse holds for every KV type.
+        native = adapter.complete(self.request)      # runtime's own cache, no artifact
+        self.assertGreater(native["timings"]["cache_n"], 0)
+        self.assertEqual(warm["content"], native["content"],
+                         "restored cache differs from the runtime's own cache reuse")
+        self.assertEqual(self._tokens(warm), self._tokens(native), "token IDs diverged")
+        for index, (a, b) in enumerate(zip(self._top_probs(native), self._top_probs(warm))):
             for token_id in set(a) | set(b):
                 self.assertAlmostEqual(
                     a.get(token_id, 0.0) or 0.0, b.get(token_id, 0.0) or 0.0, places=9,
                     msg=f"probability diverged at generated position {index}")
+        if cold["content"] == native["content"]:
+            # Exact KV: then the restore must also match the cold prefill exactly.
+            self.assertEqual(warm["content"], cold["content"])
+            self.assertEqual(self._tokens(warm), reference_tokens)
 
     def test_import_refuses_a_mismatched_cache_abi(self):
         out = Path(tempfile.mkdtemp()) / "abi.kvx"
@@ -177,8 +190,18 @@ class SlotBindingAndFullPrefixReuse(unittest.TestCase):
         self.assertTrue(report.ok, report.reason)
         self.assertIn("slot 0", report.reason)
 
+    def _slot_count(self) -> int:
+        return len(json.loads(
+            urllib.request.urlopen(_URL.rstrip("/") + "/slots", timeout=30).read()))
+
     def test_a_different_slot_does_not_satisfy_the_restore(self):
-        """Slot B must not inherit slot A's proof."""
+        """Slot B must not inherit slot A's proof.
+
+        Needs a genuinely multi-slot server: with --parallel 1 a request naming slot 1 is
+        served by slot 0, which would make this assert the opposite of what it means.
+        """
+        if self._slot_count() < 2:
+            self.skipTest("server has one slot; cross-slot isolation is not observable")
         artifact = self._artifact(slot=0)
         self.adapter.erase(0)
         self.adapter.erase(1)
