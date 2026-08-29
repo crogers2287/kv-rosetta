@@ -124,3 +124,19 @@ class RecordedDtypeTest(unittest.TestCase):
         window = source[marker:marker + 400]
         self.assertNotIn("model_ftype", window.split('"model_ftype":')[0],
                          "weight quantization must not be a fallback for cache dtype")
+
+
+class ReconciliationIsRequiredTest(unittest.TestCase):
+    """An unreconciled record must fail the run, not merely report a remainder.
+
+    The 256 gate reported 0.612 s unclassified after the support check moved ahead of the
+    identity work, leaving that window outside every named phase. The runner printed the
+    gap and carried on, so the defect reached a committed record.
+    """
+
+    def test_the_runner_raises_on_an_unreconciled_record(self):
+        source = (REPO / "scripts" / "production_matrix.py").read_text()
+        marker = source.index('phases account for')
+        window = source[marker:marker + 900]
+        self.assertIn('rec["reconciled"]', window)
+        self.assertIn("raise RuntimeError", window)

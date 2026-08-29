@@ -663,6 +663,7 @@ class LlamaCppHTTPAdapter(Adapter):
             header = container.read_header(artifact)
             phases["preflight"] = (phases.get("preflight", 0.0)
                                    + time.time() - phase_started)
+            phase_started = time.time()
             # Before anything that inspects the runtime's format. An unpatched hybrid must
             # refuse from support evidence, not save a slot to discover a format it is not
             # allowed to use - the identity and format checks below reach state_version(),

@@ -820,6 +820,15 @@ def main() -> int:
             print(f"  phases account for {rec['phase_sum_s']:.3f}s of "
                   f"{rec['reported_seconds']:.3f}s "
                   f"({rec['unclassified_s']:.3f}s unclassified)", flush=True)
+            # Required, not merely reported. An economic record whose time cannot be
+            # attributed is not an attribution, and a gap here means a code path was added
+            # outside every named phase.
+            if not rec["reconciled"]:
+                raise RuntimeError(
+                    f"phase attribution does not reconcile: {rec['phase_sum_s']:.3f}s of "
+                    f"{rec['reported_seconds']:.3f}s named, "
+                    f"{rec['unclassified_s']:.3f}s unclassified (tolerance "
+                    f"{PHASE_TOLERANCE_S}s). Some work is outside every phase.")
         repetitions.append({"repetition": repetition, "legs": legs, "verdict": verdict})
         if patched_artifact and Path(patched_artifact).is_file():
             Path(patched_artifact).unlink()
