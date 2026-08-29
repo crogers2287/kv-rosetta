@@ -659,3 +659,64 @@ steer's call, not mine.
 Status: **measured once on this host** (one repetition, matching the break-first design).
 **Proven by retained test**: the refusals survive removal of the pass (8 tests, 395 total).
 **Untested**: NVMe, 8K, 32K.
+
+## REQ-029 — Cache dtype bound, version probe removed, sealed 256 gate re-run
+
+Steer f081b53, steps 1-4. All three of its findings were real.
+
+**P0 — the K/V cache dtype identity gap.** `/props` exposed no cache dtype at all, only
+`model_ftype`, so `CacheABIIdentity.k_dtype`/`v_dtype` were empty and two launches differing
+only in K/V cache type hashed identically. Patch 0002 now reports `target_cache_type_k/v`
+from the resolved configuration the live context was created with, plus `draft_cache_type_k/v`
+when a draft context exists. Verified live: a default launch reports `f16/f16`, one started
+with `-ctk q8_0 -ctv q8_0` reports `q8_0/q8_0`, and `model_ftype` stays `Q4_K` in both.
+
+The adapter binds them and refuses when absent, with no fallback to weight quantization — a
+confident wrong dtype is worse than an empty one, because it compares *equal* across
+genuinely different caches.
+
+Two test stubs were returning a constant cache ABI digest and a constant identity dict,
+which made every identity assertion vacuous. They now use the real implementations; that is
+what exposed a differing-dtype artifact reaching a restore POST.
+
+**P1 — the version probe is gone.** `state_version()` saved a whole slot to discover a number
+a complete protocol states exactly. The advertisement is trusted only when the entire support
+predicate holds; anything less still probes. Export derives the version from the emitted bytes
+and refuses on disagreement. The support check also moved ahead of the identity and format
+work, because an unpatched hybrid was refusing correctly but only *after* `opaque_format()`
+had already saved a slot — probing a format it is not allowed to use.
+
+Measured in this record: `calls_during_capability_probe` is `[]` and the import's first
+endpoint call is the restore. No save POST occurs anywhere on the patched path.
+
+**Phase attribution regressed twice, and the guard caught it.** Moving the support check left
+`hybrid_support()` and `identity()` outside every named phase (0.612 s unclassified), and a
+stray clock reset then discarded the identity window (0.510 s). The offline coverage test
+could not see either, because its fixtures are small enough that the gap stays inside
+tolerance. The runner now **fails** on an unreconciled record instead of printing the
+remainder and carrying on — which is what "require reconciliation" has to mean, since the
+first defect had already reached a committed record.
+
+**Sealed 256 gate, re-run on the rebuilt binary** (patch 0002 `31f1f74b`, impl `93a4ddcf`):
+
+| phase | seconds |
+|---|---:|
+| staging | 1.249 |
+| preflight | 0.523 |
+| pristine re-restore | 0.256 |
+| runtime restore | 0.238 |
+| reuse probe | 0.212 |
+| container verification | 0.000 |
+| **adapter import + tail** | **3.039** |
+| *native cold request* | *0.595* |
+
+Reconciles to 0.0005 s. Correctness unchanged:
+`cache_n=252 prompt_n=4` patched, `cache_n=0 prompt_n=256` unpatched, which refuses export
+and both cross-imports with **zero endpoint calls**. Recorded dtypes: `k=f16`,
+`v=f16`, beside `model_ftype='Q4_K - Small'` so the record itself shows
+they are different things.
+
+Still not cheaper at 256 tokens. Staging remains the dominant phase.
+
+Status: **proven by retained test** (413 offline). **Measured once on this host**: this gate.
+**Untested**: the direct-raw 2K lower bound, NVMe, 8K, 32K.
