@@ -122,6 +122,72 @@ class CorruptionBlindAdapter(WorkingAdapter):
         return ImportReport(mode=StagingMode.HOST_STAGED, ok=True, nbytes=32, tokens_restored=4)
 
 
+class PartiallyProvenImportAdapter(WorkingAdapter):
+    """Advertises two imports but can only ever demonstrate one.
+
+    This is what testing the intersection of import and export used to allow: the canonical
+    round trip passes and the opaque claim is never exercised.
+    """
+
+    name = "partially-proven"
+
+    def capabilities(self) -> Capabilities:
+        base = super().capabilities()
+        return Capabilities(
+            runtime=base.runtime, runtime_revision=base.runtime_revision,
+            backend=base.backend,
+            export=frozenset({Representation.CANONICAL}),
+            import_=frozenset({Representation.CANONICAL, Representation.OPAQUE}),
+            export_dtypes=base.export_dtypes, import_dtypes=base.import_dtypes,
+            cache_abi_digest=_ABI, staging=base.staging)
+
+
+class OverAdvertisedFormatAdapter(WorkingAdapter):
+    """Claims two opaque format versions while only ever writing one."""
+
+    name = "over-advertised-format"
+
+    def capabilities(self) -> Capabilities:
+        base = super().capabilities()
+        return Capabilities(
+            runtime=base.runtime, runtime_revision=base.runtime_revision,
+            backend=base.backend,
+            export=frozenset({Representation.OPAQUE}),
+            import_=frozenset({Representation.OPAQUE}),
+            export_dtypes=base.export_dtypes, import_dtypes=base.import_dtypes,
+            opaque_formats=frozenset({"ggsq/2", "ggsq/3"}),
+            cache_abi_digest=_ABI, staging=base.staging)
+
+    def export(self, req: ExportRequest) -> Path:
+        from kv_rosetta import container
+        manifest = {"schema": "kvx/0.3", "kv": {"layers": 1, "heads": 1, "head_dim": 4,
+                    "dtype": "f16", "layout": "opaque", "byte_order": "little", "tokens": 4}}
+        return container.write_opaque(Path(req.out_path), manifest, b"\x00" * 64, "ggsq/2")
+
+    def import_(self, artifact: Path, req: ImportRequest) -> ImportReport:
+        return ImportReport(mode=StagingMode.HOST_STAGED, ok=True, nbytes=64,
+                            representation=Representation.OPAQUE, tokens_restored=4)
+
+
+class BasenameIdentityAdapter(WorkingAdapter):
+    """Derives model identity from the weights filename.
+
+    Indistinguishable from a content hash by shape alone, which is why the conformance
+    check compares against hashes of the reported path components.
+    """
+
+    name = "basename-identity"
+    MODEL_PATH = "/mnt/models/qwen/model.gguf"
+
+    def props(self):
+        return {"model_path": self.MODEL_PATH}
+
+    def identity(self, model: str) -> dict:
+        import hashlib
+        return {"model_digest": hashlib.sha256(Path(self.MODEL_PATH).name.encode()).hexdigest(),
+                "cache_abi_digest": _ABI}
+
+
 class ConformanceIsNotVacuousTests(unittest.TestCase):
     def test_a_working_adapter_passes(self):
         result = run_conformance(WorkingAdapter(), "fake-model")
@@ -144,6 +210,16 @@ class ConformanceIsNotVacuousTests(unittest.TestCase):
 
     def test_accepting_a_corrupted_artifact_is_rejected(self):
         self.assertTrue(assert_suite_rejects(CorruptionBlindAdapter(), "fake-model"))
+
+    def test_an_import_claim_that_cannot_be_demonstrated_is_rejected(self):
+        """Testing only import & export would have let this adapter pass."""
+        self.assertTrue(assert_suite_rejects(PartiallyProvenImportAdapter(), "fake-model"))
+
+    def test_an_opaque_format_that_is_never_produced_is_rejected(self):
+        self.assertTrue(assert_suite_rejects(OverAdvertisedFormatAdapter(), "fake-model"))
+
+    def test_a_basename_derived_identity_is_rejected(self):
+        self.assertTrue(assert_suite_rejects(BasenameIdentityAdapter(), "fake-model"))
 
 
 class WorkingAdapterConformance(AdapterConformanceMixin, unittest.TestCase):

@@ -12,6 +12,7 @@ not a skip. Skipping is legitimate only when the capability is not advertised.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -72,6 +73,20 @@ class AdapterConformanceMixin:
             self.skipTest("no adapter under test")
         return self.adapter
 
+    def artifact_for(self, rep: Representation) -> Path:
+        """Obtain an artifact of `rep` to exercise an advertised IMPORT capability.
+
+        Defaults to exporting one. Override when an adapter can import a representation it
+        cannot produce - a fixture is the only way such a claim can be proven, and an
+        unprovable claim is a conformance failure rather than a skip.
+        """
+        caps = self._adapter().capabilities()
+        if rep in caps.export:
+            return self._export(rep)
+        self.fail(
+            f"adapter advertises import of {rep.value} but cannot export it and supplies "
+            f"no fixture, so the claim can never be demonstrated. Override artifact_for()")
+
     def _export(self, rep: Representation) -> Path:
         adapter = self._adapter()
         out = Path(tempfile.mkdtemp()) / f"conformance-{rep.value}.kvx"
@@ -103,6 +118,19 @@ class AdapterConformanceMixin:
             self.assertFalse(_looks_like_a_path(value),
                              f"identity[{key!r}] looks like a filesystem path; identity must "
                              f"be derived from content, not from where the weights live")
+        # Rejecting path-SHAPED strings is not enough: a basename-derived hash looks exactly
+        # like a content hash. Prove the digest is not a hash of any component of the model
+        # path the runtime reports.
+        path = str((getattr(self.adapter, "props", dict)() or {}).get("model_path", ""))
+        if path:
+            candidates = {path, Path(path).name, Path(path).stem, str(Path(path).parent)}
+            forbidden = {hashlib.sha256(c.encode()).hexdigest() for c in candidates if c}
+            for key, value in ident.items():
+                self.assertNotIn(
+                    value, forbidden,
+                    f"identity[{key!r}] is a hash of the model path or its basename; "
+                    f"renaming the weights would change identity and replacing them "
+                    f"behind the same name would not")
 
     def test_every_advertised_export_representation_produces_a_readable_artifact(self):
         caps = self._adapter().capabilities()
@@ -115,29 +143,65 @@ class AdapterConformanceMixin:
                 self.assertEqual(path.read_bytes()[:4], _MAGIC)
 
     def test_every_advertised_import_representation_completes_a_round_trip(self):
-        """The central test: an advertised import must be demonstrable."""
+        """Every advertised import must be demonstrated INDEPENDENTLY.
+
+        Testing only the intersection of import and export lets an adapter advertising two
+        imports prove one and pass. An adapter claiming canonical export plus canonical and
+        opaque import must prove both imports; one canonical round trip says nothing about
+        the opaque claim.
+        """
         adapter = self._adapter()
         caps = adapter.capabilities()
         if not caps.import_:
             self.skipTest("adapter advertises no import representation")
-        demonstrable = caps.import_ & caps.export
-        self.assertTrue(
-            demonstrable,
-            f"adapter advertises import of {sorted(r.value for r in caps.import_)} but exports "
-            f"{sorted(r.value for r in caps.export)}; it can never demonstrate any import",
-        )
-        for rep in sorted(demonstrable, key=lambda r: r.value):
+        for rep in sorted(caps.import_, key=lambda r: r.value):
             with self.subTest(representation=rep.value):
-                artifact = self._export(rep)
+                artifact = self.artifact_for(rep)
                 report = adapter.import_(artifact, ImportRequest(model=self.model))
                 self.assertIsInstance(report, ImportReport)
                 self.assertTrue(
                     report.ok,
-                    f"advertised import of {rep.value} failed: {report.reason}",
-                )
+                    f"advertised import of {rep.value} failed: {report.reason}")
                 self.assertIsInstance(report.mode, StagingMode)
                 self.assertGreater(report.tokens_restored, 0,
                                    "a successful import must restore tokens")
+                if caps.staging:
+                    self.assertIn(report.mode, caps.staging,
+                                  "reported staging mode is not one the adapter advertises")
+
+    def test_every_advertised_opaque_format_is_exercised(self):
+        """Each advertised opaque format version must appear on a real artifact.
+
+        A format list is a claim about what this runtime writes and loads. Advertising
+        ggsq/2 and ggsq/3 while only ever producing one of them makes the other a promise
+        no test covers - and the two are not interchangeable, since the loader requires an
+        exact version match.
+        """
+        caps = self._adapter().capabilities()
+        if Representation.OPAQUE not in caps.export:
+            self.skipTest("adapter does not export opaque")
+        self.assertTrue(caps.opaque_formats, "opaque export with no declared format")
+        produced = read_kvx_header(self._export(Representation.OPAQUE))["blob"]["opaque_format"]
+        unproven = set(caps.opaque_formats) - {produced}
+        self.assertFalse(
+            unproven,
+            f"advertised opaque format(s) {sorted(unproven)} were never produced; only "
+            f"{produced!r} was. Advertise only what this runtime actually emits")
+
+    def test_every_advertised_export_dtype_appears_on_an_artifact(self):
+        caps = self._adapter().capabilities()
+        if Representation.CANONICAL not in caps.export or not caps.export_dtypes:
+            self.skipTest("no canonical export dtypes advertised")
+        header = read_kvx_header(self._export(Representation.CANONICAL))
+        blob = header["blob"]
+        seen = set()
+        if blob.get("encoding") == "segmented":
+            seen = {s.get("dtype") for s in blob.get("segments", [])}
+        elif header.get("kv", {}).get("dtype"):
+            seen = {header["kv"]["dtype"]}
+        self.assertTrue(seen & set(caps.export_dtypes),
+                        f"exported dtypes {sorted(seen)} match none of the advertised "
+                        f"{sorted(caps.export_dtypes)}")
 
     def test_canonical_exports_are_well_formed(self):
         caps = self._adapter().capabilities()
