@@ -1,0 +1,243 @@
+"""EXPERIMENTAL: restore a pre-admitted raw state in place, with no payload copy.
+
+This is a separate path on purpose. The portable KVX container and its verification
+semantics are unchanged; nothing here weakens them, and nothing here is a production API.
+
+It reuses the adapter's own support predicate and CacheABIIdentity, so a runtime that cannot
+export or import through KVX cannot admit or restore through this path either. The two
+phases are the store's: admission validates everything off the request path, and the request
+path resolves an already-admitted object and restores it by name.
+
+The request path deliberately performs no payload copy and no full payload read. That claim
+is only worth making if it is measured, so `RequestPathReads` counts every byte this module
+reads while a restore is in flight and the live experiment asserts the count stays bounded.
+Reads performed by llama-server itself are outside this process and are attributed
+separately - they are not, and must not be described as, zero.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from kv_rosetta import weights
+from kv_rosetta.admitted_store import AdmissionError, AdmittedObject, AdmittedStore
+from kv_rosetta.adapters import ggsq_envelope
+from kv_rosetta.adapters.base import AdapterError
+
+#: The measured tail is 4; 8 is the working ceiling carried from the earlier steer.
+MAX_UNCOVERED_TAIL = 8
+
+
+@dataclass
+class RequestPathReads:
+    """Bytes this module reads. Used to substantiate the no-copy claim, not to assume it."""
+
+    payload_bytes: int = 0
+    metadata_bytes: int = 0
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AdmittedRestoreReport:
+    ok: bool
+    reason: str = ""
+    digest: str = ""
+    cache_n: int = 0
+    prompt_n: int = 0
+    seconds: float = 0.0
+    phases: dict[str, float] = field(default_factory=dict)
+    reads: RequestPathReads = field(default_factory=RequestPathReads)
+    calls: list[str] = field(default_factory=list)
+
+
+class AdmittedPath:
+    """Admission and direct restore for one adapter and one store."""
+
+    def __init__(self, adapter, store: AdmittedStore) -> None:
+        self.adapter = adapter
+        self.store = store
+
+    # -- admission (off the request path) -------------------------------------------
+
+    def admit(self, raw: Path | str, *, model: str, token_ids: list[int],
+              save_response: dict[str, Any]) -> AdmittedObject:
+        """Validate a raw state completely, then publish it. Refuses on any doubt.
+
+        Everything the KVX import would check is checked here, because this is the only
+        place it will be checked: the request path never reads the payload again.
+        """
+        raw = Path(raw)
+        supported, reason, protocol = self.adapter.hybrid_support()
+        if not supported:
+            raise AdmissionError(f"runtime cannot support this state: {reason}")
+
+        with open(raw, "rb") as handle:
+            head = handle.read(12)
+            head += handle.read(ggsq_envelope.header_size(head) - len(head))
+        version = ggsq_envelope.peek_version(head)
+        tuple_label = f"{ggsq_envelope.__dict__.get('OPAQUE_FAMILY', 'ggsq')}/{version}"
+        if (version, protocol.get("format")) not in self.adapter.supported_compound_tuples:
+            raise AdmissionError(
+                f"untested compound tuple {tuple_label}+{protocol.get('format')}")
+
+        envelope = ggsq_envelope.parse_file_envelope(head)
+        carried = list(ggsq_envelope.decode_prompt_tokens(envelope.token_ids))
+        if carried != list(token_ids):
+            raise AdmissionError(
+                f"state carries {len(carried)} tokens, not the {len(token_ids)} under test")
+
+        n_written = int(save_response.get("n_written", 0) or 0)
+        checkpoint_bytes = int(save_response.get("checkpoint_bytes", 0) or 0)
+        if n_written != raw.stat().st_size:
+            raise AdmissionError(
+                f"runtime wrote {n_written} bytes but the file is {raw.stat().st_size}")
+        if checkpoint_bytes <= 0 or int(save_response.get("checkpoint_n_tokens", 0) or 0) <= 0:
+            raise AdmissionError(f"no usable checkpoint coverage: {save_response}")
+        appendix = ggsq_envelope.checkpoint_appendix_at(raw, n_written - checkpoint_bytes)
+        if not appendix.usable:
+            raise AdmissionError(
+                f"checkpoint appendix at the declared offset is {appendix.status.value}")
+
+        k_dtype, v_dtype = self.adapter.cache_dtypes()
+        abi = self.adapter.cache_abi_identity(model)
+        model_ident = self.adapter.model_identity(model)
+        manifest = {
+            "experimental": True,
+            "raw_size": raw.stat().st_size,
+            "sequence_version": version,
+            "compound_tuple": f"{tuple_label}+{protocol['format']}",
+            "checkpoint": {
+                "offset": n_written - checkpoint_bytes,
+                "bytes": checkpoint_bytes,
+                "count": int(save_response.get("n_checkpoints_saved", 0) or 0),
+                "n_tokens": int(save_response.get("checkpoint_n_tokens", 0) or 0),
+                "pos_min": save_response.get("checkpoint_pos_min"),
+                "pos_max": save_response.get("checkpoint_pos_max"),
+            },
+            "model_weights_sha256": model_ident.weights_sha256,
+            "model_content_digest": weights.model_content_digest(model) if model else "",
+            "prompt_token_digest": hashlib.sha256(
+                json.dumps(list(token_ids), separators=(",", ":")).encode()).hexdigest(),
+            "prompt_token_count": len(token_ids),
+            "cache_dtype_k": k_dtype,
+            "cache_dtype_v": v_dtype,
+            "active_state_classes": self.adapter._active_state_classes(),
+            "cache_abi_digest": abi.digest(),
+            "runtime_build_info": self.adapter.props().get("build_info", ""),
+        }
+        return self.store.admit(raw, manifest)
+
+    # -- restore (on the request path) ------------------------------------------------
+
+    def restore(self, digest: str, *, model: str, token_ids: list[int],
+                slot: int = 0) -> AdmittedRestoreReport:
+        """Resolve an admitted object and restore it in place. No payload copy or read."""
+        started = time.time()
+        phases: dict[str, float] = {}
+        reads = RequestPathReads()
+        calls: list[str] = []
+
+        def refuse(reason: str) -> AdmittedRestoreReport:
+            return AdmittedRestoreReport(ok=False, reason=reason, digest=digest,
+                                         seconds=time.time() - started, phases=dict(phases),
+                                         reads=reads, calls=calls)
+
+        # The same predicate export and import use. Checked before the store is touched,
+        # so an unsupported runtime never opens or links state.
+        mark = time.time()
+        supported, reason, _protocol = self.adapter.hybrid_support()
+        if not supported:
+            phases["resolve"] = time.time() - mark
+            return refuse(f"refusing to restore into this runtime: {reason}")
+        try:
+            obj = self.store.resolve(digest)
+        except AdmissionError as exc:
+            phases["resolve"] = time.time() - mark
+            return refuse(str(exc))
+        manifest = obj.manifest
+        reads.metadata_bytes += len(json.dumps(manifest))
+        reads.notes.append("manifest read; payload not opened by kv-rosetta")
+
+        abi = self.adapter.cache_abi_identity(model)
+        if manifest.get("cache_abi_digest") != abi.digest():
+            phases["resolve"] = time.time() - mark
+            return refuse(
+                f"cache ABI mismatch: admitted {str(manifest.get('cache_abi_digest'))[:12]} "
+                f"vs live {abi.digest()[:12]}")
+        prompt_digest = hashlib.sha256(
+            json.dumps(list(token_ids), separators=(",", ":")).encode()).hexdigest()
+        if manifest.get("prompt_token_digest") != prompt_digest:
+            phases["resolve"] = time.time() - mark
+            return refuse("prompt identity mismatch between the admitted state and the "
+                          "tokens being restored")
+        if model and manifest.get("model_content_digest") not in (
+                "", weights.model_content_digest(model)):
+            phases["resolve"] = time.time() - mark
+            return refuse("model identity mismatch")
+        phases["resolve"] = time.time() - mark
+
+        mark = time.time()
+        calls.append(f"/slots/{slot}?action=restore")
+        result = self.adapter._post(f"/slots/{slot}?action=restore",
+                                    {"filename": obj.basename})
+        phases["runtime_restore"] = time.time() - mark
+
+        declared = manifest["checkpoint"]
+        pairs = (("count", "n_checkpoints_restored"), ("bytes", "checkpoint_bytes"),
+                 ("n_tokens", "checkpoint_n_tokens"), ("pos_min", "checkpoint_pos_min"),
+                 ("pos_max", "checkpoint_pos_max"))
+        differing = [f"{a}: admitted {declared.get(a)!r} vs restore {result.get(b)!r}"
+                     for a, b in pairs if declared.get(a) != result.get(b)]
+        if differing:
+            self._erase(slot, calls)
+            return refuse("restore metadata does not match the admitted state: "
+                          + "; ".join(differing))
+
+        mark = time.time()
+        calls.append("/completion")
+        probe = self.adapter._post("/completion", {
+            "prompt": list(token_ids), "n_predict": 1, "temperature": 0.0, "top_k": 1,
+            "cache_prompt": True, "id_slot": slot})
+        phases["reuse_probe"] = time.time() - mark
+        timings = probe.get("timings", {})
+        cache_n = int(timings.get("cache_n", 0))
+        prompt_n = int(timings.get("prompt_n", 0))
+        uncovered = len(token_ids) - cache_n
+        if cache_n != int(declared["n_tokens"]):
+            self._erase(slot, calls)
+            return refuse(f"cache_n {cache_n} does not equal declared coverage "
+                          f"{declared['n_tokens']}")
+        if not 1 <= uncovered <= MAX_UNCOVERED_TAIL or prompt_n != uncovered:
+            self._erase(slot, calls)
+            return refuse(f"tail contract violated: cache_n={cache_n} prompt_n={prompt_n} "
+                          f"uncovered={uncovered}")
+
+        mark = time.time()
+        calls.append(f"/slots/{slot}?action=erase")
+        calls.append(f"/slots/{slot}?action=restore")
+        try:
+            self.adapter._post(f"/slots/{slot}?action=erase", {})
+            self.adapter._post(f"/slots/{slot}?action=restore", {"filename": obj.basename})
+        except AdapterError as exc:
+            phases["pristine_restore"] = time.time() - mark
+            self._erase(slot, calls)
+            return refuse(f"reuse verified, but restoring the pristine prefix failed: {exc}")
+        phases["pristine_restore"] = time.time() - mark
+
+        return AdmittedRestoreReport(
+            ok=True, digest=digest, cache_n=cache_n, prompt_n=prompt_n,
+            reason=f"verified reuse: cache_n={cache_n} of {len(token_ids)}, "
+                   f"{uncovered} reprocessed",
+            seconds=time.time() - started, phases=phases, reads=reads, calls=calls)
+
+    def _erase(self, slot: int, calls: list[str]) -> None:
+        calls.append(f"/slots/{slot}?action=erase")
+        try:
+            self.adapter._post(f"/slots/{slot}?action=erase", {})
+        except AdapterError:
+            pass
