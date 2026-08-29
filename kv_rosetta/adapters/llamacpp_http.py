@@ -289,9 +289,11 @@ class LlamaCppHTTPAdapter(Adapter):
         if not state.is_file():
             raise AdapterError(f"server reported a save but {state} does not exist")
         # Read only the envelope header; the body can be gigabytes and never needs to be
-        # in the Python heap.
+        # in the Python heap. Its size depends on the prompt length, so size it from the
+        # declared count rather than peeking a fixed number of bytes.
         with open(state, "rb") as handle:
-            head = handle.read(4096)
+            head = handle.read(12)
+            head += handle.read(ggsq_envelope.header_size(head) - len(head))
         ident = self.identity(req.model)
         model_ident = self.model_identity(req.model)
         # Label with the version actually present in the bytes, not an assumed one.
@@ -490,7 +492,9 @@ class LlamaCppHTTPAdapter(Adapter):
         IDs. Reusing them is what makes reuse verifiable rather than assumed.
         """
         try:
-            head = container.read_payload_prefix(artifact, 65536)
+            prefix = container.read_payload_prefix(artifact, 12)
+            head = container.read_payload_prefix(
+                artifact, ggsq_envelope.header_size(prefix))
             packed = ggsq_envelope.parse_file_envelope(head).token_ids
             return ggsq_envelope.decode_prompt_tokens(packed)
         except (ggsq_envelope.EnvelopeError, container.ContainerError):

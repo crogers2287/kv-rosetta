@@ -1,0 +1,157 @@
+{
+  "architecture": "qwen2",
+  "cache_abi": {},
+  "identity": {
+    "build_info": "b1-3e73446",
+    "cache_abi_digest": "43367938c51c1ea779d369bf67d463ada38d1aad129d0ffa9617ce2349160444",
+    "model_digest": "27373f517965c807d845b021d72b224777257b40c8ba99b4ab2618bb5491fc14",
+    "weights_sha256": "42b010fba4fca198e212f86422230b3d5c9a97f6d163a165ee9054d55ad3d421"
+  },
+  "kv_type_k": "",
+  "kv_type_v": "",
+  "llama_build": "b1-3e73446",
+  "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
+  "n_ctx": 16384,
+  "opaque_format": "ggsq/2",
+  "repo_commit": "f6b3ab6a51dc9e075205d911af5e5b91cbb4c323",
+  "rungs": [
+    {
+      "artifact_bytes": 2733628,
+      "artifact_digest": "b3bb5e2eae0f748b8f6115cc46c5b22de8e1e61b0919f24f80a13ccb00ca07a4",
+      "bytes_per_token": 10678.234375,
+      "cache_n": 255,
+      "export_s": 0.025460124015808105,
+      "export_s_range": [
+        0.0250091552734375,
+        0.02591109275817871
+      ],
+      "import_s": 0.11492860317230225,
+      "import_s_range": [
+        0.0996243953704834,
+        0.1302328109741211
+      ],
+      "model_is_deterministic": true,
+      "native_cache_parity": false,
+      "native_prefill_ms": 372.74850000000004,
+      "native_prefill_ms_range": [
+        342.786,
+        402.711
+      ],
+      "parity": false,
+      "peak_rss_mb": 50.625,
+      "prompt_n": 1,
+      "repeats": 2,
+      "restore_cheaper_than_prefill": true,
+      "token_ids_sha256": "cc0d0342bbf19ac21a4d9ddc287ab9efa83aa509761d70c969d62e64ffd9c4c0",
+      "tokens": 256,
+      "total_restore_s": 0.12989377975463867,
+      "total_restore_s_range": [
+        0.10869717597961426,
+        0.15109038352966309
+      ],
+      "verify_s": 0.014965176582336426,
+      "verify_s_range": [
+        0.00907278060913086,
+        0.020857572555541992
+      ],
+      "warm_prefill_ms": 72.5175,
+      "warm_prefill_ms_range": [
+        71.593,
+        73.442
+      ]
+    },
+    {
+      "artifact_bytes": 21341756,
+      "artifact_digest": "f3312ceac5c35317bf11fb29fa4a18f0dd25ce356d75105a33fde2177ac70e54",
+      "bytes_per_token": 10420.779296875,
+      "cache_n": 2047,
+      "export_s": 0.15421032905578613,
+      "export_s_range": [
+        0.1325240135192871,
+        0.17589664459228516
+      ],
+      "import_s": 0.3406345844268799,
+      "import_s_range": [
+        0.3206000328063965,
+        0.3606691360473633
+      ],
+      "model_is_deterministic": true,
+      "native_cache_parity": true,
+      "native_prefill_ms": 1500.516,
+      "native_prefill_ms_range": [
+        1474.742,
+        1526.29
+      ],
+      "parity": true,
+      "peak_rss_mb": 50.625,
+      "prompt_n": 1,
+      "repeats": 2,
+      "restore_cheaper_than_prefill": true,
+      "token_ids_sha256": "1039f4b0ebf44d6cb7656dd538a04ce02d25290f2977bc1240f5a1d7ee322035",
+      "tokens": 2048,
+      "total_restore_s": 0.42122089862823486,
+      "total_restore_s_range": [
+        0.3931875228881836,
+        0.44925427436828613
+      ],
+      "verify_s": 0.08058631420135498,
+      "verify_s_range": [
+        0.07258749008178711,
+        0.08858513832092285
+      ],
+      "warm_prefill_ms": 89.2075,
+      "warm_prefill_ms_range": [
+        87.187,
+        91.228
+      ]
+    },
+    {
+      "artifact_bytes": 85141052,
+      "artifact_digest": "4e80bd7afc024768ad7d4ee11b45f059bfcf8bdf31910d9f35024d57133bb678",
+      "bytes_per_token": 10393.19482421875,
+      "cache_n": 8191,
+      "export_s": 0.5545356273651123,
+      "export_s_range": [
+        0.5168936252593994,
+        0.5921776294708252
+      ],
+      "import_s": 0.8867392539978027,
+      "import_s_range": [
+        0.8589775562286377,
+        0.9145009517669678
+      ],
+      "model_is_deterministic": true,
+      "native_cache_parity": true,
+      "native_prefill_ms": 6205.535,
+      "native_prefill_ms_range": [
+        6107.996,
+        6303.074
+      ],
+      "parity": true,
+      "peak_rss_mb": 50.625,
+      "prompt_n": 1,
+      "repeats": 2,
+      "restore_cheaper_than_prefill": true,
+      "token_ids_sha256": "142c9950f4ac467cdd5f1d0b8bb973490989117085d4a1c82f269da08c05aaaf",
+      "tokens": 8192,
+      "total_restore_s": 1.1832525730133057,
+      "total_restore_s_range": [
+        1.171161413192749,
+        1.1953437328338623
+      ],
+      "verify_s": 0.29651331901550293,
+      "verify_s_range": [
+        0.28084278106689453,
+        0.31218385696411133
+      ],
+      "warm_prefill_ms": 139.6755,
+      "warm_prefill_ms_range": [
+        138.066,
+        141.285
+      ]
+    }
+  ],
+  "slot": 0,
+  "slot_save_path": "/tmp/claude-1000/-home-crogers2287-kv-rosetta/44ed22f1-eab8-4e0a-bb83-37d258736535/scratchpad/slots-nvme/",
+  "storage_medium": "nvme"
+}

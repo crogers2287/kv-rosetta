@@ -1,0 +1,112 @@
+{
+  "architecture": "qwen2",
+  "cache_abi": {},
+  "identity": {
+    "build_info": "b1-3e73446",
+    "cache_abi_digest": "43367938c51c1ea779d369bf67d463ada38d1aad129d0ffa9617ce2349160444",
+    "model_digest": "27373f517965c807d845b021d72b224777257b40c8ba99b4ab2618bb5491fc14",
+    "weights_sha256": "42b010fba4fca198e212f86422230b3d5c9a97f6d163a165ee9054d55ad3d421"
+  },
+  "kv_type_k": "",
+  "kv_type_v": "",
+  "llama_build": "b1-3e73446",
+  "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
+  "n_ctx": 16384,
+  "opaque_format": "ggsq/2",
+  "repo_commit": "f6b3ab6a51dc9e075205d911af5e5b91cbb4c323",
+  "rungs": [
+    {
+      "artifact_bytes": 2733628,
+      "artifact_digest": "b3bb5e2eae0f748b8f6115cc46c5b22de8e1e61b0919f24f80a13ccb00ca07a4",
+      "bytes_per_token": 10678.234375,
+      "cache_n": 255,
+      "export_s": 0.020590901374816895,
+      "export_s_range": [
+        0.020560264587402344,
+        0.020621538162231445
+      ],
+      "import_s": 0.11272251605987549,
+      "import_s_range": [
+        0.09988808631896973,
+        0.12555694580078125
+      ],
+      "model_is_deterministic": true,
+      "native_cache_parity": false,
+      "native_prefill_ms": 372.231,
+      "native_prefill_ms_range": [
+        355.491,
+        388.971
+      ],
+      "parity": false,
+      "peak_rss_mb": 50.68359375,
+      "prompt_n": 1,
+      "repeats": 2,
+      "restore_cheaper_than_prefill": true,
+      "token_ids_sha256": "cc0d0342bbf19ac21a4d9ddc287ab9efa83aa509761d70c969d62e64ffd9c4c0",
+      "tokens": 256,
+      "total_restore_s": 0.13270270824432373,
+      "total_restore_s_range": [
+        0.11897516250610352,
+        0.14643025398254395
+      ],
+      "verify_s": 0.019980192184448242,
+      "verify_s_range": [
+        0.01908707618713379,
+        0.020873308181762695
+      ],
+      "warm_prefill_ms": 70.814,
+      "warm_prefill_ms_range": [
+        68.349,
+        73.279
+      ]
+    },
+    {
+      "artifact_bytes": 21341756,
+      "artifact_digest": "f3312ceac5c35317bf11fb29fa4a18f0dd25ce356d75105a33fde2177ac70e54",
+      "bytes_per_token": 10420.779296875,
+      "cache_n": 2047,
+      "export_s": 0.170965313911438,
+      "export_s_range": [
+        0.1652061939239502,
+        0.17672443389892578
+      ],
+      "import_s": 0.2674003839492798,
+      "import_s_range": [
+        0.2611124515533447,
+        0.27368831634521484
+      ],
+      "model_is_deterministic": true,
+      "native_cache_parity": true,
+      "native_prefill_ms": 1581.296,
+      "native_prefill_ms_range": [
+        1575.64,
+        1586.952
+      ],
+      "parity": true,
+      "peak_rss_mb": 50.68359375,
+      "prompt_n": 1,
+      "repeats": 2,
+      "restore_cheaper_than_prefill": true,
+      "token_ids_sha256": "1039f4b0ebf44d6cb7656dd538a04ce02d25290f2977bc1240f5a1d7ee322035",
+      "tokens": 2048,
+      "total_restore_s": 0.33408892154693604,
+      "total_restore_s_range": [
+        0.32767629623413086,
+        0.3405015468597412
+      ],
+      "verify_s": 0.06668853759765625,
+      "verify_s_range": [
+        0.06656384468078613,
+        0.06681323051452637
+      ],
+      "warm_prefill_ms": 87.545,
+      "warm_prefill_ms_range": [
+        87.325,
+        87.765
+      ]
+    }
+  ],
+  "slot": 0,
+  "slot_save_path": "/dev/shm/kvx-slots/",
+  "storage_medium": "tmpfs"
+}

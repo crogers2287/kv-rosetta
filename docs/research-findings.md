@@ -449,3 +449,69 @@ never attempted and never has to be caught.
 The q4 ladder cannot be measured on either 27B available here, because neither can reuse a
 restored cache at all. Measuring it needs a large **non-hybrid** model. The q4_0 projection
 therefore remains arithmetic, not a result, and is still not promoted.
+
+## 14. Measured q4 economics, and a quantization finding that matters more
+
+The earlier q4_0 advantage was arithmetic. It is now measured, on the same 3B, changing only
+the KV cache type. Storage media are reported separately and never mixed. Machine-readable
+records: `bench/restore-tmpfs.json`, `bench/restore-nvme.json`.
+
+**tmpfs (/dev/shm), q4_0 KV, medians of repeated runs:**
+
+| tokens | native prefill | total restore | KB/token | restore cheaper? | parity | native cache parity |
+|---|---|---|---|---|---|---|
+| 256 | 372 ms | 133 ms | 10.4 | yes | **no** | **no** |
+| 2048 | 1581 ms | 334 ms | 10.2 | yes | yes | yes |
+| 8192 | 6516 ms | 1204 ms | 10.1 | yes | yes | yes |
+
+**ext4 / NVMe, same configuration:**
+
+| tokens | native prefill | total restore | KB/token | restore cheaper? | parity | native cache parity |
+|---|---|---|---|---|---|---|
+| 256 | 373 ms | 130 ms | 10.4 | yes | **no** | **no** |
+| 2048 | 1501 ms | 421 ms | 10.2 | yes | yes | yes |
+| 8192 | 6206 ms | 1183 ms | 10.1 | yes | yes | yes |
+
+Total restore latency is the user-visible figure - artifact read plus integrity and identity
+verification plus runtime restore plus reuse verification - not the server's restore time.
+
+Two results:
+
+**q4_0 KV reverses the economics.** 10.1 KB/token against f16's 36 KB/token, and restore
+beats native prefill at every rung, by about 5.4x at 8192. The f16 measurement in §11, where
+restore lost at every rung, was the worst case on both axes at once. Storage medium barely
+matters at these sizes: tmpfs and NVMe are within noise of each other, so the cost is
+dominated by verification and the runtime restore, not by the read.
+
+**Quantized KV is not token-exact, and that is a property of the runtime, not of KV Rosetta.**
+At 256 tokens the restored run diverged from the cold run. The benchmark now carries the
+control that settles the attribution:
+
+- two cold prefills with no cache reuse agree exactly, so the model is deterministic;
+- llama.cpp's OWN prompt-cache reuse, with no KVX artifact anywhere in the picture, produces
+  different output from a cold prefill: `'1892 the naturalist recorded'` against
+  `' 1892 the naturalist'`;
+- `parity` and `native_cache_parity` move together at every rung.
+
+A fresh prefill quantizes values it has just computed; a reused cache reads back values that
+were already quantized. The rounding differs, the logits differ, and greedy decoding can pick
+a different token. Restore reproduces whatever the runtime's own reuse does - no better, no
+worse.
+
+The consequence is a trade, not a win:
+
+| KV type | artifact | restore vs prefill | token-exact |
+|---|---|---|---|
+| f16 | 36 KB/token | slower at every rung | yes, max top-5 delta 0.000e+00 |
+| q4_0 | 10.1 KB/token | ~5.4x cheaper at 8192 | **no**, diverges as the runtime's own cache does |
+
+This is precisely the case the admission gate exists for. A quantized-KV cache must be
+admitted on held-out agreement, never assumed exact, and "the runtime does this to itself
+anyway" is an explanation of the divergence, not a licence to skip the gate.
+
+### Still not measured
+
+The 27B q4 ladder. Every large model on this host is `qwen35` or `qwen35moe`, all hybrid, and
+none can reuse a restored prefix at all (§13). A survey of models above 3 GB found exactly one
+non-hybrid: a 5.8 GB f16 build of the same 3B. Large-model economics therefore remain
+unmeasured, and nothing here should be read as covering them.

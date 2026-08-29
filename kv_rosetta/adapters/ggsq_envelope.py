@@ -66,6 +66,9 @@ _KNOWN_MAGICS = (GGSQ_MAGIC, GGSN_MAGIC, b"GGSQ", b"GGSN")
 # so accepted versions are a set and an unknown one is refused rather than assumed.
 SUPPORTED_VERSIONS = frozenset({2, 3})
 
+#: Sanity bound so a corrupt count cannot drive a huge allocation.
+_MAX_PROMPT_WORDS = 1 << 24
+
 
 class Source(str, Enum):
     """Which framing produced the buffer."""
@@ -329,3 +332,20 @@ def peek_version(head: bytes) -> int:
             f"unsupported version at offset 4: {version}; "
             f"supported versions are {sorted(SUPPORTED_VERSIONS)}")
     return version
+
+
+def header_size(prefix: bytes) -> int:
+    """Bytes needed to hold the whole file envelope, from its first 12 bytes.
+
+    The prompt array grows with the context, so a fixed-size peek silently truncates at
+    larger prompts. Read the declared count, then read exactly what it needs.
+    """
+    if len(prefix) < 12:
+        raise EnvelopeError(f"need 12 bytes to size the envelope, got {len(prefix)}")
+    if prefix[:4] != GGSQ_MAGIC:
+        raise EnvelopeError(f"bad magic at offset 0: found {prefix[:4]!r}, expected {GGSQ_MAGIC!r}")
+    count = struct.unpack_from("<I", prefix, 8)[0]
+    if count > _MAX_PROMPT_WORDS:
+        raise EnvelopeError(
+            f"prompt array claims {count} words, above the {_MAX_PROMPT_WORDS} sanity bound")
+    return 12 + 4 * count
