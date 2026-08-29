@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import resource
 import signal
 import socket
 import subprocess
@@ -43,6 +44,7 @@ from kv_rosetta.adapters.base import (  # noqa: E402
 )
 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter  # noqa: E402
 
+#: Overridden by --prompt-tokens; the ladder rungs are 256, 2048, 8192, 32768.
 PROMPT_TOKENS = 256
 
 #: The measured uncovered tail is 4; 8 is the working ceiling from the prior steer.
@@ -60,6 +62,27 @@ BOOT_TIMEOUT = 1800
 
 #: llama-swap's unload endpoint - the sanctioned way to reclaim the fleet's GPUs.
 FLEET_UNLOAD = "http://127.0.0.1:9069/unload"
+
+
+def peak_rss_bytes(pid: int) -> int | None:
+    """VmHWM: the high-water mark of a process's resident set, read before it exits."""
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+def vram_used_bytes() -> list[int]:
+    """Per-device VRAM in use, so the artifact's cost in memory is recorded, not assumed."""
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    return [int(line) * 1024 * 1024 for line in result.stdout.split() if line.isdigit()]
 
 
 def free_port() -> int:
@@ -317,6 +340,15 @@ def vectors_agree(a, b):
     return True
 
 
+def prompt_text(tokens: int) -> str:
+    """Deterministic source text long enough to yield `tokens` tokens.
+
+    Roughly ten tokens per repetition; over-generate and slice, so the exact token count is
+    the tokenizer's answer rather than an assumption about words per token.
+    """
+    return "In the year 1892 the naturalist recorded. " * max(4, tokens // 4)
+
+
 def record_calls(adapter):
     """Wrap _post so every endpoint call is recorded in order.
 
@@ -379,8 +411,11 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
             raise RuntimeError(f"{name}: expected an UNPATCHED binary, but it advertises "
                                f"{protocol}. Refusing to skip the negative leg.")
 
-        text = "In the year 1892 the naturalist recorded. " * 40
+        text = prompt_text(PROMPT_TOKENS)
         ids = first.post("/tokenize", {"content": text})["tokens"][:PROMPT_TOKENS]
+        if len(ids) != PROMPT_TOKENS:
+            raise RuntimeError(f"{name}: tokenizer produced {len(ids)} tokens, wanted "
+                               f"{PROMPT_TOKENS}; lengthen the source text")
         request = {"prompt": ids, "n_predict": 8, "temperature": 0.0, "top_k": 1,
                    "n_probs": N_PROBS, "cache_prompt": True, "id_slot": 0}
 
@@ -399,6 +434,8 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         artifact = Path(slots) / slot_file
         artifact_digest = sha256_file(artifact)
         artifact_bytes = artifact.stat().st_size
+        memory = {"server_peak_rss_bytes_first": peak_rss_bytes(first_pid),
+                  "vram_used_bytes_after_load": vram_used_bytes()}
 
         # The adapter's own view of this runtime, and a real KVX export through it. This
         # is the contract a caller actually uses; the raw endpoint measurements above say
@@ -480,8 +517,8 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
     try:
         if second_pid == first_pid:
             raise RuntimeError(f"{name}: no new process was started")
-        text = "In the year 1892 the naturalist recorded. " * 40
-        ids2 = second.post("/tokenize", {"content": text})["tokens"][:PROMPT_TOKENS]
+        ids2 = second.post("/tokenize", {"content": prompt_text(PROMPT_TOKENS)}
+                           )["tokens"][:PROMPT_TOKENS]
         if ids2 != ids:
             raise RuntimeError(f"{name}: tokenization differs across processes")
         request2 = dict(request, prompt=ids2)
@@ -570,6 +607,10 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
                     if staged:
                         raise RuntimeError(f"{name}: staged copies left behind: {staged}")
                 adapter_view["cross_import_refusals"] = refusals
+        memory["server_peak_rss_bytes_second"] = peak_rss_bytes(second_pid)
+        memory["vram_used_bytes_after_restore"] = vram_used_bytes()
+        memory["runner_peak_rss_bytes"] = (
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024)
     finally:
         second.stop()
 
@@ -609,6 +650,12 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
 
     settings = props.get("default_generation_settings", {}) or {}
     return {
+        # Q4 weight quantization says nothing about the K/V cache dtype, so record what the
+        # runtime actually reports rather than inferring it from the model filename.
+        "kv_dtype_k": str(props.get("type_k", settings.get("type_k", ""))),
+        "kv_dtype_v": str(props.get("type_v", settings.get("type_v", ""))),
+        "prompt_tokens_requested": PROMPT_TOKENS,
+        "memory": memory,
         "active_checkpoint_state_classes": props.get("active_checkpoint_state_classes"),
         "acceptance_checked": True,
         "leg": name,
@@ -657,6 +704,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
 
 
 def main() -> int:
+    global PROMPT_TOKENS
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--patched", required=True)
@@ -664,33 +712,63 @@ def main() -> int:
     ap.add_argument("--slots", required=True)
     ap.add_argument("--out", default="bench/production-27b-matrix.json")
     ap.add_argument("--patches-dir", default="patches/llama.cpp")
+    ap.add_argument("--prompt-tokens", type=int, default=PROMPT_TOKENS,
+                    help="exact prompt tokens; the ladder rungs are 256, 2048, 8192, 32768")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="clean repetitions, each with fresh processes for both legs")
+    ap.add_argument("--storage-note", default="",
+                    help="where --slots lives: tmpfs isolates compute and serialization, "
+                         "NVMe measures the deployable path")
     ap.add_argument("--deployment-note", default="",
                     help="whether this exact model file is the deployed production SKU")
     args = ap.parse_args()
     repo_commit = require_clean_worktree()
+    PROMPT_TOKENS = args.prompt_tokens
 
     log_dir = Path(args.slots).parent / "matrix-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     Path(args.slots).mkdir(parents=True, exist_ok=True)
 
-    legs = {}
-    patched_artifact = None
-    # The patched leg runs first so its artifact can be offered to the unpatched runtime,
-    # which must refuse it before staging or restoring.
-    for name, binary, expect in (("patched", args.patched, True),
-                                 ("unpatched", args.unpatched, False)):
-        print(f"=== {name} leg ===", flush=True)
-        legs[name] = run_leg(name, binary, args.model, args.slots, expect, log_dir,
-                             patched_artifact=patched_artifact)
-        if expect:
-            kept = Path(args.slots) / "patched-artifact.kvx"
-            produced = Path(legs[name]["adapter"].get("kvx_path", ""))
-            if produced.is_file():
-                produced.replace(kept)
-                patched_artifact = kept
-        w = legs[name]["warm_after_restore"]
-        print(f"  pids {legs[name]['first_pid']} -> {legs[name]['second_pid']} | "
-              f"after restore cache_n={w['cache_n']} prompt_n={w['prompt_n']}", flush=True)
+    repetitions = []
+    for repetition in range(1, args.repeats + 1):
+        legs = {}
+        patched_artifact = None
+        # The patched leg runs first so its artifact can be offered to the unpatched
+        # runtime, which must refuse it before staging or restoring.
+        for name, binary, expect in (("patched", args.patched, True),
+                                     ("unpatched", args.unpatched, False)):
+            print(f"=== repetition {repetition}/{args.repeats}: {name} leg ===", flush=True)
+            legs[name] = run_leg(name, binary, args.model, args.slots, expect, log_dir,
+                                 patched_artifact=patched_artifact)
+            if expect:
+                kept = Path(args.slots) / "patched-artifact.kvx"
+                produced = Path(legs[name]["adapter"].get("kvx_path", ""))
+                if produced.is_file():
+                    produced.replace(kept)
+                    patched_artifact = kept
+            w = legs[name]["warm_after_restore"]
+            print(f"  after restore cache_n={w['cache_n']} prompt_n={w['prompt_n']}",
+                  flush=True)
+        # The steer's decision rule, evaluated rather than left to the reader.
+        patched = legs["patched"]
+        adapter = patched["adapter"]
+        verdict = None
+        if adapter.get("import_seconds_end_to_end") is not None:
+            total = (adapter["import_seconds_end_to_end"]
+                     + patched["tail_completion_wall_s"])
+            verdict = {
+                "adapter_import_plus_tail_s": total,
+                "native_cold_prefill_s": patched["cold"]["wall_s"],
+                "restore_is_cheaper": total < patched["cold"]["wall_s"],
+                "ratio_to_cold": total / patched["cold"]["wall_s"],
+            }
+            print(f"  decision: {total:.3f}s adapter+tail vs "
+                  f"{patched['cold']['wall_s']:.3f}s cold -> "
+                  f"{'CHEAPER' if verdict['restore_is_cheaper'] else 'not cheaper'}",
+                  flush=True)
+        repetitions.append({"repetition": repetition, "legs": legs, "verdict": verdict})
+        if patched_artifact and Path(patched_artifact).is_file():
+            Path(patched_artifact).unlink()
 
     patches = {}
     for patch in sorted(Path(args.patches_dir).glob("*.patch")):
@@ -709,7 +787,12 @@ def main() -> int:
         "deployment_identity": args.deployment_note,
         "patches": patches,
         "prompt_tokens": PROMPT_TOKENS,
-        "legs": legs,
+        "slots_path": str(args.slots),
+        "storage_note": args.storage_note,
+        "repeats": args.repeats,
+        "repetitions": repetitions,
+        # The first repetition's legs, kept at the old key so existing readers still work.
+        "legs": repetitions[0]["legs"],
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
