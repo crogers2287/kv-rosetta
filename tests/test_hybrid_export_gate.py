@@ -262,3 +262,40 @@ class HybridExportGateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CapabilityProbeCostTest(unittest.TestCase):
+    """Capability discovery writes a slot file, and that must not be mistaken for export.
+
+    state_version() probes the emitted sequence version by saving a slot, because no
+    endpoint reports it. Any evidence that an export "refused before any save POST" has to
+    measure the export window, not the capability probe that ran before it.
+    """
+
+    def build(self, runtime_props):
+        directory = Path(tempfile.mkdtemp())
+        slots = directory / "slots"
+        slots.mkdir()
+        save, body = save_with_appendix()
+        return StubAdapter(runtime_props, slots, save=save, body=body), directory
+
+    def test_capability_discovery_issues_a_save(self):
+        adapter, _ = self.build(props(active_checkpoint_state_classes=["target"]))
+        adapter.capabilities()
+        self.assertTrue([p for p, _ in adapter.posts if "action=save" in p],
+                        "state_version() is documented to probe by saving a slot")
+
+    def test_export_itself_posts_nothing_when_it_refuses(self):
+        adapter, directory = self.build(UNPATCHED)
+        adapter.posts.clear()
+        with self.assertRaises(AdapterError):
+            adapter.export(ExportRequest(model="", out_path=directory / "x.kvx",
+                                         representation=Representation.OPAQUE))
+        self.assertEqual([p for p, _ in adapter.posts], [],
+                         "export refused only after contacting the runtime")
+
+    def test_the_probe_file_is_removed(self):
+        adapter, _ = self.build(props(active_checkpoint_state_classes=["target"]))
+        adapter.capabilities()
+        leftover = sorted(p.name for p in adapter.slot_save_path.glob("*probe*"))
+        self.assertEqual(leftover, [], f"capability probe left {leftover} behind")

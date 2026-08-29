@@ -425,6 +425,12 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         first.post("/slots/0?action=erase", {})
         first.post("/completion", dict(request, n_predict=0))
         kvx_path = Path(slots) / f"matrix-{name}-adapter.kvx"
+        # Capability discovery itself issues a save: state_version() probes the emitted
+        # sequence version by saving a slot, because no endpoint reports it. That POST is
+        # real and is recorded, but it is not part of the export, so the "refused before
+        # any save POST" window starts here.
+        adapter_view["calls_during_capability_probe"] = list(adapter.calls)
+        adapter.calls.clear()
         export_started = time.time()
         try:
             adapter.export(ExportRequest(model=model, out_path=kvx_path,
@@ -443,12 +449,9 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
                 "action=save" in call for call in adapter.calls):
             raise RuntimeError(
                 f"{name}: export refused only after a save POST.\n"
-                f"  calls: {adapter.calls}\n"
+                f"  calls during export: {adapter.calls}\n"
                 f"  hybrid_support: {supported} ({support_reason})\n"
-                f"  capabilities export: {adapter_view['capabilities_export']}\n"
-                f"  refusal: {adapter_view['export_refused']}\n"
-                f"  props model_path: {first.props().get('model_path')!r}\n"
-                f"  prefix_reuse_support: {adapter.prefix_reuse_support()}")
+                f"  refusal: {adapter_view['export_refused']}")
 
         # Capability and the support predicate must agree on a live runtime as they do
         # offline. An artifact-level refusal - incomplete checkpoint coverage on this
@@ -504,6 +507,7 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
         adapter2 = record_calls(LlamaCppHTTPAdapter(second.url, slots))
         if expect_patched:
             second.post("/slots/0?action=erase", {})
+            adapter2.calls.clear()
             started_import = time.time()
             report = adapter2.import_(kvx_path, ImportRequest(model=model, slot=0))
             adapter_view["import_seconds_end_to_end"] = time.time() - started_import
