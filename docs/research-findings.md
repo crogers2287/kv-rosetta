@@ -515,3 +515,45 @@ The 27B q4 ladder. Every large model on this host is `qwen35` or `qwen35moe`, al
 none can reuse a restored prefix at all (§13). A survey of models above 3 GB found exactly one
 non-hybrid: a 5.8 GB f16 build of the same 3B. Large-model economics therefore remain
 unmeasured, and nothing here should be read as covering them.
+
+## 15. The hybrid failure, confirmed by the runtime's own diagnostic
+
+Section 13 classified the `qwen35` failure by elimination and by llama.cpp's architecture
+list. That classification is now confirmed directly: run a hybrid model with `-lv 10` and the
+server states the cause itself during the post-restore completion.
+
+```
+task 7 | forcing full prompt re-processing due to lack of cache data
+         (likely due to SWA or hybrid/recurrent memory, see PR #13194)
+task 7 | main/do_checkpoint = no, pos_min = -1, pos_max = -1
+         created context checkpoint 1 of 32 (pos_min = 251, pos_max = 251,
+         n_tokens = 252, size = 149.626 MiB)
+```
+
+The mechanism, from `tools/server/server-context.cpp` around line 3338:
+
+1. For hybrid or recurrent memory the server does not reuse a prefix from KV cells alone.
+   It searches `slot.prompt.checkpoints` for a **context checkpoint** covering the position
+   it wants to resume from.
+2. If none matches, `do_reset` is true: it logs the message above and sets
+   `pos_next = 0`, `n_past = 0` - a full re-prefill.
+3. Checkpoints are server-side in-memory state on the slot. `llama_state_seq_save_file`
+   saves the llama_context's sequence state; it does not save the server's checkpoint list.
+
+So a restored slot has every KV cell back - `n_restored` equals the saved count, and
+`n_prompt_tokens` is correct - and still cannot reuse anything, because the structure the
+server actually consults was never in the artifact. That is why `n_restored` was such a
+misleading success signal, and why the verified-reuse probe was the right fix.
+
+Note the checkpoint is 149.6 MiB for a 252-token prefix, and the server keeps up to 32 of
+them. Any future support for hybrid models has to carry that state, not just the KV cells.
+
+### What would have to change
+
+The HTTP slot API exposes no way to save or restore context checkpoints, so this is not
+something an adapter can work around. Supporting hybrid models over this seam would need
+llama.cpp to include checkpoints in the sequence state, or to expose them separately. Until
+then the honest position is the one the code now takes: probe the architecture and withhold
+the capability.
+
+The classification is therefore **proven by the runtime's own trace**, not inferred.
