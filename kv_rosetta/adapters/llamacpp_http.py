@@ -636,11 +636,50 @@ class LlamaCppHTTPAdapter(Adapter):
             # A compound artifact declares checkpoint coverage. Zero or missing coverage
             # means the appendix carries nothing reusable, so there is nothing to import
             # that a plain prefill would not do better.
-            coverage = dict(header.get("coverage") or {})
-            is_compound = str(coverage.get("format", "")).find("+") != -1
+            # The blob format is authoritative: it is what the compatibility check above
+            # matched against the live runtime. Coverage is a description of that blob, so
+            # it must agree exactly. Selecting compound behaviour from the coverage text
+            # instead let an artifact whose blob said compound - and so passed the
+            # compatibility check - be handled as plain, skipping every compound check.
+            raw_coverage = header.get("coverage")
+            is_compound = self._is_compound_format(artifact_format)
             if is_compound:
-                declared_n = int(coverage.get("checkpoint_n_tokens", 0) or 0)
-                if declared_n <= 0 or int(coverage.get("n_checkpoints", 0) or 0) <= 0:
+                if not isinstance(raw_coverage, dict):
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"artifact is {artifact_format} but carries no coverage "
+                                f"object; refusing before restore"),
+                        seconds=time.time() - started)
+                if raw_coverage.get("format") != artifact_format:
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"format disagreement: blob says {artifact_format!r}, "
+                                f"coverage says {raw_coverage.get('format')!r}; refusing "
+                                f"before restore"),
+                        seconds=time.time() - started)
+            elif isinstance(raw_coverage, dict) and \
+                    self._is_compound_format(raw_coverage.get("format")):
+                return ImportReport(
+                    mode=StagingMode.HOST_STAGED, ok=False,
+                    representation=Representation.OPAQUE,
+                    reason=(f"format disagreement: coverage claims "
+                            f"{raw_coverage.get('format')!r} but the blob is "
+                            f"{artifact_format!r}; refusing before restore"),
+                    seconds=time.time() - started)
+            coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else {}
+            if is_compound:
+                numeric, bad = self._coverage_numbers(coverage)
+                if bad:
+                    return ImportReport(
+                        mode=StagingMode.HOST_STAGED, ok=False,
+                        representation=Representation.OPAQUE,
+                        reason=(f"coverage fields are not usable integers: {bad}; "
+                                f"refusing before restore"),
+                        seconds=time.time() - started)
+                coverage.update(numeric)
+                if numeric["checkpoint_n_tokens"] <= 0 or numeric["n_checkpoints"] <= 0:
                     return ImportReport(
                         mode=StagingMode.HOST_STAGED, ok=False,
                         representation=Representation.OPAQUE,
@@ -777,6 +816,36 @@ class LlamaCppHTTPAdapter(Adapter):
             for path in self._staged:
                 path.unlink(missing_ok=True)
             self._staged.clear()
+
+    def _is_compound_format(self, label: object) -> bool:
+        """Whether a format label names a tested compound tuple, by exact comparison.
+
+        Not by looking for a plus sign: an unknown tuple must not be treated as compound
+        support, and a compound-looking string is not evidence of one.
+        """
+        if not isinstance(label, str):
+            return False
+        return label in {f"{OPAQUE_FORMAT_FAMILY}/{version}+{fmt}"
+                         for version, fmt in self.supported_compound_tuples}
+
+    @staticmethod
+    def _coverage_numbers(coverage: dict) -> tuple[dict[str, int], list[str]]:
+        """Coerce the declared coverage counts, reporting what could not be read.
+
+        A manifest is untrusted input. A malformed value must produce a refusal, not an
+        exception escaping the adapter boundary as int() would raise on 'many' or NaN.
+        """
+        names = ("n_checkpoints", "checkpoint_bytes", "checkpoint_n_tokens",
+                 "checkpoint_pos_min", "checkpoint_pos_max")
+        numbers: dict[str, int] = {}
+        bad: list[str] = []
+        for name in names:
+            value = coverage.get(name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                bad.append(f"{name}={value!r}")
+            else:
+                numbers[name] = value
+        return numbers, bad
 
     def _erase(self, slot: int) -> None:
         """Best-effort slot clear. Used when returning ok=false after a restore."""

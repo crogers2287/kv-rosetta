@@ -398,3 +398,34 @@ curve crosses is what the ladder is for.
 
 Status: **measured once on this host**, from a clean committed runner
 (`a9e617e54200`). The parser fix is **proven by retained test** (349 offline).
+
+## REQ-024 — Close the compound-header bypass
+
+Steer 233a897, P0. Audited against the code first; the finding is exact.
+
+`import_()` checked compatibility against `header["blob"]["opaque_format"]` but selected
+compound behaviour from whether `header["coverage"]["format"]` contained a `+`. Nothing
+required the two to agree, and `container.verify()` checks integrity, not consistency. So a
+correctly hashed artifact whose blob said `ggsq/3+sckp/1` - matching the live runtime, so it
+passed the compatibility check - but whose coverage format was missing or plain reached a
+compound-capable runtime with `is_compound=False`. That skipped the nonzero-coverage check,
+the restore-metadata comparison, and forced reuse verification, so `verify_reuse=False`
+could return success on `n_restored` alone: exactly the claim this project exists to refuse.
+
+The blob format is now authoritative and the decision is an exact tuple comparison, not a
+search for a plus sign - an unknown tuple must not read as compound support. Coverage must
+equal the blob format exactly, in both directions; a compound blob must carry a coverage
+object with complete nonzero fields; and a plain blob whose coverage claims compound is
+refused too.
+
+Coverage counts are also coerced defensively. A manifest is untrusted input, and
+`int(value or 0)` raised out of the adapter boundary on `'many'`, `NaN`, a list, or a dict -
+the report contract says a bad artifact yields `ok=false`, never an exception. Non-integers
+now produce a refusal naming the offending fields.
+
+Every case is covered with `verify_reuse` both true and false, using fixtures rebuilt and
+re-hashed so they pass `container.verify()` - a corrupt fixture would be caught by integrity
+alone and would prove nothing about format agreement.
+
+Status: **proven by retained test** — 7 tests in
+`tests/test_compound_format_agreement.py`, 356 offline total.
