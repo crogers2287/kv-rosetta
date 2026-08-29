@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from kv_rosetta import container, weights
+from kv_rosetta import container, gguf, weights
 from kv_rosetta.store import ArtifactStore
 from kv_rosetta.identity import ArtifactKey, CacheABIIdentity, ModelIdentity, PromptIdentity
 from kv_rosetta.adapters import ggsq_envelope
@@ -183,6 +183,16 @@ class LlamaCppHTTPAdapter(Adapter):
             "weights_sha256": model_ident.weights_sha256,
         }
 
+    def prefix_reuse_support(self) -> tuple[bool, str]:
+        """Whether this model's restored cache can be reused for a prompt prefix."""
+        path = str(self.props().get("model_path", ""))
+        if not path or not Path(path).is_file():
+            return False, "model file unreachable; cannot establish architecture"
+        try:
+            return gguf.supports_prefix_reuse(gguf.architecture(path))
+        except gguf.GGUFError as exc:
+            return False, f"cannot read architecture: {exc}"
+
     # -- capabilities -----------------------------------------------------------
 
     def capabilities(self) -> Capabilities:
@@ -191,10 +201,19 @@ class LlamaCppHTTPAdapter(Adapter):
         props = self.props()
         settings = props.get("default_generation_settings", {}) or {}
         can_slot = bool(self.slot_save_path)
-        reps = frozenset({Representation.OPAQUE}) if can_slot else frozenset()
         notes: list[str] = []
         if not can_slot:
             notes.append("slot save/restore unavailable: server has no --slot-save-path")
+
+        # A hybrid or recurrent architecture restores its state successfully and then
+        # reuses none of it, because a recurrent state is a function of the whole sequence
+        # and has no prompt-prefix semantics. Advertising a capability the runtime accepts
+        # but cannot honour is exactly the fail-open shape this project exists to avoid.
+        reusable, why = self.prefix_reuse_support()
+        if can_slot and not reusable:
+            notes.append(f"opaque transfer withheld: {why}")
+            can_slot = False
+        reps = frozenset({Representation.OPAQUE}) if can_slot else frozenset()
         return Capabilities(
             runtime="llama.cpp",
             runtime_revision=str(props.get("build_info", "")),

@@ -389,3 +389,63 @@ it rather than against a synthetic blob built from the same wrong assumptions as
 The version-2-versus-3 split is the concrete case for what the steer required: an artifact
 written by one build of the same runtime, at the same commit, is not necessarily readable by
 another. Runtime revision is part of cache identity, not provenance.
+
+## 13. The 27B failure, classified: hybrid architecture, not MTP
+
+The steer named MTP as the leading suspect. It is not the cause. Variables were changed one
+at a time, all on the same code path.
+
+| Variable changed | Result |
+|---|---|
+| flash attention on, 3B, otherwise the known-good run | reuses, `cache_n=255` |
+| the 27B's **exact** flags on the 3B: `-ngl 99`, `-fa on`, `--split-mode layer`, `--tensor-split 1,1`, `--parallel 1` | reuses, `cache_n=255` |
+| a large **non-MTP** model (OpenMythos-Q6_K, 20.6 GB) with those same flags | **fails**, `cache_n=0` |
+
+So GPU offload, flash attention, tensor split, slot count, prompt size and MTP are all
+exonerated. Size is not the cause either: the 3B restored a 1.1 GB artifact at 32K and
+reused it.
+
+The discriminator is the architecture:
+
+| | 3B, reuses | both failures |
+|---|---|---|
+| `general.architecture` | `qwen2` | `qwen35` |
+| block_count | 36 | 64 and 65 |
+| key/value length | 128 | 256 |
+| bytes per token | 36 KB | 663-678 KB |
+
+`LLM_ARCH_QWEN35` appears in `llm_arch_is_hybrid()` in `src/llama-arch.cpp`, alongside
+jamba, falcon-h1, plamo2, granitehybrid, lfm2, nemotron_h, qwen3next, kimi-linear,
+bailingmoe3, kimi-k3, qwen4exp, deepseek4 and minimax-01. These are hybrid attention plus
+recurrent (SSM) models, which is also why the per-token state is roughly 2.6x what plain
+attention KV of that geometry would be.
+
+**This is not a bug to fix.** A recurrent state is a function of the entire processed
+sequence, so it has no common-prefix semantics: there is no prefix of it to match a prompt
+against. `n_restored` equals the saved cell count and `cache_n` is still zero because the
+restore genuinely succeeded and the reuse genuinely cannot happen.
+
+### The fail-closed response
+
+`kv_rosetta/gguf.py` reads `general.architecture` from the GGUF header - a few kilobytes,
+never the tensor data - and `supports_prefix_reuse()` refuses hybrid and recurrent
+architectures, mirroring llama.cpp's own two lists. An unknown architecture is refused
+rather than assumed.
+
+The adapter now withholds the capability instead of advertising it:
+
+    3B qwen2       export=['opaque'] import=['opaque'] formats=['ggsq/2']  notes: none
+    27B qwen35     export=[]         import=[]         formats=[]
+                   note: opaque transfer withheld: qwen35 is a hybrid attention+recurrent
+                   architecture ...
+
+Advertising a capability the runtime accepts but cannot honour is the exact fail-open shape
+this project exists to prevent. The earlier verified-reuse check already refused these
+imports at run time; this moves the refusal up to capability probing, so the transfer is
+never attempted and never has to be caught.
+
+### Consequence for the economics question
+
+The q4 ladder cannot be measured on either 27B available here, because neither can reuse a
+restored cache at all. Measuring it needs a large **non-hybrid** model. The q4_0 projection
+therefore remains arithmetic, not a result, and is still not promoted.

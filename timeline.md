@@ -52,7 +52,10 @@ Plan file: `~/.claude/plans/look-at-this-project-kind-widget.md`.
 | 12. Remaining test files (container, adapters, store, budget, ggsq) | 🔴 outstanding | Generation blocked by repeated upstream 502s; implementations are in place and independently verified |
 | 13. Steer P0 hardening (identity, segments, integrity, gate, envelopes, capabilities, conformance) | ✅ done | Commits 29d55d0, 6e7c1fc, e433052, 180795c |
 | 14. llama.cpp HTTP adapter + 256-token same-backend round trip | ✅ done | `cache_n=255 prompt_n=1`; token IDs identical; max top-5 probability delta 0.000e+00; 423ms → 97ms prefill. See `docs/research-findings.md` §10 |
-| 15. Context ladder 2K / 8K / 32K / 131K | 🔴 outstanding | Next: scale the proven path |
+| 15. Context ladder 2K / 8K / 32K | ✅ measured | 3B parity held at every rung; restore slower than prefill with f16 KV. See `docs/research-findings.md` §11 |
+| 16. Steer P0-A..F (version labelling, slot binding, identity, streaming, conformance, CI) | ✅ done | Commits 6bc7566, b343c82, b40fe35, f479edc, 2375989, 953c8c3, 827d316 |
+| 17. Diagnose 27B cache_n=0 | ✅ classified | Hybrid attention+recurrent architecture (`qwen35`), NOT MTP. One variable at a time; MTP, flash attention, tensor split, GPU offload and size all exonerated. See §13 |
+| 18. Measure real q4 economics | 🔴 blocked | Needs a large NON-hybrid model; neither 27B here can reuse a restored cache |
 | 16. CUDA↔HIP canonical transfer, HF reference adapter, vLLM connector | 🔴 outstanding | Gated behind the ladder |
 
 #### Verification evidence (independent, not the generated tests)
