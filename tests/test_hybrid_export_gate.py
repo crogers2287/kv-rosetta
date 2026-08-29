@@ -31,7 +31,7 @@ def ggsq_body(tokens=PROMPT_TOKENS, version=3, trailer=b"") -> bytes:
 
 def sckp_appendix(n_tokens=252, pos_min=0, pos_max=251, payload=64) -> bytes:
     return (SCKP_MAGIC + struct.pack("<II", 1, 1)
-            + struct.pack("<iii", n_tokens, pos_min, pos_max)
+            + struct.pack("<qii", n_tokens, pos_min, pos_max)
             + struct.pack("<Q", payload) + bytes(payload)
             + struct.pack("<Q", 0) + struct.pack("<Q", 0))
 

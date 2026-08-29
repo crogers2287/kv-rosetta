@@ -390,6 +390,9 @@ _SCKP_MAX_BUF = 1 << 34    # 16 GiB, the writer's cap on a single buffer
 #: means the length fields are describing something other than checkpoints.
 _SCKP_MAX_TOTAL = 1 << 38
 
+#: int64_t n_tokens + llama_pos pos_min + llama_pos pos_max, as the patch writes them.
+_SCKP_RECORD_SIZE = 16
+
 
 def _read_exact(handle, offset: int, count: int) -> bytes | None:
     """Read exactly ``count`` bytes at ``offset``, or None if the file ends first."""
@@ -428,10 +431,18 @@ def _parse_stream(handle, start: int, size: int) -> CheckpointAppendix | None:
     offset = start + 12
     total = 0
     for _ in range(count):
-        if _read_exact(handle, offset, 12) is None:   # n_tokens, pos_min, pos_max
+        # n_tokens is int64_t in common_prompt_checkpoint; pos_min and pos_max are
+        # llama_pos, which is int32. The record is 16 bytes, not 12. id_task is not
+        # written - the patch stores only these three fields before the buffers.
+        record = _read_exact(handle, offset, _SCKP_RECORD_SIZE)
+        if record is None:
             return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
                                       version=version, count=count)
-        offset += 12
+        n_tokens, pos_min, pos_max = struct.unpack("<qii", record)
+        if n_tokens < 0 or pos_min < 0 or pos_max < pos_min:
+            return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
+                                      version=version, count=count)
+        offset += _SCKP_RECORD_SIZE
         for _buffer in range(3):                      # data_tgt, data_dft, data_spec
             raw = _read_exact(handle, offset, 8)
             if raw is None:

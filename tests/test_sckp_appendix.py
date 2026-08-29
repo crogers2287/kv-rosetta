@@ -27,7 +27,7 @@ def buffer(nbytes: int) -> bytes:
 
 
 def checkpoint(n_tokens=64, pos_min=0, pos_max=63, tgt=32, dft=0, spec=0) -> bytes:
-    return (struct.pack("<iii", n_tokens, pos_min, pos_max)
+    return (struct.pack("<qii", n_tokens, pos_min, pos_max)
             + buffer(tgt) + buffer(dft) + buffer(spec))
 
 
@@ -127,13 +127,13 @@ class SCKPAppendixTest(unittest.TestCase):
                           CheckpointStatus.MALFORMED)
 
     def test_buffer_length_beyond_the_16gib_cap_is_malformed(self):
-        body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", (1 << 34) + 1)
+        body = struct.pack("<qii", 64, 0, 63) + struct.pack("<Q", (1 << 34) + 1)
         self.assertStatus(PAYLOAD + appendix(count=1, body=body),
                           CheckpointStatus.MALFORMED)
 
     def test_malformed_appendix_does_not_allocate_its_claimed_size(self):
         # A 16 GiB length field must be rejected by arithmetic, not by reading it.
-        body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", 1 << 40)
+        body = struct.pack("<qii", 64, 0, 63) + struct.pack("<Q", 1 << 40)
         self.assertStatus(PAYLOAD + appendix(count=1, body=body),
                           CheckpointStatus.MALFORMED)
 
@@ -243,14 +243,75 @@ class BoundedReadTest(unittest.TestCase):
         # A 16 GiB length field must be rejected by arithmetic. If the parser ever tried to
         # read or reserve it, this test would exhaust memory rather than fail.
         with tempfile.TemporaryDirectory() as directory:
-            body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", (1 << 34) + 1)
+            body = struct.pack("<qii", 64, 0, 63) + struct.pack("<Q", (1 << 34) + 1)
             path = self.sparse_artifact(directory, appendix(count=1, body=body))
             result = parse_checkpoint_appendix(path)
             self.assertIs(result.status, CheckpointStatus.MALFORMED)
 
     def test_a_length_field_pointing_past_eof_is_truncated_not_read(self):
         with tempfile.TemporaryDirectory() as directory:
-            body = struct.pack("<iii", 64, 0, 63) + struct.pack("<Q", 1 << 30)
+            body = struct.pack("<qii", 64, 0, 63) + struct.pack("<Q", 1 << 30)
             path = self.sparse_artifact(directory, appendix(count=1, body=body))
             self.assertIs(parse_checkpoint_appendix(path).status,
                           CheckpointStatus.TRUNCATED)
+
+
+class WriterLayoutTest(unittest.TestCase):
+    """The record layout must match the types the patch actually writes.
+
+    This was wrong once. The parser assumed three int32 fields, so it read 12-byte records
+    while save_slot_checkpoints() writes 16: n_tokens is int64_t in
+    common_prompt_checkpoint, pos_min and pos_max are llama_pos (int32). Every fixture in
+    this file used the same wrong pack format, so the whole suite passed while the parser
+    rejected every real appendix. It failed closed rather than open, but it proved nothing.
+
+    The framing below was read from a real slot file written by the patched 27B server:
+    n_written 331,032,532, checkpoint_bytes 156,894,416, so the appendix begins at
+    174,138,116 and runs to EOF with one checkpoint of 252 tokens at positions 251..251,
+    whose target buffer is 156,894,364 bytes and whose draft and speculative buffers are
+    empty - a target-only launch.
+    """
+
+    OBSERVED_HEADER = bytes.fromhex("53434b50" "01000000" "01000000")
+    OBSERVED_RECORD = bytes.fromhex("fc00000000000000" "fb000000" "fb000000")
+    OBSERVED_BUFFER_LENGTHS = (156894364, 0, 0)
+
+    def test_record_size_matches_the_writer(self):
+        from kv_rosetta.adapters.ggsq_envelope import _SCKP_RECORD_SIZE
+
+        self.assertEqual(_SCKP_RECORD_SIZE, 16)
+        self.assertEqual(len(self.OBSERVED_RECORD), 16)
+
+    def test_observed_framing_decodes_to_the_reported_metadata(self):
+        self.assertEqual(self.OBSERVED_HEADER[:4], SCKP_MAGIC)
+        version, count = struct.unpack("<II", self.OBSERVED_HEADER[4:12])
+        self.assertEqual((version, count), (SCKP_VERSION, 1))
+        n_tokens, pos_min, pos_max = struct.unpack("<qii", self.OBSERVED_RECORD)
+        self.assertEqual((n_tokens, pos_min, pos_max), (252, 251, 251))
+
+    def test_the_observed_framing_parses_as_a_complete_appendix(self):
+        blob = self.OBSERVED_HEADER + self.OBSERVED_RECORD
+        for length in self.OBSERVED_BUFFER_LENGTHS:
+            # Real payload sizes with placeholder bytes, so the framing is exercised
+            # without materialising 150 MB.
+            blob += struct.pack("<Q", length)
+        # Rebuild with payloads small enough to hold, keeping the framing shape.
+        blob = self.OBSERVED_HEADER + self.OBSERVED_RECORD
+        for length in (32, 0, 0):
+            blob += struct.pack("<Q", length) + bytes(length)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot.bin"
+            path.write_bytes(PAYLOAD + blob)
+            result = parse_checkpoint_appendix(path)
+            self.assertIs(result.status, CheckpointStatus.OK)
+            self.assertEqual(result.count, 1)
+            self.assertEqual(result.offset, len(PAYLOAD))
+
+    def test_a_twelve_byte_record_no_longer_parses(self):
+        # The old, wrong layout must not validate, or the regression could return unnoticed.
+        blob = (self.OBSERVED_HEADER + struct.pack("<iii", 252, 251, 251)
+                + struct.pack("<Q", 0) * 3)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot.bin"
+            path.write_bytes(PAYLOAD + blob)
+            self.assertIsNot(parse_checkpoint_appendix(path).status, CheckpointStatus.OK)
