@@ -65,7 +65,8 @@ class AdmittedPath:
     # -- admission (off the request path) -------------------------------------------
 
     def admit(self, raw: Path | str, *, model: str, token_ids: list[int],
-              save_response: dict[str, Any]) -> AdmittedObject:
+              save_response: dict[str, Any],
+              prefix_fingerprint: str = "") -> AdmittedObject:
         """Validate a raw state completely, then publish it. Refuses on any doubt.
 
         Everything the KVX import would check is checked here, because this is the only
@@ -133,11 +134,19 @@ class AdmittedPath:
             "prompt_token_digest": hashlib.sha256(
                 json.dumps(list(token_ids), separators=(",", ":")).encode()).hexdigest(),
             "prompt_token_count": len(token_ids),
+            # Kept so a later restore can run the mandatory reuse probe. Without them the
+            # only evidence of success would be the runtime's own restore response, which
+            # is the claim this project refuses to accept.
+            "prompt_token_ids": list(token_ids),
             "cache_dtype_k": k_dtype,
             "cache_dtype_v": v_dtype,
             "active_state_classes": self.adapter._active_state_classes(),
             "cache_abi_digest": abi.digest(),
             "runtime_build_info": self.adapter.props().get("build_info", ""),
+            # The corpus-level identity a caller asks by. Recorded here so a lookup does
+            # not have to re-tokenise a prefix to find the artifact that holds it.
+            "prefix_fingerprint": prefix_fingerprint,
+            "runtime_model": model,
         }
         return self.store.admit(raw, manifest)
 

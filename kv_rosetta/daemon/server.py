@@ -116,6 +116,20 @@ class Sidecar:
             raise Fallback(f"model {model!r} is not loaded; refusing to wake it - prefill "
                            f"natively instead")
 
+    def upstream_base(self, model: str) -> str:
+        """The one place an upstream URL is constructed, and only for a loaded model.
+
+        Restoring requires talking to the model's own server, and through llama-swap that
+        means /upstream/<model>/. That is the same path kvwarm used to wake models - the
+        difference is not the URL, it is that this one cannot be reached without first
+        proving the model is already resident. A blanket ban on the path would make restore
+        impossible; the gate is what makes it safe.
+        """
+        self.require_loaded(model)
+        if "/" in model or model.startswith("."):
+            raise Fallback(f"model name {model!r} is not a plain identifier")
+        return f"{self.config.swap.rstrip('/')}/upstream/{model}"
+
     # -- prefixes ----------------------------------------------------------------------
 
     def known_prefixes(self) -> list[dict[str, Any]]:
@@ -133,18 +147,54 @@ class Sidecar:
 
     # -- the one action ----------------------------------------------------------------
 
+    def store(self):
+        from kv_rosetta.admitted_store import AdmittedStore
+
+        if self.config.store_root is None:
+            raise Fallback("no admitted-state store is configured")
+        return AdmittedStore(Path(self.config.store_root).expanduser(), create=False)
+
+    def find_artifact(self, fingerprint: str, model: str):
+        """An admitted object for this prefix and this model, or None.
+
+        Matching is on the recorded prefix fingerprint and runtime model. The cache ABI is
+        re-checked during the restore itself, against the live runtime rather than against
+        what the manifest claims.
+        """
+        for obj in self.store().list_objects():
+            manifest = obj.manifest
+            if manifest.get("prefix_fingerprint") == fingerprint and \
+                    manifest.get("runtime_model") == model:
+                return obj
+        return None
+
     def ensure(self, fingerprint: str, model: str, slot: int = 0) -> dict[str, Any]:
         """Restore a prefix into a loaded model, or explain why the caller should prefill."""
         if not isinstance(fingerprint, str) or len(fingerprint) != 64 or \
                 any(c not in "0123456789abcdef" for c in fingerprint):
             raise Fallback("fingerprint is not a 64-character lowercase hex digest")
-        self.require_loaded(model)
-        # Restoring requires an admitted artifact for this exact model and runtime. Until
-        # the store is wired to a live adapter, say so plainly rather than pretending.
-        raise Fallback(
-            f"no admitted artifact for {fingerprint[:12]} on {model!r}; prefill natively. "
-            f"The admitted-store transfer seam is proven for a same-model, same-runtime "
-            f"restore but is not yet connected to this endpoint.")
+        base = self.upstream_base(model)          # proves the model is loaded first
+        found = self.find_artifact(fingerprint, model)
+        if found is None:
+            raise Fallback(f"no admitted artifact for prefix {fingerprint[:12]} on "
+                           f"{model!r}; prefill natively")
+
+        from kv_rosetta.adapters.admitted_path import AdmittedPath
+        from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
+
+        adapter = LlamaCppHTTPAdapter(base, str(self.store().root))
+        token_ids = list(found.manifest.get("prompt_token_ids") or [])
+        if not token_ids:
+            raise Fallback(
+                f"artifact {found.digest[:12]} records no token ids, so reuse cannot be "
+                f"verified; prefill natively rather than trusting an unverified restore")
+        report = AdmittedPath(adapter, self.store()).restore(
+            found.digest, model=model, token_ids=token_ids, slot=slot)
+        if not report.ok:
+            raise Fallback(f"restore refused: {report.reason}")
+        return {"restored": True, "digest": found.digest, "cache_n": report.cache_n,
+                "prompt_n": report.prompt_n, "seconds": report.seconds,
+                "phases": report.phases, "mode": "admitted_direct_restore"}
 
     # -- lifecycle ---------------------------------------------------------------------
 

@@ -133,18 +133,26 @@ class NoPromptOnlyLookupTests(unittest.TestCase):
     """The steer's repository-search criterion, as an executable check."""
 
     def test_no_module_performs_artifact_lookup_through_the_legacy_store(self):
+        """The legacy prompt-keyed Store must not be constructed in package code.
+
+        Checked by AST rather than substring. The original matched any line containing
+        "Store(" while excluding only "ArtifactStore(", so it flagged AdmittedStore as a
+        violation - a rule that names one thing and matches another, which is the same
+        defect as a test that passes for the wrong reason.
+        """
+        import ast
+
         root = Path(__file__).resolve().parent.parent / "kv_rosetta"
         offenders = []
         for path in root.rglob("*.py"):
-            text = path.read_text()
-            # The legacy prompt-keyed Store must not be constructed anywhere in the
-            # package: it cannot distinguish artifacts that share a prefix.
-            for line in text.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("#"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
                     continue
-                if "Store(" in stripped and "ArtifactStore(" not in stripped:
-                    offenders.append(f"{path.name}: {stripped[:70]}")
+                func = node.func
+                name = (func.id if isinstance(func, ast.Name)
+                        else func.attr if isinstance(func, ast.Attribute) else None)
+                if name == "Store":                # exactly Store, not *Store
+                    offenders.append(f"{path.name}:{node.lineno}")
         self.assertEqual(offenders, [], "legacy prompt-keyed Store used in package code")
 
     def test_the_legacy_store_documents_that_it_is_not_an_artifact_index(self):

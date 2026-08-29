@@ -223,6 +223,22 @@ class AdmittedStore:
                 + "; ".join(differing))
         return AdmittedObject(digest=digest, path=path, manifest=manifest, facts=facts)
 
+    def list_objects(self) -> list[AdmittedObject]:
+        """Every object that still satisfies its pinned facts.
+
+        Objects whose facts no longer hold are omitted rather than reported as damaged:
+        the caller's question is "what can I use", and an unusable object is not an answer.
+        Nothing here rehashes a payload.
+        """
+        found: list[AdmittedObject] = []
+        for manifest_path in sorted(self.root.glob(f"*{MANIFEST_SUFFIX}")):
+            digest = manifest_path.name[: -len(MANIFEST_SUFFIX)]
+            try:
+                found.append(self.resolve(digest))
+            except AdmissionError:
+                continue
+        return found
+
     def verify_bytes(self, digest: str) -> bool:
         """Rehash an object. NOT used on the request path; for tests and audits only."""
         path = self.root / f"{digest}{OBJECT_SUFFIX}"

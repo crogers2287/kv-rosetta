@@ -11,6 +11,7 @@ call kvwarm makes.
 
 import json
 import threading
+from pathlib import Path
 import unittest
 import urllib.error
 import urllib.request
@@ -83,31 +84,47 @@ class NeverWakeAModelTest(SidecarTestCase):
             self.assertNotIn("model-b", path,
                              "the sidecar named an unloaded model in a request")
 
-    def test_no_code_path_builds_an_upstream_url(self):
-        """A source check, because a future edit could add one no test exercises.
+    def test_the_upstream_url_is_built_in_exactly_one_place(self):
+        """Restoring needs the upstream path, so it cannot be banned - it is gated.
 
-        Docstrings are excluded deliberately - this module explains the upstream call in
-        prose precisely so nobody reintroduces it, and a plain substring search would flag
-        that explanation while missing a URL assembled from parts.
+        A blanket ban would make restore impossible. Instead every upstream URL must come
+        from upstream_base(), which proves the model is loaded first. This counts the
+        construction sites so a second, ungated one cannot appear unnoticed. Docstrings are
+        excluded: the module explains the hazard in prose on purpose.
         """
         import ast
         from pathlib import Path
 
         tree = ast.parse(Path("kv_rosetta/daemon/server.py").read_text())
-        docstrings = set()
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                                 ast.AsyncFunctionDef)):
-                doc = ast.get_docstring(node, clean=False)
-                if doc is not None:
-                    docstrings.add(doc)
+        docstrings = {ast.get_docstring(n, clean=False) for n in ast.walk(tree)
+                      if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef))}
         literals = [n.value for n in ast.walk(tree)
                     if isinstance(n, ast.Constant) and isinstance(n.value, str)
                     and n.value not in docstrings]
-        offending = [v for v in literals if "upstream" in v]
-        self.assertEqual(offending, [],
-                         f"the sidecar builds an upstream URL, which wakes a model: "
-                         f"{offending}")
+        sites = [v for v in literals if "upstream" in v]
+        self.assertEqual(len(sites), 1,
+                         f"expected exactly one gated upstream construction, found {sites}")
+
+    def test_the_upstream_gate_refuses_an_unloaded_model(self):
+        sidecar, swap = self.build(loaded=("loaded-one",))
+        with self.assertRaises(Fallback) as caught:
+            sidecar.upstream_base("other-one")
+        self.assertIn("refusing to wake it", caught.exception.reason)
+        for path in swap.paths:
+            self.assertNotIn("/upstream/", path,
+                             "an upstream URL was requested for an unloaded model")
+
+    def test_the_upstream_gate_returns_a_url_for_a_loaded_model(self):
+        sidecar, _ = self.build(loaded=("loaded-one",))
+        self.assertTrue(sidecar.upstream_base("loaded-one").endswith("/upstream/loaded-one"))
+
+    def test_a_model_name_that_could_traverse_is_refused(self):
+        sidecar, _ = self.build(loaded=("../etc/passwd", ".hidden"))
+        for name in ("../etc/passwd", ".hidden"):
+            with self.subTest(model=name):
+                with self.assertRaises(Fallback) as caught:
+                    sidecar.upstream_base(name)
+                self.assertIn("plain identifier", caught.exception.reason)
 
     def test_a_model_still_loading_does_not_count_as_loaded(self):
         """A model mid-load is not resident; sending it work is what evicts things.
@@ -167,11 +184,11 @@ class FallbackTest(SidecarTestCase):
             sidecar.running_models()
         self.assertIn("cannot read loaded models", caught.exception.reason)
 
-    def test_a_loaded_model_without_an_artifact_falls_back_honestly(self):
+    def test_an_unconfigured_store_falls_back_rather_than_erroring(self):
         sidecar, _ = self.build(loaded=("model-a",))
         with self.assertRaises(Fallback) as caught:
             sidecar.ensure("c" * 64, "model-a")
-        self.assertIn("no admitted artifact", caught.exception.reason)
+        self.assertIn("no admitted-state store", caught.exception.reason)
 
     def test_a_missing_manifest_root_returns_no_prefixes(self):
         sidecar, _ = self.build()
@@ -261,3 +278,109 @@ class HttpSurfaceTest(SidecarTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoreLookupTest(SidecarTestCase):
+    """Finding an artifact by prefix, and refusing to restore what cannot be verified."""
+
+    def store_with(self, **manifest):
+        import tempfile
+        from kv_rosetta.admitted_store import AdmittedStore
+
+        directory = Path(tempfile.mkdtemp())
+        store = AdmittedStore(directory / "store")
+        raw = directory / "raw.bin"
+        raw.write_bytes(b"state bytes" * 64)
+        store.admit(raw, dict(manifest))
+        return store
+
+    def build_with_store(self, store, **kwargs):
+        sidecar, swap = self.build(**kwargs)
+        object.__setattr__(sidecar.config, "store_root", str(store.root))
+        return sidecar, swap
+
+    def test_an_artifact_is_found_by_prefix_and_model(self):
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1, 2, 3])
+        sidecar, _ = self.build_with_store(store, loaded=("model-a",))
+        found = sidecar.find_artifact("a" * 64, "model-a")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.manifest["prompt_token_ids"], [1, 2, 3])
+
+    def test_a_different_model_does_not_match(self):
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1])
+        sidecar, _ = self.build_with_store(store, loaded=("model-b",))
+        self.assertIsNone(sidecar.find_artifact("a" * 64, "model-b"))
+
+    def test_a_different_prefix_does_not_match(self):
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1])
+        sidecar, _ = self.build_with_store(store, loaded=("model-a",))
+        self.assertIsNone(sidecar.find_artifact("b" * 64, "model-a"))
+
+    def test_an_artifact_without_token_ids_is_refused_not_restored(self):
+        """Reuse must be verifiable, so an artifact that cannot be probed is not used.
+
+        Without the tokens the only evidence of success would be the runtime's own restore
+        response - the claim this project exists to refuse.
+        """
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a")
+        sidecar, _ = self.build_with_store(store, loaded=("model-a",))
+        with self.assertRaises(Fallback) as caught:
+            sidecar.ensure("a" * 64, "model-a")
+        self.assertIn("reuse cannot be verified", caught.exception.reason)
+
+    def test_a_missing_artifact_falls_back_before_any_restore(self):
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1])
+        sidecar, swap = self.build_with_store(store, loaded=("model-a",))
+        with self.assertRaises(Fallback) as caught:
+            sidecar.ensure("f" * 64, "model-a")
+        self.assertIn("no admitted artifact", caught.exception.reason)
+        self.assertFalse([p for p in swap.paths if "action=restore" in p])
+
+    def test_a_refused_restore_becomes_a_fallback_not_a_success(self):
+        """Reaches the restore and has it fail, which no other test does.
+
+        Every other path falls back before restoring, so the check on report.ok broke no
+        test - a mutation run caught that. Here the store, model and tokens all line up and
+        the restore itself refuses.
+        """
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1, 2, 3])
+        sidecar, _ = self.build_with_store(store, loaded=("model-a",))
+
+        import kv_rosetta.adapters.admitted_path as module
+        from kv_rosetta.adapters.admitted_path import AdmittedRestoreReport
+
+        original = module.AdmittedPath.restore
+        module.AdmittedPath.restore = lambda self, digest, **kw: AdmittedRestoreReport(
+            ok=False, reason="cache ABI mismatch", digest=digest)
+        try:
+            with self.assertRaises(Fallback) as caught:
+                sidecar.ensure("a" * 64, "model-a")
+        finally:
+            module.AdmittedPath.restore = original
+        self.assertIn("restore refused", caught.exception.reason)
+        self.assertIn("cache ABI mismatch", caught.exception.reason)
+
+    def test_a_successful_restore_reports_the_reused_tokens(self):
+        store = self.store_with(prefix_fingerprint="a" * 64, runtime_model="model-a",
+                                prompt_token_ids=[1, 2, 3, 4])
+        sidecar, _ = self.build_with_store(store, loaded=("model-a",))
+
+        import kv_rosetta.adapters.admitted_path as module
+        from kv_rosetta.adapters.admitted_path import AdmittedRestoreReport
+
+        original = module.AdmittedPath.restore
+        module.AdmittedPath.restore = lambda self, digest, **kw: AdmittedRestoreReport(
+            ok=True, digest=digest, cache_n=3, prompt_n=1, seconds=0.4,
+            phases={"runtime_restore": 0.3})
+        try:
+            result = sidecar.ensure("a" * 64, "model-a")
+        finally:
+            module.AdmittedPath.restore = original
+        self.assertTrue(result["restored"])
+        self.assertEqual((result["cache_n"], result["prompt_n"]), (3, 1))
+        self.assertEqual(result["mode"], "admitted_direct_restore")
