@@ -1051,9 +1051,32 @@ alternative agreed; membership differences are now counted separately. And the r
 assembles the record — ten minutes of GPU time spent and nothing written.
 `tests/test_no_undefined_names.py` now scans every module and script for that class of fault.
 
-Status: **measured once on this host** — HIP↔Vulkan, both directions, 128 tokens.
-**Proven by retained test**: the revision guard, the divergence arithmetic, the
-undefined-name scan (752 offline tests). **Untested**: CUDA↔anything, which needs a 3090 slot
-that vLLM currently holds; a same-backend save-and-restore control, which would separate the
-cost of restoring at all from the cost of restoring something foreign; anything above 128
-tokens on this pair. Top-1 agreement is over 8 generated positions — a small sample.
+### The missing control, added
+
+The 0.364 above still carried two causes at once — the cost of restoring at all, and the cost
+of restoring something *foreign*. The reader now saves and restores its **own** cache first,
+by exactly the sequence the writer used, before touching the transferred artifact. It refuses
+if that self-restore reuses nothing, since a control that measures nothing would still print
+a number.
+
+| comparison | HIP→Vulkan | Vulkan→HIP | membership changes |
+|---|---|---|---|
+| own restore vs cold prefill, same backend | 0.053 | 0.139 | **0** |
+| foreign cache vs own cache | 0.373 | 0.397 | 4 |
+| two cold runs, different backends, no cache | 0.375 | 0.375 | 2 |
+
+Restoring a cache the backend wrote itself is very nearly exact — an order of magnitude
+tighter than anything else here, and it does not even shuffle the tail of the top-k list.
+
+The number that matters is the middle row against the bottom one. **Using a foreign cache
+diverges by 0.373–0.397; the two backends already diverge by 0.375 doing identical cold work
+with no cache involved at all.** Crossing the backend boundary therefore adds nothing
+measurable beyond the arithmetic difference the backends carry anyway. Top-1 agreement is
+1.00 everywhere and generated tokens are identical throughout.
+
+Status: **measured once on this host** — HIP↔Vulkan, both directions, 128 tokens, four-way
+decomposition. **Proven by retained test**: the revision guard, the divergence arithmetic, the
+self-restore refusal, the undefined-name scan (728 offline tests, CI green). **Untested**:
+CUDA↔anything, which needs a 3090 slot that vLLM currently holds; anything above 128 tokens on
+this pair. Top-1 agreement is over 8 generated positions — a small sample, and the claim above
+rests on the delta rather than on that agreement.

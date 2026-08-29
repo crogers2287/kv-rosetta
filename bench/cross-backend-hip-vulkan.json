@@ -18,7 +18,25 @@
       "content_matches": true,
       "control_cache_n": 0,
       "direction": "hip_to_vulkan",
+      "foreign_cache_vs_own_cache": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.3725423812866211,
+        "positions": 8,
+        "shared_tokens": 38,
+        "tokens_only_in_one": 4,
+        "top1_agreement": 1.0
+      },
       "logprobs_match": false,
+      "own_restore_cache_n": 127,
+      "own_restore_tokens_match": true,
+      "own_restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.05295848846435547,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
       "prompt_n": 1,
       "prompt_tokens": 128,
       "reader": {
@@ -91,7 +109,25 @@
       "content_matches": true,
       "control_cache_n": 0,
       "direction": "vulkan_to_hip",
+      "foreign_cache_vs_own_cache": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.3968324661254883,
+        "positions": 8,
+        "shared_tokens": 38,
+        "tokens_only_in_one": 4,
+        "top1_agreement": 1.0
+      },
       "logprobs_match": false,
+      "own_restore_cache_n": 127,
+      "own_restore_tokens_match": true,
+      "own_restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.13884449005126953,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
       "prompt_n": 1,
       "prompt_tokens": 128,
       "reader": {
@@ -154,7 +190,7 @@
   "llama_source_revision": "ca3d5a3",
   "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
   "prompt_tokens": 128,
-  "repo_commit": "eed5f48e0cfe5f98faccb2da14a2f554ea6ece67",
-  "runner_sha256": "b47c1b10d27ff782aa185cf6609ce6b74bff60c3bd2f4b512cad671102af19ef",
+  "repo_commit": "3ab5302a69837396121552a4072070c6211fd588",
+  "runner_sha256": "fce9bbd9884e9cb3718d74e9f7ee199868f3d56840e0a110e64e77f2f032d1b1",
   "warning": "RESEARCH ONLY. Same model, same cache dtype, different compute backend."
 }
