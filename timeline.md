@@ -202,3 +202,39 @@ skips if the control binary advertises checkpoint support.
 
 Caveat: measured once, on one host, at one prompt length (256 tokens). The economic
 question - whether restoring beats prefilling - is separate and not answered here.
+
+## REQ-019 — Fail-closed export gate, then the 27B matrix re-run against it
+
+Steer 53c390a, P0 then P1 then P2. Audited every assertion in that steer against the code
+first; all held. Two were stale against the branch head rather than its stated basis: the
+magic scan had already been tightened to require EOF termination (cdd698e), and the paired
+27B record had landed (846c566).
+
+**P0/P1** — `export()` reached the slot-save POST after checking only the requested
+representation and the slot path. An unpatched hybrid runtime would answer with a plain
+sequence-state artifact that restores, reports `n_restored`, and reuses nothing. 15 retained
+tests in `tests/test_hybrid_export_gate.py` pin the refusals; the load-bearing assertion is
+that no save POST is issued, since refusing afterwards still implies the runtime was
+consulted. Compound labelling is now bound to `n_written - checkpoint_bytes` rather than to
+a magic found anywhere, and `int(x or -1)` no longer rewrites position 0 as absent.
+
+Patch 0002 gained `active_checkpoint_state_classes`. Verified on the rebuilt server: it
+reports `["target"]` for a launch with no draft model. Without it, a target-only
+configuration cannot be told apart from a speculative one and both must be refused.
+
+**P2** — re-ran the paired matrix against the rebuilt binary, with the steer's acceptance
+criteria enforced by the runner rather than merely recorded. Both legs pass:
+
+| | patched | control |
+|---|---|---|
+| after restore | cache_n=252 prompt_n=4 | cache_n=0 prompt_n=256 |
+| active state classes | ['target'] | None |
+
+Now enforced, not just recorded: the port closes before the second process starts; output
+tokens *and probability vectors* match native in-memory checkpoint reuse; cache_n equals the
+declared `checkpoint_n_tokens`; cache_n + prompt_n equals the token count; the uncovered tail
+is within the ceiling of 8; and every checkpoint metadata field is identical between the save
+and restore responses.
+
+Status: **proven by retained test** (offline gate) and **measured once on this host**
+(the 27B matrix). Deliberately not done, per the steer: the context ladder stays deferred.

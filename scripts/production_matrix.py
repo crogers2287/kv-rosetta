@@ -37,6 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from kv_rosetta import gguf, weights  # noqa: E402
 
 PROMPT_TOKENS = 256
+
+#: The measured uncovered tail is 4; 8 is the working ceiling from the prior steer.
+MAX_UNCOVERED_TAIL = 8
 # The production 27B lives on the rclone VFS mount, which reads well under 100 MB/s
 # cold. The first load of a leg warms it; later loads are local-cache speed.
 BOOT_TIMEOUT = 1800
@@ -242,6 +245,9 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
 
     if Path(f"/proc/{first_pid}").exists():
         raise RuntimeError(f"{name}: first process {first_pid} survived stop")
+    if first.healthy(timeout=2):
+        raise RuntimeError(f"{name}: port {port} still answers after the process exited; "
+                           f"a later restore could be measured against the old process")
 
     second = Server(binary, model, slots, free_port(), log_dir / f"{name}-2.log")
     second_pid = second.start()
@@ -279,8 +285,42 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
             out.append({str(t["id"]): t.get("prob", t.get("logprob")) for t in top})
         return out
 
+    # The acceptance criteria, enforced rather than merely recorded. A record that reports
+    # numbers without checking them is a log, not a gate.
+    warm_cache_n = warm["timings"]["cache_n"]
+    warm_prompt_n = warm["timings"]["prompt_n"]
+    problems = []
+    if toks(cold) != toks(warm) or cold["content"] != warm["content"]:
+        problems.append("restored output differs from the cold run")
+    if toks(native) != toks(warm) or native["content"] != warm["content"]:
+        problems.append("restored output differs from native in-memory reuse")
+    if probs(native) != probs(warm):
+        problems.append("restored probability vectors differ from native in-memory reuse")
+    if warm_cache_n + warm_prompt_n != len(ids):
+        problems.append(f"cache_n + prompt_n = {warm_cache_n + warm_prompt_n}, not {len(ids)}")
+    if expect_patched:
+        declared = int(saved.get("checkpoint_n_tokens", 0) or 0)
+        if warm_cache_n != declared:
+            problems.append(f"cache_n {warm_cache_n} != declared checkpoint_n_tokens {declared}")
+        if not 1 <= warm_prompt_n <= MAX_UNCOVERED_TAIL:
+            problems.append(f"uncovered tail {warm_prompt_n} outside 1..{MAX_UNCOVERED_TAIL}")
+        for field in ("checkpoint_bytes", "checkpoint_n_tokens",
+                      "checkpoint_pos_min", "checkpoint_pos_max"):
+            if saved.get(field) != restored.get(field):
+                problems.append(f"{field} differs between save and restore: "
+                                f"{saved.get(field)} vs {restored.get(field)}")
+        if saved.get("n_checkpoints_saved") != restored.get("n_checkpoints_restored"):
+            problems.append("checkpoint count differs between save and restore")
+    else:
+        if warm_cache_n != 0 or warm_prompt_n != len(ids):
+            problems.append(f"unpatched leg reused a prefix: cache_n={warm_cache_n}")
+    if problems:
+        raise RuntimeError(f"{name}: " + "; ".join(problems))
+
     settings = props.get("default_generation_settings", {}) or {}
     return {
+        "active_checkpoint_state_classes": props.get("active_checkpoint_state_classes"),
+        "acceptance_checked": True,
         "leg": name,
         "expect_patched": expect_patched,
         "binary": binary,
