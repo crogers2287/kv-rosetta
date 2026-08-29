@@ -815,3 +815,62 @@ branch says stop storage-format work and profile, which is what this is.
 Status: **failed** (economic gate, 0/3). **Proven by retained test**: 457 offline, every
 guard mutation-checked. **Measured three times on this host**: this gate.
 **Untested**: NVMe, 8K.
+
+## REQ-032 — The admitted-store 2K gate PASSES with the support check included
+
+Steer 3cacbba. Both of its assertions were verified against the code before acting, and both
+held — including the store-ownership gap, which was mine.
+
+**The parser tax was the whole failure.** `read_metadata()` materialises every array element,
+so asking for `general.architecture` built 150k Python strings from the tokenizer vocabulary:
+~0.65 s per call on the 27B, paid on every restore by the fail-closed support check.
+
+The support decision is unchanged and still runs on every restore. Only the evidence
+retrieval changed — a cursor over an mmap steps past values arithmetically and allocates
+nothing but the value asked for. **Measured: 0.65 s → 0.2–0.7 ms.**
+
+Duplicate detection and request-path cost genuinely conflict, so they are split rather than
+one quietly dropped. Catching a *later* conflicting duplicate still costs ~0.39 s, because
+the tokenizer array must be stepped over. `architecture_exhaustive()` does that at
+**admission**, where an ambiguous header is rejected once and never becomes an admitted
+object; `architecture()` returns at the key and does not inspect later keys. That limit is
+documented and pinned by its own test rather than left implied.
+
+**Result — 3 of 3 paired wins:**
+
+| rep | restore | tail | total | cold | |
+|---|---:|---:|---:|---:|---|
+| 1 | 1.230 | 0.467 | **1.696** | 1.734 | win |
+| 2 | 1.125 | 0.425 | **1.551** | 1.731 | win |
+| 3 | 1.085 | 0.424 | **1.509** | 1.737 | win |
+
+Median 1.551 s (range 1.509–1.696)
+against cold 1.734 s (range 1.731–1.737),
+ratio 0.894.
+
+| phase | before | after |
+|---|---:|---:|
+| **resolve_support** | 0.652 | **0.0022** |
+| runtime restore | 0.429 | 0.431 |
+| pristine re-restore | 0.441 | 0.459 |
+| reuse probe | 0.205 | 0.222 |
+| resolve_store / abi / identity | ~0.001 | ~0.001 |
+
+Decision rule, every condition: `resolve_support` median 0.0022 s < 0.010 s;
+median beats cold; 3/3 ≥ 2 paired wins; all correctness and safety gates pass —
+`cache_n=2044 prompt_n=4` every run, restore metadata equal to admitted metadata, full parity
+against native reuse, **zero request-path payload bytes**, the admitted object unchanged, and
+the unpatched control refusing with **zero endpoint calls**.
+
+**A request-path win is not a lifecycle win.** Admission costs 2.834 s
+and saves 0.183 s per restore, so it breaks even after
+**16 restores**. Below that, admitting is a loss.
+
+Also fixed here, from the steer's audit of my own code: `AdmittedStore` documented a store
+owned by the current user but checked only mode 0700, so a 0700 directory owned by someone
+else satisfied it. It now requires `st_uid == geteuid()`.
+
+Status: **measured three times on this host** (this gate). **Proven by retained test**: 472
+offline, all four new guards mutation-checked. **Untested**: NVMe, 8K, and everything the
+steer lists as prerequisites for calling this production-ready — the same-UID/root basename
+race, model variants beyond the tested digest, and active draft/speculative state.
