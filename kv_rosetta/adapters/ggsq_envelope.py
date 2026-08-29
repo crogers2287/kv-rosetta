@@ -357,23 +357,123 @@ SCKP_MAGIC = (0x504B4353).to_bytes(4, "little")   # b"SCKP"
 SCKP_FORMAT = "sckp/1"
 
 
-def has_checkpoint_appendix(path, chunk: int = 4 << 20) -> bool:
-    """True when a slot state file carries an appended checkpoint payload.
+class CheckpointStatus(str, Enum):
+    """Why a slot file does or does not carry a usable checkpoint appendix."""
 
-    Scans for the magic rather than trusting an offset: the appendix follows the llama
-    state, whose length depends on the model and the prompt. Three bytes are carried across
-    chunk boundaries so a magic straddling a read is not missed.
+    ABSENT = "absent"                    #: no SCKP magic anywhere in the file
+    OK = "ok"                            #: a complete appendix ending exactly at EOF
+    TRUNCATED = "truncated"              #: header parsed, payload runs past EOF
+    UNKNOWN_VERSION = "unknown_version"  #: SCKP magic with a version we cannot read
+    MALFORMED = "malformed"              #: count or a length field outside the writer's range
+
+
+@dataclass(frozen=True)
+class CheckpointAppendix:
+    status: CheckpointStatus
+    offset: int | None = None
+    nbytes: int | None = None
+    version: int | None = None
+    count: int | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.status is CheckpointStatus.OK
+
+
+#: The writer's own guards, mirrored so we reject what the server would reject.
+SCKP_VERSION = 1
+_SCKP_MAX_COUNT = 1024
+_SCKP_MAX_BUF = 1 << 34    # 16 GiB, the writer's cap on a single buffer
+
+
+def _u32(blob: bytes, off: int) -> int | None:
+    return None if off + 4 > len(blob) else int.from_bytes(blob[off:off + 4], "little")
+
+
+def _u64(blob: bytes, off: int) -> int | None:
+    return None if off + 8 > len(blob) else int.from_bytes(blob[off:off + 8], "little")
+
+
+def _parse_at(blob: bytes, start: int) -> CheckpointAppendix | None:
+    """Parse one candidate appendix. None means 'not an appendix at this offset'.
+
+    The appendix is the last thing in the file, so a complete one ends exactly at EOF.
+    Requiring that is what separates a real appendix from the magic occurring by chance
+    inside the KV payload - scanning for the magic alone cannot tell those apart.
+    """
+    version = _u32(blob, start + 4)
+    count = _u32(blob, start + 8)
+    if version is None or count is None:
+        return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start, version=version)
+    if version != SCKP_VERSION:
+        return CheckpointAppendix(CheckpointStatus.UNKNOWN_VERSION, offset=start,
+                                  version=version, count=count)
+    if count > _SCKP_MAX_COUNT:
+        return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
+                                  version=version, count=count)
+    off = start + 12
+    for _ in range(count):
+        off += 12                                  # n_tokens, pos_min, pos_max (int32 each)
+        if off > len(blob):
+            return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
+                                      version=version, count=count)
+        for _buffer in range(3):                   # data_tgt, data_dft, data_spec
+            size = _u64(blob, off)
+            if size is None:
+                return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
+                                          version=version, count=count)
+            if size > _SCKP_MAX_BUF:
+                return CheckpointAppendix(CheckpointStatus.MALFORMED, offset=start,
+                                          version=version, count=count)
+            off += 8 + size
+        if off > len(blob):
+            return CheckpointAppendix(CheckpointStatus.TRUNCATED, offset=start,
+                                      version=version, count=count)
+    if off != len(blob):
+        return None                                # a chance magic inside the payload
+    return CheckpointAppendix(CheckpointStatus.OK, offset=start, nbytes=off - start,
+                              version=version, count=count)
+
+
+def parse_checkpoint_appendix(path) -> CheckpointAppendix:
+    """Classify the checkpoint appendix on a slot state file.
+
+    The server ignores an appendix it cannot read and still reports a successful restore,
+    so a truncated or unknown-version appendix looks exactly like a good one from the
+    restore response. Anything short of a complete, EOF-terminated appendix is refused
+    here rather than advertised as checkpoint support.
     """
     from pathlib import Path as _Path
+
     path = _Path(path)
     if not path.is_file():
-        return False
-    tail = b""
-    with open(path, "rb") as handle:
-        while True:
-            block = handle.read(chunk)
-            if not block:
-                return False
-            if SCKP_MAGIC in tail + block:
-                return True
-            tail = block[-3:]
+        return CheckpointAppendix(CheckpointStatus.ABSENT)
+    blob = path.read_bytes()
+    rejected: list[CheckpointAppendix] = []
+    start = blob.find(SCKP_MAGIC)
+    while start != -1:
+        parsed = _parse_at(blob, start)
+        if parsed is not None:
+            if parsed.usable:
+                return parsed
+            rejected.append(parsed)
+        start = blob.find(SCKP_MAGIC, start + 1)
+    if not rejected:
+        return CheckpointAppendix(CheckpointStatus.ABSENT)
+    # Four bytes of KV data can spell SCKP, and nothing distinguishes that from a real
+    # appendix written by a future version. Both are refused; when several candidates
+    # were rejected, report the one that at least carried a version we understand, since
+    # that is the one describing a damaged appendix rather than a coincidence.
+    for candidate in rejected:
+        if candidate.version == SCKP_VERSION:
+            return candidate
+    return rejected[0]
+
+
+def has_checkpoint_appendix(path, chunk: int = 4 << 20) -> bool:
+    """True only when the file carries a complete, readable checkpoint appendix.
+
+    An appendix the server would silently discard is not checkpoint support, so it is
+    reported as absent here. ``chunk`` is accepted for call compatibility and unused.
+    """
+    return parse_checkpoint_appendix(path).usable
