@@ -704,10 +704,15 @@ def run_leg(name: str, binary: str, model: str, slots: str, expect_patched: bool
 
     settings = props.get("default_generation_settings", {}) or {}
     return {
-        # Q4 weight quantization says nothing about the K/V cache dtype, so record what the
-        # runtime actually reports rather than inferring it from the model filename.
-        "kv_dtype_k": str(props.get("type_k", settings.get("type_k", ""))),
-        "kv_dtype_v": str(props.get("type_v", settings.get("type_v", ""))),
+        # The live target context's cache types, from the key the runtime actually
+        # advertises. Reading a key nothing populates records an empty string beside a
+        # successful import that required a non-empty one - a record contradicting itself.
+        "kv_dtype_k": str(props.get("target_cache_type_k", "")),
+        "kv_dtype_v": str(props.get("target_cache_type_v", "")),
+        "draft_kv_dtype_k": str(props.get("draft_cache_type_k", "")),
+        "draft_kv_dtype_v": str(props.get("draft_cache_type_v", "")),
+        # Recorded alongside so the record itself shows they are different things.
+        "model_ftype": str(props.get("model_ftype", "")),
         "prompt_tokens_requested": PROMPT_TOKENS,
         "memory": memory,
         "active_checkpoint_state_classes": props.get("active_checkpoint_state_classes"),

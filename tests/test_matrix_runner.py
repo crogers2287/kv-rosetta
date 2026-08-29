@@ -102,3 +102,25 @@ class RetainedRecordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordedDtypeTest(unittest.TestCase):
+    """The advertised cache types must reach the record, not just the adapter.
+
+    The runner read `type_k`, which nothing populates, while the adapter reads
+    `target_cache_type_k`. The result was a record showing an empty cache dtype beside a
+    successful import that only happens when the dtype is non-empty - a record contradicting
+    itself.
+    """
+
+    def test_the_runner_reads_the_advertised_key(self):
+        source = (REPO / "scripts" / "production_matrix.py").read_text()
+        self.assertIn('props.get("target_cache_type_k"', source)
+        self.assertIn('props.get("target_cache_type_v"', source)
+
+    def test_the_runner_does_not_fall_back_to_weight_quantization(self):
+        source = (REPO / "scripts" / "production_matrix.py").read_text()
+        marker = source.index('"kv_dtype_k"')
+        window = source[marker:marker + 400]
+        self.assertNotIn("model_ftype", window.split('"model_ftype":')[0],
+                         "weight quantization must not be a fallback for cache dtype")
