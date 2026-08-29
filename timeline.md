@@ -928,3 +928,49 @@ state-file cold-cache sensitivity rather than host restart.
 
 Status: **measured three times on this host**. **Proven by retained test**: 476 offline.
 **Untested**: state-cold behaviour, host restart, 8K.
+
+## REQ-034 — The 8K rung passes 3/3, and the win grows with prefix length
+
+Steer c867cda, P0 and P1. Its source review found two constants that made the harness
+silently 2K-only, and both were mine: the acceptance check required `cache_n == 2044` and
+`prompt_n == 4` literally, so a correct 8K run reporting 8188/4 would have been **rejected as
+a failure**; and the record `kind` was hardcoded `admitted-store-2k-gate`.
+
+Coverage is now derived from the admitted checkpoint metadata — `cache_n` equals the declared
+coverage, `prompt_n` equals the uncovered tail, and the two sum to the prompt length. The argv
+test is behavioural rather than a source-substring match, because the previous nonfunctional
+context fix passed both `ast.parse` and a substring assertion.
+
+**Result — 3 of 3 paired wins at 8,192 tokens:**
+
+| rep | restore | tail | total | cold | faster |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1.392 | 0.448 | **1.840** | 4.862 | 62.2% |
+| 2 | 1.403 | 0.445 | **1.848** | 4.876 | 62.1% |
+| 3 | 1.490 | 0.448 | **1.938** | 4.884 | 60.3% |
+
+Median **1.848 s** (range 1.840–1.938)
+against cold **4.876 s** (range 4.862–4.884)
+— **62.1% faster**. Coverage 8188 + 4 = 8192 every run.
+
+**The win grows with prefix length, measured not projected:**
+
+| prompt | restored total | cold | faster | break-even |
+|---|---:|---:|---:|---:|
+| 2,048 | 1.486 s | 1.731 s | 14.2% | 16 restores |
+| 8,192 | 1.848 s | 4.876 s | **62.1%** | **2 restores** |
+
+This is the first measurement inside the stated 8K–32K agentic-prefix range, and it is the
+result the product goal needed: a harness resending a large static prefix saves ~3 s per
+request and repays admission after **two** restores.
+
+Artifact: 1,007,783,892 bytes = 123,020 bytes/token,
+against 295,390 at 2K. That non-linearity is raised as RA-003; the fixed recurrent component
+amortises as the prefix grows, which is why the advantage widens.
+
+All safety gates held: zero request-path payload bytes, the admitted object unchanged, the
+unpatched control refusing with zero endpoint calls, ext4 on `nvme0n1` confirmed by mount
+evidence rather than pathname, and phases reconciled.
+
+Status: **measured three times on this host**. **Proven by retained test**: 490 offline.
+**Untested**: 32K, canonical extraction, cross-dtype transfer.
