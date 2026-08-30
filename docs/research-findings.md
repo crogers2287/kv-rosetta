@@ -1144,3 +1144,74 @@ token changes the next input and everything after it — and it says nothing abo
 `gate.py` already declares `teacher_forced` as its default scoring protocol for exactly this
 reason, and this runner was not using it. Under teacher forcing the same identity case scores
 0.977.
+
+---
+
+## 29. Where same-geometry caches differ, and why the converter is the identity
+
+The obvious next question after §28: the fine-tune transfers at 0.930 and the quantisation
+variant at 0.984, so what is the 0.054 made of, and can a converter remove it? Three state
+files over byte-identical token ids, decoded to canonical `(token, head, dim)` float32 and
+compared per layer.
+
+| pair | K cosine | K rel err | K norm ratio | V cosine | V rel err | V norm ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| instruct Q4 vs instruct Q8 (rounding) | 0.9972 | 0.079 | 1.0027 | 0.9833 | 0.186 | 1.0060 |
+| instruct Q4 vs base Q4 (fine-tune) | 0.9909 | 0.143 | 1.0003 | 0.9542 | 0.305 | 0.9831 |
+
+Medians over 36 layers. Three facts fall straight out:
+
+1. **It is not scale.** Norm ratios are 1.000 to three decimals in every case, so the
+   per-layer scalar that fixed the cross-*geometry* magnitude problem has nothing to do here.
+2. **V is roughly twice as far off as K**, on both pairs. Values carry the divergence.
+3. **It accumulates with depth.** Layer 0 is essentially identical (cosine 1.0000, relative
+   error 0.003) and the error grows monotonically into the twenties before easing slightly.
+   That is drift through the residual stream, not a fixed per-layer transform.
+
+### A fitted linear converter is worse than doing nothing, at every layer
+
+Per-head ridge regression, 128->128 per head, fitted on four prompts and scored on two the fit
+never saw. Split by whole prompt, because §20 measured what a token-level split costs.
+
+| | fitted R² (median) | do-nothing baseline | gain |
+|---|---:|---:|---:|
+| K | 0.911 | 0.948 | **−0.027** |
+| V | 0.631 | 0.890 | **−0.174** |
+
+**Zero of 36 layers show a positive gain, for K or V.** Layer 0 is the sharpest illustration:
+the raw cache already scores 0.998, and fitting drops it to 0.826 (K) and 0.488 (V). The fit
+destroys a near-perfect match.
+
+Ruled out as a hyperparameter artifact — a ridge sweep across six orders of magnitude never
+reaches parity, and improves monotonically as regularisation increases:
+
+```
+K   ridge 1e-6  -0.0595      V   ridge 1e-6  -0.2806
+    ridge 1e-2  -0.0517          ridge 1e-2  -0.2803
+    ridge 1.0   -0.0230          ridge 1.0   -0.2665
+    ridge 10    -0.0193          ridge 10    -0.2457
+```
+
+Stronger regularisation is always better, and stronger regularisation means *closer to the
+identity*. **The optimal linear converter between two same-geometry models is the identity
+map** — which is exactly what raw transfer already does. There is no linear structure in the
+residual for a converter to capture: it is the target's own weight drift, and the source cache
+carries no information about it.
+
+### What this means for "one file for everything"
+
+The goal decomposes into two problems with opposite answers.
+
+**Same geometry needs no converter.** The file is accepted as-is and works (§28). Building a
+linear translator here is not merely unnecessary, it is actively harmful, and this section is
+the measurement that says so rather than an argument that it should be.
+
+**Different geometry needs one and none has been found.** §20 stands: a learned map across
+differing layer and head counts reached 0.00 top-1 agreement.
+
+### The lead this opens
+
+Early layers are nearly identical between fine-tunes and late layers are not. That suggests a
+*partial-depth* reuse — take the foreign cache for the layers where it agrees and recompute
+only the layers where it does not — which would trade a fraction of the prefill for correctness
+rather than trading correctness for all of it. Untested, and it is the next thing worth running.

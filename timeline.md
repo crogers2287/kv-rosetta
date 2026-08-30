@@ -2957,3 +2957,54 @@ Status: **measured once on this host**, records at `docs/records/cross-model/`.
 **Proven by retained test**: the gate's controls (7/7 guards, 28 tests). **Untested**: more
 than one prompt, other geometry-sharing families, and whether a fine-tune pair closer than
 base→instruct closes the gap.
+
+---
+
+## REQ-073 — One KVX file per model, compared through a lens: the converter is the identity
+
+**Request:** build the same KVX file for a base model, a fine-tune and a dense model, see how
+each uses the data, and work out how to build the translator that lets one file serve all.
+
+Built `scripts/kvx_diff.py` (decode and compare per layer/kind/head) and
+`scripts/kvx_fit_converter.py` (fit a per-head linear map, score it on held-out prompts against
+a do-nothing baseline). Three state files over byte-identical token ids.
+
+### What the lens shows
+
+| pair | K cosine | K rel err | K norm ratio | V cosine | V rel err | V norm ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| instruct Q4 vs instruct Q8 | 0.9972 | 0.079 | 1.0027 | 0.9833 | 0.186 | 1.0060 |
+| instruct Q4 vs base Q4 | 0.9909 | 0.143 | 1.0003 | 0.9542 | 0.305 | 0.9831 |
+
+Not scale — norm ratios are 1.000. V is about twice as far off as K. And the error accumulates
+with depth: layer 0 is essentially identical (cosine 1.0000), the twenties are the worst.
+
+### The translator, answered
+
+Per-head ridge, 128->128, four prompts to fit, two held out whole:
+
+| | fitted R² | do-nothing | gain |
+|---|---:|---:|---:|
+| K | 0.911 | 0.948 | −0.027 |
+| V | 0.631 | 0.890 | −0.174 |
+
+**Zero of 36 layers gained anything.** A ridge sweep over six orders of magnitude never reaches
+parity and improves monotonically toward the identity, which is the signature of the identity
+being optimal. So for same-geometry models the translator you asked for **is the identity map**,
+and that is already what raw transfer does. Fitting anything else destroys a near-perfect
+starting point — layer 0 goes from 0.998 to 0.488 on V.
+
+The residual is the target model's own weight drift. The source cache carries no information
+about it, so no function *of the source* can recover it.
+
+### The lead this opens
+
+Early layers agree between fine-tunes and late layers do not. That points at **partial-depth
+reuse**: take the foreign cache for the layers where it agrees, recompute only the layers where
+it does not. That trades a fraction of the prefill for correctness instead of trading
+correctness for all of it, and it falls directly out of the depth curve rather than being a
+guess. Untested; next.
+
+Status: **measured once on this host**, records at `docs/records/kvx-diff/`. **Proven by
+retained test** — both runners' refusals (6/6 and 3/3 guards, 26 tests), including that the
+prompt-level split cannot be turned off and that the do-nothing baseline is always reported.
