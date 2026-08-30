@@ -82,7 +82,10 @@ present only for some architectures), so the data section's offset is not comput
 
 ## 4. Recurrent section
 
-Same outer shape — `n_stream`, `cell_count`, meta — then:
+**No `n_stream`.** `llama_memory_recurrent::state_write` writes `cell_count` first, unlike
+`llama_kv_cache::state_write`. This document previously claimed the two sections shared an
+outer shape; the decoder was written to match the document, and both were wrong until a real
+qwen35 artifact was decoded. The section is `cell_count`, then meta, then:
 
 ```
 uint32  s_trans                          # written as 0

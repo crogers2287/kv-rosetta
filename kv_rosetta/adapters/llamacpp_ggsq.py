@@ -238,11 +238,20 @@ def read_recurrent_section(handle: BinaryIO, start: int, end: int, *,
 
     `single_sequence` reflects the writer's `n_seq_id = seq_id == -1 ? size : 0`: a
     per-sequence save writes zero sequence ids, unlike the attention meta.
+
+    **This section does not begin with `n_stream`.** `llama_memory_recurrent::state_write`
+    writes `cell_count` and nothing before it, unlike `llama_kv_cache::state_write` which
+    writes `n_stream` first. An earlier version of this decoder read one anyway, on the
+    assumption that the two sections shared an outer shape, and the layout inventory said so
+    too. Against a real qwen35 artifact it consumed the cell count as `n_stream` - which
+    happened to be 1, so the guard passed - then read the first cell's position as the cell
+    count and marched into the tensor data. It failed at cell 3 with an absurd sequence-id
+    count, which is the only reason it was caught rather than returning plausible garbage.
+    `n_stream` is reported as 1 because a per-sequence save has exactly one; it is implied by
+    the format, not read from it.
     """
     reader = Reader(handle, start, end)
-    n_stream = reader.u32()
-    if n_stream != 1:
-        raise GGSQError(f"recurrent n_stream {n_stream} is unsupported")
+    n_stream = 1
     cell_count = reader.u32()
     if cell_count == 0:
         return RecurrentSection(n_stream, 0, False, 0, end_offset=reader.offset)

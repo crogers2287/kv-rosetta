@@ -228,8 +228,14 @@ def build_recurrent(cell_count=3, n_layer=4, layers=(0, 2), r_type=F16, r_elems=
     """A recurrent section built from the writer's field order.
 
     Note n_seq_id defaults to 0: a per-sequence save writes none, unlike the attention meta.
+
+    There is **no leading n_stream** here. `llama_memory_recurrent::state_write` writes
+    cell_count first, unlike the attention writer. This builder emitted one anyway and the
+    parser read one, so every test below passed while both were wrong together - the same
+    shape of fault as the 12-versus-16-byte checkpoint record. A real qwen35 artifact settled
+    it: the section begins with cell_count = 1.
     """
-    body = struct.pack("<I", 1) + struct.pack("<I", cell_count)
+    body = struct.pack("<I", cell_count)
     for cell in range(cell_count):
         body += struct.pack("<i", cell) + struct.pack("<I", n_seq_id)
         if n_seq_id:
@@ -295,15 +301,16 @@ class RecurrentSectionTest(unittest.TestCase):
 
     def test_a_transposed_recurrent_state_is_refused_not_guessed(self):
         body = bytearray(build_recurrent())
-        marker = 4 + 4 + 3 * (4 + 4)
+        # cell_count, then three cells of (pos, n_seq_id). No n_stream precedes it.
+        marker = 4 + 3 * (4 + 4)
         body[marker:marker + 4] = struct.pack("<I", 1)     # s_trans = 1
         with self.assertRaises(GGSQError) as caught:
             self.parse(bytes(body))
         self.assertIn("never been exercised", str(caught.exception))
 
     def test_an_empty_recurrent_stream_consumes_only_its_header(self):
-        body = struct.pack("<I", 1) + struct.pack("<I", 0)
-        self.assertEqual(self.parse(body).end_offset, 8)
+        """Four bytes, not eight: the header is cell_count alone."""
+        self.assertEqual(self.parse(struct.pack("<I", 0)).end_offset, 4)
 
 
 class CheckpointAppendixTest(unittest.TestCase):
@@ -527,3 +534,80 @@ class MaterialiseTest(unittest.TestCase):
                 # Assert the specific refusal: the geometry-match check fires first for
                 # these shapes, so without this the head-geometry guard proved nothing.
                 self.assertIn("invalid head geometry", str(caught.exception))
+
+
+class RealHybridArtifactTest(unittest.TestCase):
+    """The structure of an actual qwen35 state file, pinned as numbers.
+
+    Every other recurrent test here builds its own body, and for a long time both the builder
+    and the parser emitted a leading n_stream that the writer never writes - so they agreed
+    with each other and with nothing else. These constants come from decoding a 256-token
+    artifact saved by llama-server at ca3d5a3e1 on a W6800, and they close the file to zero
+    leftover bytes.
+    """
+
+    #: Qwen3.8-27B-UD-Q4_K_XL: 65 blocks, one of them NextN/MTP, full_attention_interval 4.
+    N_LAYER_ALL, N_LAYER, INTERVAL = 65, 64, 4
+    #: SSM metadata from the same GGUF.
+    D_INNER, D_STATE, D_CONV, N_GROUP = 6144, 128, 4, 16
+    #: Attention: 4 KV heads x key_length 256, f16.
+    KV_ROW = 4 * 256 * 2
+
+    FILE_BYTES = 173_679_168
+    HEADER_TOKENS, CELLS = 260, 256
+    ATTENTION_BYTES = 16_783_760
+    RECURRENT_BYTES = 156_894_356
+
+    def layers(self):
+        recurrent = tuple(i for i in range(self.N_LAYER) if (i + 1) % self.INTERVAL != 0)
+        attention = tuple(i for i in range(self.N_LAYER) if (i + 1) % self.INTERVAL == 0)
+        return recurrent, attention
+
+    def test_the_layer_split_follows_the_full_attention_interval(self):
+        recurrent, attention = self.layers()
+        self.assertEqual((len(recurrent), len(attention)), (48, 16))
+
+    def test_the_mtp_layer_carries_no_attention_kv(self):
+        """The rule marks the NextN layer non-recurrent, so it looks like a 17th attention
+        layer. The decoded file says n_layer = 16: it is not in the cache at all."""
+        _recurrent, attention = self.layers()
+        self.assertEqual(len(attention), 16)
+        self.assertNotIn(self.N_LAYER, attention)
+
+    def test_the_attention_section_size_is_accounted_for(self):
+        cells, layers = self.CELLS, 16
+        # 8 for n_stream+cell_count, 24 per cell (pos, n_seq_id, 12-byte cell_ext, seq_id),
+        # 8 for v_trans+n_layer, then per layer a 12-byte header and rows for keys and again
+        # for values.
+        predicted = 8 + 24 * cells + 8 + layers * (2 * 12 + cells * 2 * self.KV_ROW)
+        self.assertEqual(predicted, self.ATTENTION_BYTES)
+
+    def test_the_recurrent_rows_come_from_the_ssm_metadata(self):
+        conv = (self.D_CONV - 1) * (self.D_INNER + 2 * self.N_GROUP * self.D_STATE) * 4
+        ssm = self.D_INNER * self.D_STATE * 4
+        self.assertEqual((conv, ssm), (122_880, 3_145_728))
+
+    def test_the_recurrent_section_size_is_accounted_for(self):
+        conv, ssm = 122_880, 3_145_728
+        # cell_count, one cell of (pos, n_seq_id), s_trans+n_layer, then per present layer a
+        # 12-byte header and one row, for R and again for S.
+        predicted = 4 + 8 + 8 + 48 * (2 * 12 + conv + ssm)
+        self.assertEqual(predicted, self.RECURRENT_BYTES)
+
+    def test_the_two_sections_close_the_file_exactly(self):
+        total = (12 + 4 * self.HEADER_TOKENS + self.ATTENTION_BYTES + self.RECURRENT_BYTES)
+        self.assertEqual(total, self.FILE_BYTES)
+
+    def test_the_recurrent_state_dominates_at_this_length(self):
+        """90% of a 256-token hybrid artifact is state that does not grow with tokens.
+
+        This is why a per-token rate taken from a hybrid artifact over-predicts so badly, and
+        why sizing refuses hybrids rather than scaling one.
+        """
+        self.assertGreater(self.RECURRENT_BYTES / self.FILE_BYTES, 0.90)
+
+    def test_the_marginal_token_is_attention_only(self):
+        """Measured: a 257-token file is 65,564 bytes larger, and its recurrent section is
+        byte-identical."""
+        marginal = 4 + 24 + 16 * 2 * self.KV_ROW
+        self.assertEqual(marginal, 65_564)
