@@ -57,16 +57,34 @@ class GateThresholds:
 EXACT = GateThresholds(top1_agreement=1.0, mean_kl=0.0, max_kl=0.0, max_logit_delta=0.0)
 
 
+#: How the logits under comparison were obtained. This is not bookkeeping: the two
+#: protocols measure different things and are not interchangeable.
+#:
+#: `free` lets the candidate generate its own continuation. After the first divergence the
+#: candidate is conditioned on different tokens, so every later position compares two
+#: different questions - and because generation is autoregressive, one wrong token condemns
+#: the rest. Measured here, a nearly-perfect cache and a hopeless one both scored 0.042.
+#:
+#: `teacher_forced` scores every position against the same forced prefix, so an early mistake
+#: cannot contaminate later ones and the number varies with cache quality rather than with
+#: when the first slip happened.
+#:
+#: A verdict from one is not evidence under the other, and conflating them cost eight
+#: iterations of this project before the distinction was understood.
+SCORING_PROTOCOLS = frozenset({"free", "teacher_forced"})
+
+
 @dataclass(frozen=True)
 class GateBinding:
     """What a gate verdict is valid for.
 
     A verdict is not a property of two logit arrays; it is a property of a specific
     source artifact translated by a specific mapper into a specific target under a
-    specific threshold policy. Recording anything less makes the verdict unreusable
-    and, worse, reusable in the wrong place.
+    specific threshold policy, **scored by a specific protocol**. Recording anything less
+    makes the verdict unreusable and, worse, reusable in the wrong place.
     """
 
+    scoring_protocol: str = "teacher_forced"
     source_model_id: str = ""
     target_model_id: str = ""
     source_artifact_digest: str = ""
@@ -75,8 +93,17 @@ class GateBinding:
     calibration_digest: str = ""
     policy_version: str = "kvx-gate/1"
 
+    def __post_init__(self) -> None:
+        if self.scoring_protocol not in SCORING_PROTOCOLS:
+            raise GateError(
+                f"scoring_protocol {self.scoring_protocol!r} is not one of "
+                f"{sorted(SCORING_PROTOCOLS)}; a verdict whose protocol is unrecorded "
+                f"cannot be told apart from one taken under the other, and the two measure "
+                f"different things")
+
     def as_dict(self) -> dict:
         return {
+            "scoring_protocol": self.scoring_protocol,
             "source_model_id": self.source_model_id,
             "target_model_id": self.target_model_id,
             "source_artifact_digest": self.source_artifact_digest,
