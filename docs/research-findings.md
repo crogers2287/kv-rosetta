@@ -1282,3 +1282,72 @@ geometries. §29 found the optimal same-geometry converter is the identity. §30
 subset of layers is cheap. All three fail for the same reason: **the difference between two
 models' caches is the target's own weight drift, and the source cache contains no information
 about it.** No function of the source recovers it, whether linear, per-layer, or partial.
+
+---
+
+## 31. The shared drive: one content document, per-model cache attachments
+
+The goal in the operator's words is a KVX file that acts as a shared drive any model can use,
+holding prompts primarily and memories as well. Three measurements say the *tensors* cannot be
+that shared thing (§20, §29, §30). Everything else in the file can be, and that turns out to be
+the part the goal actually needs.
+
+`kv_rosetta/shared.py` splits a drive in two:
+
+* **Content** — the prompt regions: system text, tool schemas, memory entries. Model-neutral,
+  read by anyone, digested over its text, token ids, order and tokenizer.
+* **Attachments** — one cache per `(model identity, cache ABI)` that has warmed that content.
+
+A model arriving with no attachment still gets the content, prefills it, and deposits its own
+attachment for next time. The drive fills in as it is used rather than needing every model
+warmed up front.
+
+Live, three models against one drive, 963 tokens of system + tools + memory:
+
+| visit | model | attachment | cache_n | prefilled |
+|---|---|---|---:|---:|
+| 1 | instruct Q4 | miss | 0 | 966 |
+| 1 | instruct Q8 | miss | 0 | 966 |
+| 1 | base Q4 | miss | 0 | 966 |
+| 2 | instruct Q4 | hit | 965 | 1 |
+| 2 | instruct Q8 | hit | 965 | 1 |
+| 2 | base Q4 | hit | 965 | 1 |
+
+Three attachments on one content document, and **no cross-model leaks**: every model was
+offered only its own.
+
+### The refusal is the feature
+
+`cache_for` is addressed by the digest of the exact `(model, cache ABI)` pair, so a near miss
+is a miss. There is deliberately no "closest available attachment" fallback. §28 measured what
+that would buy — a foreign cache from a *fine-tune of the same base* still shifts 7% of
+next-token predictions — and fluent output conditioned on the wrong tensors is precisely the
+failure this project exists to refuse. Both halves of the key are load-bearing: two runtimes
+serving identical weights with different KV quantisation produce byte-incompatible states, so
+the model digest alone would let one be handed to the other.
+
+### Two bugs the tests found
+
+The content digest first covered token ids, names and roles but **not the entry text**. Editing
+an entry left the identity unchanged, so a drive would hand a model text its attachments had
+never been warmed on, and the tamper check could not fire. The text is what gets prefilled, so
+the text is now part of the identity.
+
+A drive and a runtime's slot directory are different places, and llama.cpp resolves a restore
+filename only inside its own `--slot-save-path`. Holding a correct drive path surfaced as an
+opaque HTTP 400 rather than a miss. `stage()` now places the attachment where the runtime
+looks and returns the basename, hard-linking when the two share a filesystem because these
+files reach gigabytes.
+
+### Memory, and the limit to state plainly
+
+A memory entry is content with `role="memory"`, so it is shared like any other region. But the
+content digest covers every entry, which means **editing a memory invalidates every attachment
+on that drive**, including the system and tools regions that did not change. That is correct
+rather than dangerous — no attachment is ever served for text it did not see — but it is
+wasteful in exactly the case memory creates, where a small tail changes often and a large head
+never does.
+
+`compose.py` already holds the machinery for the fix: regions carry the chain digest of what
+they were prefilled behind, so an attachment could be addressed by a *prefix* of the content
+rather than the whole of it. Untested, and it is the next thing worth running.
