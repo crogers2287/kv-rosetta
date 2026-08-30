@@ -1,12 +1,10 @@
-# KV Rosetta research steer: quarantine synthetic T3 plumbing and run the production gate
+# KV Rosetta research steer: retain the failed cross-model gate and run production hybrid P0
 
-Status basis: default-branch head 580a45646702c5a928f4f957487127e917d1e4de.
+Status basis: default-branch head 305131ed7163a135ed14d02031852e2d7935c962.
 
-This steer supersedes 1430005. After that steer explicitly made P0 the sole next track, two more unrelated T3 modules landed: prompt-region metadata and a synthetic array translator. The qwen35 8K HIP↔Vulkan matrix still did not run, and no concrete hardware blocker was retained.
+This steer supersedes 5ba97d0. The work after that freeze produced the first real cross-model behavioral failure: a qwen38-27b attention cache was translated into tiel-coder geometry, restored into tiel's target-native recurrent artifact, and correctly rejected by the output gate. Retain that result and the corrected RoPE finding. They materially improve the later T3 method, but they do not displace the required same-model production gate.
 
-Retain the useful unit-level discoveries, especially the corrected (target layer, source layer) pair direction. Do not treat either module as product progress or an end-to-end transfer. Keep all T3 code inert. The exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix has now been skipped three times and remains the single next break-first experiment.
-
-No implementation commit outside the P0 runner and its live record is in scope until P0 produces a retained pass, first-causal-failure record, or a concrete hardware/runtime blocker. A blocker must name the unavailable binary, device, model, port, process, or resource and include the failed prerequisite check; “while waiting” is not permission to advance another track.
+The exact qwen35 8K HIP↔Vulkan patched/unpatched matrix still did not run, and no concrete hardware/runtime blocker was retained. Cross-model threshold sweeps continued instead. P0 therefore remains the single next break-first experiment. No implementation or measurement outside the P0 runner and its live record is in scope until P0 produces a retained pass, first-causal-failure record, or a concrete blocker naming the unavailable binary, device, model, port, process, or resource and the failed prerequisite check.
 
 ## Mission and non-negotiable boundaries
 
@@ -87,23 +85,37 @@ The implementation is currently quadratic and dense: `align()` loops over every 
 
 Do not call this “the last unbuilt piece of T3.” Cross-model transformation still lacks a fitted/derived state mapper, architecture correspondence, recurrent-state treatment, live target encoding, and behavioral admission evidence.
 
-## The new compose/translate modules are not end-to-end evidence
+## Cross-model evidence is now real, failed, and quarantined
 
-`compose.py` is metadata planning only. It neither reuses a cache nor performs the selective recomputation it prices. `appendable()` also bypasses the validation and continuity checks enforced by `plan()`; it can report true for malformed or misplaced regions if their supplied chain string matches. Keep it out of admission and runtime paths.
+`compose.py` remains metadata planning only. It neither reuses a cache nor performs the selective recomputation it prices. `appendable()` bypasses validation and continuity checks enforced by `plan()`; keep it out of admission and runtime paths.
 
-`mappers/translate.py` composes synthetic NumPy operations, but the claimed cross-model boundary is currently fail open:
+The new qwen38-27b → tiel-coder experiment is worth retaining because it crossed a real runtime boundary and failed honestly:
 
-1. It never calls `LinearMapper.require_applicable()`; actual source and target model digests are not accepted or checked.
-2. It checks source width but not the mapper identity's source/target architecture or declared source/target layer counts.
-3. It derives output layer count from the largest supplied pair. Missing target layers are silently omitted or zero-filled, producing a finite plausible tensor instead of refusing incomplete coverage.
-4. It defaults source RoPE theta to 10,000 and target theta to the source value. Mapper identity does not bind theta, rotary dimension, interleaving, scaling, sections, M-RoPE, or other model-specific rotary semantics.
-5. The changed-position “direct reapplication” test asserts only shape, not numeric equality, so it cannot detect a wrong rotation result.
-6. Tests use identity/synthetic arrays. No mapper was fitted from retained real model states, no target-native cache was encoded, no runtime consumed the result, and no held-out logits/output gate ran.
-7. It inherits the dense quadratic tokenizer alignment and therefore is not scalable to the target prefix lengths.
+- the models share the exact tokenizer and favorable head/state geometry, so token alignment was not involved;
+- the mapper was fit on 15,981 tokens from eight passages with whole prompts held out;
+- the target's own recurrent state was preserved while translated attention was spliced into its artifact;
+- the identity control restored 764/768 tokens with exact output and 1.0 top-1 agreement;
+- the translated cache also restored 764/768 tokens, but top-1 agreement was 0.0 and maximum log-probability delta was 2.417;
+- the noise control restored 764/768 tokens and also failed, proving that reuse count alone says nothing about semantic validity;
+- an earlier token-level split reported about 0.98 R² because adjacent-context leakage made the holdout invalid; whole-prompt holdout reduced the per-layer results to roughly 0.32–0.67, with no layer above 0.9.
 
-The honest status is “offline candidate plumbing.” It is not a cache format, transfer capability, or end-to-end cross-model path. Do not expose it through capability reporting, `transfer.py`, vLLM, the sidecar, or any artifact identity.
+The RoPE correction is also causal evidence: both observed models declare theta 10,000,000 and 64 rotary dimensions within a 256-wide head. Correcting those values moved real held-out key fits toward the value fits. However, `translate()` still defaults source theta to 10,000, permits unspecified rotary widths, inherits target settings from source, and does not bind either model's complete rotary semantics to mapper identity. A caller can still obtain a finite candidate under guessed geometry.
 
-When T3 is eventually reopened, require red tests for every boundary above, sparse alignment, exact model/rotary identity, complete target-layer coverage, a real fitted mapper, a target encoder/importer, and a held-out behavioral gate. None of that is a substitute for P0/P1/P2.
+The 12- and 48-token alpha-blend sweeps show that free-running generation has a prompt-dependent cliff. In the retained 48-position records, exact output changed between alpha 0.70/0.60 for one prompt and 0.50/0.45 for another. Treat those as two empirical blend brackets, not as a general R² admission threshold. The published 0.89–0.96 figures are inferred from one scalar median mapper R² even though error is heterogeneous by layer and K/V kind; the actual blended-cache error was not recorded. The JSON also lacks a committed runner, model/binary/artifact/prompt digests, launch and process provenance, nonempty probability vectors, and per-position teacher-forced comparisons. It is not reproducible admission-quality evidence.
+
+The current implementation and experiment remain fail open or incomplete at the transformation boundary:
+
+1. `LinearMapper.require_applicable()` is not called; actual source and target model digests are not accepted or checked.
+2. Source/target architecture, declared layer counts, exact layer coverage, and target head geometry are not bound. Missing target layers can be omitted or zero-filled.
+3. RoPE theta, rotary dimensions, layout/scaling/sections, and other model-specific semantics can be guessed or inherited.
+4. The experiment maps only attention; target recurrent state is supplied natively, so it is not a complete hybrid cross-model transformation.
+5. Cross-tokenizer alignment remains dense and quadratic and was bypassed by this same-tokenizer pair.
+6. Evidence covers one favorable model pair, one 768-token prefix, and short free generations.
+7. The retained benchmark files do not identify the exact executable experiment that produced them.
+
+Keep compose, translate, alignment, and all cross-model capability reporting inert. Do not expose this path through `transfer.py`, vLLM, the sidecar, or an artifact identity.
+
+When T3 is reopened after P0/P1/P2, do not begin by fitting a larger model. First retain a reproducible teacher-forced, multi-prompt harness for this same pair with exact source/target/model/runtime/artifact/prompt digests; complete mapper/geometry identity; per-layer and per-kind cache error; per-position target-native logit divergence; identity and noise controls; and a separately frozen free-generation admission gate. Use that measurement to identify the earliest causal defect before choosing a richer mapper. The final admission criterion remains target-native behavioral parity, not R² or fluent-looking output.
 
 ## P0 — the only next experiment: exact qwen35 8K HIP ↔ Vulkan
 
