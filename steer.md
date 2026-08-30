@@ -1,12 +1,14 @@
 # KV Rosetta research steer: contain failed-restore state before expanding native portability
 
-Status basis: default-branch head f3fa574ab3d9dac2ab46f87498d3ebd684090968.
+Status basis: default-branch head 45fcb3b7df7349447f337ee4f2af07ae6440688a.
 
 This steer supersedes 619d496. The newest work proves that one native llama.cpp state file can cross NVIDIA/CUDA and AMD/ROCm in both directions at 8K and 32K for one exact non-hybrid qwen2 tuple. At 32K it reused 31,999/32,000 tokens with matching generated text and token IDs. Retain that as strong same-model native-portability evidence.
 
 The same batch exposed a more urgent fail-closed boundary. In a three-model raw-restore matrix, all six wrong-model restores returned HTTP 400, but llama.cpp logged that it restored the foreign checkpoint appendix before rejecting the main state body. The harness did not issue a completion afterward, so it did not prove that the target slot remained pristine. A rejected restore is not safe merely because the request returned an error.
 
-Before the production qwen35 backend matrix, run the smallest retained poisoning test and close any state-mutation path. Also make gate-protocol provenance and legacy requirements fail closed. Then resume the exact production qwen35 8K HIP↔Vulkan matrix. Do not substitute the non-hybrid CUDA↔ROCm result for that hybrid gate.
+The newest documentation also exposes an acceptance-harness prerequisite. On two RTX 3090s, six identical cold CUDA runs produced one output while six identical cold Vulkan runs produced three outputs, with no cache involved. The CUDA-written unpatched hybrid file was readable by Vulkan but reused zero tokens. Retain these as two separate facts: serialization readability does not prove useful restoration, and one restored-versus-cold text comparison is invalid unless the reader configuration is first shown reproducible against itself. The commit retains the summary but not an admission-quality runner or raw per-run record, so it does not allowlist any tuple.
+
+Before the production qwen35 backend matrix, run the smallest retained poisoning test and close any state-mutation path. Also make gate-protocol provenance and legacy requirements fail closed. Then measure and, if needed, isolate reader nondeterminism on the exact production HIP and Vulkan configurations before the exact production qwen35 8K matrix. Do not substitute the non-hybrid CUDA↔ROCm result or the NVIDIA Vulkan observation for that hybrid AMD gate.
 
 ## Mission and non-negotiable boundaries
 
@@ -203,9 +205,23 @@ When T3 reopens after the same-model gates, use this isolation ladder and change
 
 Every rung needs exact model/weight/runtime/artifact/prompt identities, teacher-forced per-position logits, per-layer/per-kind cache error, identity/noise/native controls, and a separately frozen free-generation admission gate. A failure identifies the earliest causal boundary; it does not authorize skipping to a richer mapper.
 
+## P0 preflight — prove each reader has a stable cold baseline
+
+The NVIDIA result at 45fcb3b is a break-first warning, not a verdict on AMD Vulkan. A restored cache cannot be judged against one arbitrary cold sample when the reader can produce several answers for identical uncached work.
+
+After P-1 and the metadata refusals, but before the backend matrix:
+
+1. On each exact production reader configuration, run at least six independent cold completions with the same model, prompt, temperature, seed, launch flags, device placement, runtime generation, and explicitly selected empty slot.
+2. Retain every raw token sequence, text, nonempty probability vector, slot-routing fact, process identity, launch record, model/prompt digest, and backend/device attestation. A summary count alone is insufficient.
+3. If a reader varies, identify the earliest causal control with the smallest one-variable sequence. Start with one explicitly selected slot / `--parallel 1`, then test scheduling/`kv_unified` and flash-attention settings only as justified. Rerun the identical six-run gate after each change.
+4. Allowlist only a configuration whose cold runs meet the exact token/text requirement and the predeclared probability threshold. If the production configuration cannot be made reproducible, its restore experiment may be retained as research evidence but must fail closed for exact-parity admission; do not replace the gate with a post-hoc tolerance.
+5. Repeat the cold self-consistency set after the matrix to detect runtime or scheduling drift.
+
+This preflight does not reopen unrelated backend exploration. It makes the existing output-parity gate causal.
+
 ## P0 — resume after P-1: exact qwen35 8K HIP ↔ Vulkan
 
-First apply only the smallest red-test-first runner corrections needed for an admission-quality record. Freeze the verdict before measurement:
+After the P0 preflight passes for both exact readers, apply only the smallest red-test-first runner corrections needed for an admission-quality record. Freeze the verdict before measurement:
 
 - exact model/GGUF and prompt-token digests;
 - full llama.cpp source identity, patch set, binary and loaded-library digests;
@@ -296,14 +312,15 @@ Keep vLLM inert and sidecar active restoration quarantined. No scheduled or proa
 1. Freeze compose/translate/alignment, nonlinear mapping, and unrelated service expansion.
 2. Run P-1: reproduce the checkpoint-before-rejection path and prove the target slot remains pristine after failure.
 3. Red-test and close missing GateBinding protocol, legacy requirements, and public-path zero-state-endpoint refusal.
-4. Harden only the P0 runner provenance, raw records, exit-status handling, and predeclared verdict.
-5. Run the exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix.
-6. Run P0.5: one demand-driven, persistent, production-KV, no-wake same-model sidecar gate.
-7. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
-8. Prove bounded hybrid numeric decoding and choose canonical storage.
-9. Prove same-model f16→q8_0 behavioral conversion.
-10. Repeat one admission-quality 8K CUDA↔ROCm tuple, then extend to a live second runtime.
-11. Revisit cross-model work only through the isolation ladder above.
-12. Attempt nonlinear/tokenizer/recurrent mapping only after a controlled rung identifies that need.
+4. Run the P0 cold-baseline determinism preflight on the exact production HIP and Vulkan readers; retain all raw runs and isolate the first varying control.
+5. Harden only the remaining P0 runner provenance, raw records, exit-status handling, and predeclared verdict.
+6. Run the exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix.
+7. Run P0.5: one demand-driven, persistent, production-KV, no-wake same-model sidecar gate.
+8. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
+9. Prove bounded hybrid numeric decoding and choose canonical storage.
+10. Prove same-model f16→q8_0 behavioral conversion.
+11. Repeat one admission-quality 8K CUDA↔ROCm tuple, then extend to a live second runtime.
+12. Revisit cross-model work only through the isolation ladder above.
+13. Attempt nonlinear/tokenizer/recurrent mapping only after a controlled rung identifies that need.
 
 Deferred: qwen35 32K execution, host-restart/cold-boot claims, 131K, learned cross-model mapping, MTP/draft/speculative support, broad service/authentication/distributed scheduling work, and upstream submissions/comments.
