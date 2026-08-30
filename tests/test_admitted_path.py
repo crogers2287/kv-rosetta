@@ -303,17 +303,25 @@ class RecordedRequirementsTest(unittest.TestCase):
     that then reuses nothing - into an explicit refusal.
     """
 
+    #: A runtime that satisfies everything except the patch. The identity has to be here:
+    #: admission records the model it captured from, and a runtime that reports none cannot
+    #: be shown to be that model - which is a refusal in its own right.
+    STOCK = {"sequence_state_version": 3, "model_identity": "a" * 64}
+    PATCHED = {**STOCK, "slot_checkpoint_persistence": True,
+               "slot_checkpoint_format": "sckp/1"}
+
     def test_a_checkpointed_artifact_is_marked_as_needing_the_patch(self):
         from kv_rosetta.requirements import Requirements, check
         recorded = requirements_for(checkpoints=2, version=3)
         self.assertTrue(recorded["needs_checkpoint_persistence"])
-        self.assertTrue(check(Requirements(**recorded), {"sequence_state_version": 3}))
+        self.assertTrue(check(Requirements(**recorded), self.STOCK))
+        self.assertEqual(check(Requirements(**recorded), self.PATCHED), [])
 
     def test_an_artifact_without_checkpoints_needs_no_patch(self):
         from kv_rosetta.requirements import Requirements, check
         recorded = requirements_for(checkpoints=0, version=3)
         self.assertFalse(recorded["needs_checkpoint_persistence"])
-        self.assertEqual(check(Requirements(**recorded), {"sequence_state_version": 3}), [])
+        self.assertEqual(check(Requirements(**recorded), self.STOCK), [])
 
     def test_the_recorded_form_round_trips_through_the_checker(self):
         """The manifest stores a plain dict; it has to reconstruct a Requirements exactly."""
