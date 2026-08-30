@@ -13,9 +13,15 @@ negotiable:
    proportion.
 3. **Map each layer.** Layer counts and KV head counts differ, so a fitted linear map takes
    one source layer's flattened `heads x dim` vector to the target's.
-4. **Re-apply RoPE at the target positions**, with the target's theta. A token that was third
-   in the source prompt may be second in the target tokenization, and the rotation has to
-   match where it now sits.
+4. **Re-apply RoPE at the target positions**, with the target's theta and rotary width. A
+   token that was third in the source prompt may be second in the target tokenization, and
+   the rotation has to match where it now sits.
+
+Both theta and the rotary width have to come from the model, not from a default. Qwen3.5
+declares `rope.freq_base` 10,000,000 and `rope.dimension_count` 64 against a head_dim of 256 -
+so a default theta of 10,000 is wrong by a factor of a thousand, and rotating the full head
+corrupts three quarters of every key. On a real cache pair those two mistakes drove held-out
+R2 negative for every key while values, which are never rotated, were unaffected.
 
 **Values are never rotated.** RoPE is applied to queries and keys only. Stripping or applying
 it to values would corrupt them, and because the result stays finite and plausibly scaled,
@@ -109,6 +115,7 @@ def translate(source_kv, mapper, *, target_head_dim: int,
               alignment: Alignment | None = None,
               source_positions=None, target_positions=None,
               source_theta: float = 10000.0, target_theta: float | None = None,
+              source_rope_dims: int | None = None, target_rope_dims: int | None = None,
               rope_state: str = "applied") -> np.ndarray:
     """One model's canonical cache rendered into another's geometry. A candidate, not a cache.
 
@@ -131,6 +138,7 @@ def translate(source_kv, mapper, *, target_head_dim: int,
             f"number of {target_head_dim}-wide heads")
     target_heads = found.target_width // target_head_dim
     theta_out = source_theta if target_theta is None else target_theta
+    dims_out = source_rope_dims if target_rope_dims is None else target_rope_dims
 
     src_pos = (default_positions(found.source_tokens) if source_positions is None
                else np.asarray(source_positions))
@@ -147,7 +155,8 @@ def translate(source_kv, mapper, *, target_head_dim: int,
     work = array.astype(np.float64, copy=True)
     if rope_state == "applied":
         for layer in range(found.source_layers):
-            work[layer, KEYS] = strip_rope(work[layer, KEYS], src_pos, source_theta)
+            work[layer, KEYS] = strip_rope(work[layer, KEYS], src_pos, source_theta,
+                                           rope_dims=source_rope_dims)
 
     # 2. Pool onto the target tokenization. Both kv slots move together; only the token axis
     #    changes, and the keys are unrotated by now so the mean is over comparable vectors.
@@ -171,7 +180,8 @@ def translate(source_kv, mapper, *, target_head_dim: int,
     # 4. Rotate the keys back, at the positions they now occupy and the target's theta.
     if rope_state == "applied":
         for layer in range(found.target_layers):
-            out[layer, KEYS] = apply_rope(out[layer, KEYS], tgt_pos, theta_out)
+            out[layer, KEYS] = apply_rope(out[layer, KEYS], tgt_pos, theta_out,
+                                          rope_dims=dims_out)
     if not np.isfinite(out).all():
         raise TranslateError("the translation produced non-finite values; the map or the "
                              "rotation is wrong and the result must not be admitted")
