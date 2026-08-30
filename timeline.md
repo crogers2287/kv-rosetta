@@ -1269,3 +1269,59 @@ mislabelling the basis, each make a named test fail.
 defended for `admitted_store_gate.py`. The other 18 live in the live-run path and only
 execute against a running server on a GPU. That is a pre-existing gap, not one this change
 introduced, and it is recorded here rather than left to be discovered from a passing summary.
+
+## REQ-041 — Hybrid sizing derived, and a fail-open guard caught before it shipped
+
+RA-003 argued from two fitted points that the hybrid artifact's large fixed term is recurrent
+state. This decodes a real one and turns that argument into terms.
+
+A 256- and a 257-token Qwen3.8-27B artifact were saved on the vacant W6800 and decoded. The
+file closes to **zero leftover bytes**:
+
+| part | bytes | what |
+|---|---:|---|
+| header | 12 + 4x260 | magic, version, and the prompt's token ids |
+| attention | 16,783,760 | **16** layers, 256 cells, f16 rows of 2048 |
+| recurrent | 156,894,356 | 1 cell, 48 present layers of 64 declared |
+| total | **173,679,168** | measured 173,679,168 |
+
+Both recurrent row sizes fall out of the GGUF's SSM metadata — conv state
+`(d_conv-1) x (d_inner + 2 x n_group x d_state) x 4` = 122,880 and SSM state
+`d_inner x d_state x 4` = 3,145,728. The attention section holds **16** layers, not the 17 the
+recurrence rule implies: the NextN/MTP block is marked non-recurrent but is not in the KV
+cache at all. The recurrent section is **byte-identical** between the two files and is 90.3%
+of the artifact at 256 tokens — RA-003's claim, now a measurement.
+
+### A decoder bug found by looking at real bytes
+
+The recurrent section does **not** begin with `n_stream`.
+`llama_memory_recurrent::state_write` writes `cell_count` first, unlike
+`llama_kv_cache::state_write`. The layout inventory said otherwise, the decoder was written
+to match the inventory, and the test fixture was written to match the decoder — three
+artefacts agreeing with each other and none with llama.cpp. Eight tests failed once the
+parser was corrected, which is the informative part: they had been green against a body no
+writer produces. Same shape as the 12-versus-16-byte checkpoint record, found the same way.
+
+### The guard that would have failed open
+
+Wiring hybrid sizing into `predict_space` produced 291,169,840 bytes for the 2,048-token case.
+RA-003's measured artifact is **604,958,676**. The difference is **2.0000x the recurrent
+section plus 124 bytes**, consistent with the patched build appending two recurrent-only
+context checkpoints — my probe used an unpatched build, so it wrote none.
+
+Left as it was, the guard would have under-predicted that file by half. Over-predicting
+refuses work that would have succeeded; **under-predicting runs the disk out mid-admission**,
+which is the failure this guard exists to prevent. So `hybrid_state_bytes` now takes
+`checkpoints` with **no default**, and:
+
+- unstated → falls back to the conservative flat rate, and says why
+- `checkpoints=0` → derives exactly, as measured on the two unpatched artifacts
+- `checkpoints>0` → **refuses**. The 2.0000 multiple is arithmetic on one file, not a decoded
+  appendix, and the 124 bytes of framing are unexplained. Predicting from it would dress a
+  guess as a derivation, which is what every other term here exists to avoid.
+
+Status: **proven by retained test** — every term, both measured hybrid artifacts, the layer
+split, the cell_ext rule, and all the refusals (22/22 guards mutation-checked; 800 offline
+tests). **Measured once on this host**: the two artifacts. **Inferred, not measured**: that
+the RA-003 excess is two checkpoints — the arithmetic fits to 124 bytes but no appendix has
+been decoded. **Untested**: any hybrid other than this one; quantised KV on a hybrid.

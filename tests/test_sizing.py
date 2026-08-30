@@ -16,12 +16,16 @@ from pathlib import Path
 from unittest import mock
 
 from kv_rosetta.sizing import (
+    HybridGeometry,
     KVGeometry,
     SizingError,
     bytes_per_token,
     geometry_of,
+    hybrid_geometry_of,
+    hybrid_state_bytes,
     row_size,
     state_bytes,
+    writes_cell_ext,
 )
 
 MODEL = Path("/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf")
@@ -288,3 +292,209 @@ class SecondModelTest(unittest.TestCase):
                              architecture="qwen3")
         self.assertNotEqual(state_bytes(derived, 128, header_tokens=132),
                             self.MEASURED[128])
+
+
+class HybridSizingTest(unittest.TestCase):
+    """A hybrid artifact's two halves, each derived, checked against measured files.
+
+    RA-003 argued from two fitted points that the hybrid's large fixed term is recurrent
+    state. These are the terms themselves, and the fixed part is now a number rather than a
+    residual: 156,894,356 bytes for this model, identical between a 256- and a 257-token
+    save, and 90.3% of the file at 256 tokens.
+    """
+
+    #: Qwen3.8-27B-UD-Q4_K_XL, as read from its GGUF.
+    QWEN35 = HybridGeometry(attention_layers=16, recurrent_layers=48, n_kv_head=4,
+                            head_dim=256, conv_row_bytes=122_880, ssm_row_bytes=3_145_728,
+                            architecture="qwen35", value_head_dim=256)
+
+    #: cells -> file size, measured on this host with the HIP build at ca3d5a3e1.
+    MEASURED = {256: 173_679_168, 257: 173_744_732}
+
+    def test_it_predicts_the_measured_hybrid_artifacts_exactly(self):
+        for cells, actual in self.MEASURED.items():
+            with self.subTest(cells=cells):
+                self.assertEqual(
+                    hybrid_state_bytes(self.QWEN35, cells, header_tokens=cells + 4,
+                                       checkpoints=0), actual)
+
+    def test_the_recurrent_tail_does_not_grow_with_tokens(self):
+        """Measured: the two files' recurrent sections are byte-identical."""
+        marginal = (hybrid_state_bytes(self.QWEN35, 257, header_tokens=261, checkpoints=0)
+                    - hybrid_state_bytes(self.QWEN35, 256, header_tokens=260,
+                                         checkpoints=0))
+        self.assertEqual(marginal, 65_564)
+        # 4 header id + 24 cell meta with ext + 16 layers of f16 keys and values.
+        self.assertEqual(marginal, 4 + 24 + 16 * 2 * (4 * 256 * 2))
+
+    def test_the_fixed_tail_dominates_a_short_prefix(self):
+        total = hybrid_state_bytes(self.QWEN35, 256, header_tokens=260, checkpoints=0)
+        tail = total - hybrid_state_bytes(self.QWEN35, 0, header_tokens=0, checkpoints=0) * 0
+        fixed = total - 256 * 65_564
+        self.assertGreater(fixed / total, 0.90)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_the_geometry_is_read_from_the_gguf(self):
+        self.assertEqual(hybrid_geometry_of(HYBRID), self.QWEN35)
+
+    @unittest.skipUnless(MODEL.is_file(), "the qwen2 test model is not on this host")
+    def test_a_non_hybrid_model_is_sent_to_the_other_function(self):
+        with self.assertRaises(SizingError) as caught:
+            hybrid_geometry_of(MODEL)
+        self.assertIn("not hybrid", str(caught.exception))
+
+    def test_nonsense_recurrent_rows_are_refused(self):
+        for bad in ({"conv_row_bytes": 0}, {"ssm_row_bytes": 0}):
+            with self.subTest(bad=bad):
+                geometry = HybridGeometry(**{**self.QWEN35.__dict__, **bad})
+                with self.assertRaises(SizingError):
+                    hybrid_state_bytes(geometry, 256, checkpoints=0)
+
+    def test_zero_recurrent_cells_is_refused(self):
+        """A saved slot always holds one recurrent cell; zero would silently drop the tail."""
+        with self.assertRaises(SizingError):
+            hybrid_state_bytes(self.QWEN35, 256, recurrent_cells=0, checkpoints=0)
+
+
+class CellExtTest(unittest.TestCase):
+    """Whether a 12-byte cell_ext is written per cell - decided by architecture, not GGUF."""
+
+    def test_an_mrope_architecture_writes_it(self):
+        for arch in ("qwen35", "qwen35moe", "qwen2vl", "qwen3vl", "paddleocr"):
+            with self.subTest(arch=arch):
+                self.assertTrue(writes_cell_ext(arch))
+
+    def test_an_ordinary_architecture_does_not(self):
+        for arch in ("qwen2", "qwen3", "llama"):
+            with self.subTest(arch=arch):
+                self.assertFalse(writes_cell_ext(arch))
+
+    def test_an_architecture_that_decides_at_runtime_is_refused(self):
+        """glm4 picks its rope type from model state; 12 bytes a cell is 3 MB at 256K cells
+        and looks entirely reasonable at 128."""
+        for arch in ("glm4", "glm4moe", "hunyuan_vl", "dflash"):
+            with self.subTest(arch=arch):
+                with self.assertRaises(SizingError) as caught:
+                    writes_cell_ext(arch)
+                self.assertIn("cannot be read off the architecture", str(caught.exception))
+
+    def test_the_qwen2_prediction_depends_on_it_being_absent(self):
+        """The four exact qwen2 results all assume no cell_ext; this pins that assumption."""
+        self.assertFalse(writes_cell_ext("qwen2"))
+
+
+class HybridGeometryRefusalTest(unittest.TestCase):
+    """What hybrid_geometry_of refuses to read out of a GGUF."""
+
+    BASE = {"qwen35.block_count": 65, "qwen35.attention.head_count_kv": 4,
+            "qwen35.attention.key_length": 256, "qwen35.ssm.inner_size": 6144,
+            "qwen35.ssm.state_size": 128, "qwen35.ssm.conv_kernel": 4,
+            "qwen35.ssm.group_count": 16, "qwen35.full_attention_interval": 4,
+            "qwen35.nextn_predict_layers": 1}
+
+    def read(self, **overrides):
+        declared = {**self.BASE}
+        for key, value in overrides.items():
+            full = f"qwen35.{key}"
+            if value is None:
+                declared.pop(full, None)
+            else:
+                declared[full] = value
+        return (mock.patch("kv_rosetta.sizing.gguf.architecture", return_value="qwen35"),
+                mock.patch("kv_rosetta.sizing.gguf.read_metadata", return_value=declared))
+
+    def geometry(self, **overrides):
+        arch, meta = self.read(**overrides)
+        with arch, meta:
+            return hybrid_geometry_of("ignored.gguf")
+
+    def test_the_baseline_reads_the_known_split(self):
+        found = self.geometry()
+        self.assertEqual((found.attention_layers, found.recurrent_layers), (16, 48))
+
+    def test_a_missing_required_key_is_refused(self):
+        for absent in ("block_count", "attention.head_count_kv", "attention.key_length",
+                       "ssm.inner_size", "ssm.state_size", "ssm.conv_kernel",
+                       "ssm.group_count"):
+            with self.subTest(absent=absent):
+                with self.assertRaises(SizingError) as caught:
+                    self.geometry(**{absent: None})
+                self.assertIn(absent, str(caught.exception))
+
+    def test_an_explicit_recurrent_layer_array_is_refused_not_ignored(self):
+        """The split is derived from the interval, which would silently contradict it."""
+        with self.assertRaises(SizingError) as caught:
+            self.geometry(**{"attention.recurrent_layers": [1, 1, 0, 1]})
+        self.assertIn("would ignore it", str(caught.exception))
+
+    def test_a_declared_zero_interval_is_refused_not_defaulted(self):
+        """`or 4` would read a declared 0 as llama.cpp's default and hide it."""
+        with self.assertRaises(SizingError) as caught:
+            self.geometry(full_attention_interval=0)
+        self.assertIn("not positive", str(caught.exception))
+
+    def test_an_absent_interval_takes_the_default(self):
+        self.assertEqual(self.geometry(full_attention_interval=None).attention_layers, 16)
+
+    def test_more_nextn_layers_than_blocks_is_refused(self):
+        with self.assertRaises(SizingError) as caught:
+            self.geometry(nextn_predict_layers=65)
+        self.assertIn("leaves", str(caught.exception))
+
+    def test_a_non_positive_ssm_dimension_is_refused(self):
+        for key in ("ssm.inner_size", "ssm.state_size", "ssm.conv_kernel",
+                    "ssm.group_count"):
+            with self.subTest(key=key):
+                with self.assertRaises(SizingError) as caught:
+                    self.geometry(**{key: 0})
+                self.assertIn("SSM dimension", str(caught.exception))
+
+    def test_negative_counts_are_refused_each_on_its_own(self):
+        """header_tokens defaults to cells, so a negative cell count alone never reaches the
+        cell check - the same shadowing the non-hybrid tests found."""
+        with self.assertRaises(SizingError):
+            hybrid_state_bytes(HybridSizingTest.QWEN35, -1, header_tokens=5, checkpoints=0)
+        with self.assertRaises(SizingError):
+            hybrid_state_bytes(HybridSizingTest.QWEN35, 256, header_tokens=-1, checkpoints=0)
+
+
+class CheckpointAppendixSizingTest(unittest.TestCase):
+    """The appendix a patched build appends, and why it is not modelled.
+
+    The 2,048-token artifact behind RA-003 is 604,958,676 bytes. These terms give
+    291,169,840. The difference is 2.0000 times the recurrent section plus 124 bytes, which
+    is consistent with two recurrent-only context checkpoints - but that is arithmetic on one
+    file, not a decoded appendix.
+    """
+
+    RA003_MEASURED = 604_958_676
+    BASE_2048 = 291_169_840
+    RECURRENT = 156_894_356
+
+    def test_the_difference_is_two_recurrent_sections_and_a_little_framing(self):
+        difference = self.RA003_MEASURED - self.BASE_2048
+        self.assertEqual(difference - 2 * self.RECURRENT, 124)
+
+    def test_checkpoints_must_be_stated_and_has_no_default(self):
+        """Defaulting to zero would under-predict that file by half - a guard failing open,
+        which is the direction that runs a disk out mid-admission."""
+        with self.assertRaises(TypeError):
+            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048)
+
+    def test_a_nonzero_checkpoint_count_is_refused_rather_than_estimated(self):
+        with self.assertRaises(SizingError) as caught:
+            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, checkpoints=2)
+        self.assertIn("dress a guess as a derivation", str(caught.exception))
+
+    def test_a_negative_checkpoint_count_is_refused_as_negative(self):
+        """The message matters: -1 is truthy, so the not-yet-modelled check would catch it
+        too and the negative check would never fire. Mutation found exactly that."""
+        with self.assertRaises(SizingError) as caught:
+            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, checkpoints=-1)
+        self.assertIn("is negative", str(caught.exception))
+
+    def test_the_base_prediction_still_matches_a_build_without_the_patch(self):
+        """The two artifacts this project saved came from an unpatched HIP build."""
+        self.assertEqual(
+            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, header_tokens=2048,
+                               checkpoints=0), self.BASE_2048)

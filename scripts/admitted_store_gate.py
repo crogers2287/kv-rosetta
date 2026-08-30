@@ -205,7 +205,7 @@ def check_coverage(cache_n: int, prompt_n: int, prompt_tokens: int,
 
 def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
                   margin: float = 0.20, *, model: str | Path | None = None,
-                  kv_type: str = "f16") -> dict:
+                  kv_type: str = "f16", hybrid_checkpoints: int | None = None) -> dict:
     """Predict the object size and peak transient use, and say whether it fits.
 
     Admission copies the raw state into the store before the source is removed, so peak
@@ -214,14 +214,15 @@ def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
     rather than discovered during the run.
 
     Given a `model`, the size is **derived** from its GGUF and the state-file layout, which
-    is exact on every artifact this project has written. The flat rate is the fallback, and
+    is exact on every artifact this project has written, hybrid models included. The flat rate is the fallback, and
     it is a poor one: the default was obtained by dividing a hybrid model's whole 2K artifact
     by its token count, which folds a fixed per-layer recurrent term into a per-token rate
     and over-predicts by about 2.4x at 8K. That over-prediction is what RA-003 is open on.
 
     `basis` records which was used and `basis_note` why, so a record can never be read as
-    derived when it fell back. A hybrid model still falls back, because the derivation does
-    not describe recurrent state and refuses rather than guess.
+    derived when it fell back. A model whose GGUF cannot be read unambiguously - one that
+    declares a recurrent-layer array, or an architecture whose rope type is chosen at runtime
+    so the per-cell size is unknown - still falls back rather than guess.
 
     A model path that does not exist is **not** a fallback case and is allowed to raise. That
     is a configuration fault - every later step of the run would fail on it too - and quietly
@@ -232,9 +233,28 @@ def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
     predicted = int(prompt_tokens * bytes_per_token)
     if model is not None:
         try:
-            geometry = sizing.geometry_of(model)
-            predicted = sizing.state_bytes(geometry, prompt_tokens, kv_type=kv_type)
-            bytes_per_token = sizing.bytes_per_token(geometry, kv_type=kv_type)
+            if sizing.gguf.architecture(model) in sizing.HYBRID_ARCHITECTURES:
+                if hybrid_checkpoints is None:
+                    raise sizing.SizingError(
+                        "a hybrid model's size depends on how many context checkpoints the "
+                        "build appends, and each is about the size of its whole recurrent "
+                        "state; say how many with hybrid_checkpoints rather than assume none")
+                geometry = sizing.hybrid_geometry_of(model)
+                predicted = sizing.hybrid_state_bytes(geometry, prompt_tokens,
+                                                      kv_type=kv_type,
+                                                      checkpoints=hybrid_checkpoints)
+                # A hybrid's tail does not grow with tokens, so dividing the whole object by
+                # the prompt length - which is how the flat default was obtained - is not a
+                # rate at all. This is the marginal cost, which is.
+                bytes_per_token = (
+                    sizing.hybrid_state_bytes(geometry, 1, kv_type=kv_type,
+                                              checkpoints=hybrid_checkpoints)
+                    - sizing.hybrid_state_bytes(geometry, 0, kv_type=kv_type,
+                                                checkpoints=hybrid_checkpoints))
+            else:
+                geometry = sizing.geometry_of(model)
+                predicted = sizing.state_bytes(geometry, prompt_tokens, kv_type=kv_type)
+                bytes_per_token = sizing.bytes_per_token(geometry, kv_type=kv_type)
             basis, note = "derived-from-gguf", f"{geometry.architecture} geometry {geometry}"
         except sizing.SizingError as exc:
             note = f"falling back to the declared rate: {exc}"

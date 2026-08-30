@@ -395,3 +395,38 @@ class DerivedSpacePredictionTest(unittest.TestCase):
         self.assertTrue(tight["fits"])
         self.assertFalse(self.gate.predict_space(8192, 295390.0,
                                                  free_bytes=int(4 * 2**30))["fits"])
+
+
+class HybridSpacePredictionTest(unittest.TestCase):
+    """A hybrid model's size can be derived too - once the checkpoint count is stated."""
+
+    HYBRID = Path("/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf")
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "admitted_store_gate", REPO / "scripts" / "admitted_store_gate.py")
+        self.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate)
+
+    def predict(self, tokens, **kw):
+        return self.gate.predict_space(tokens, 295390.0, free_bytes=int(64 * 2**30), **kw)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_an_unstated_checkpoint_count_falls_back_rather_than_assuming_none(self):
+        """Assuming none under-predicts a patched build's artifact by half, and a space
+        guard that fails open is the one that runs a disk out mid-admission."""
+        found = self.predict(2048, model=self.HYBRID)
+        self.assertEqual(found["basis"], "declared-rate")
+        self.assertIn("context checkpoints", found["basis_note"])
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_stating_zero_checkpoints_derives_the_size(self):
+        found = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=0)
+        self.assertEqual(found["basis"], "derived-from-gguf")
+        self.assertEqual(found["predicted_object_bytes"], 291_169_840)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_a_nonzero_count_falls_back_because_the_appendix_is_not_modelled(self):
+        found = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=2)
+        self.assertEqual(found["basis"], "declared-rate")
+        self.assertIn("dress a guess", found["basis_note"])
