@@ -1,0 +1,35 @@
+{
+  "cold": " in late autumn and found their maps disagreed with the terrain by nearly two ki",
+  "rows": [
+    {
+      "variant": "reshape",
+      "cache_n": 508,
+      "tokens_match": false,
+      "top1": 0.041666666666666664,
+      "mean_delta": 1.3942960197397043,
+      "content": " in the plateau in the plateau in the plateau in the plate"
+    },
+    {
+      "variant": "mapped",
+      "cache_n": 508,
+      "tokens_match": false,
+      "top1": 0.0,
+      "mean_delta": 1.8972900520734997,
+      "content": " and found the maps were damaged.\n\nThe survey team reached"
+    },
+    {
+      "variant": "mapped+norm",
+      "cache_n": 508,
+      "tokens_match": false,
+      "top1": 0.20833333333333334,
+      "mean_delta": 1.5500311863309304,
+      "content": " in late autumn and found the weather had turned cold. The"
+    },
+    {
+      "variant": "own",
+      "cache_n": 508,
+      "tokens_match": true,
+      "top1": 1.0
+    }
+  ]
+}

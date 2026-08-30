@@ -2347,3 +2347,52 @@ at four target layers, source read from llama.cpp at `src/models/qwen35.cpp` and
 `ggml/src/ggml-cpu/ops.cpp`. **Untested, and the next thing to run**: whether a
 norm-corrected map passes the gate where the uncorrected one produced degenerate output. R²
 says it is worse; the gate has not been asked.
+
+## REQ-062 — Correcting key magnitude: the first intervention that moves the gate
+
+REQ-061 established that cached keys are RMS-normalised, that the fitted map under-predicts
+their magnitude by 7-37% through ordinary ridge shrinkage, and that attention computes
+`softmax(q·k/sqrt(d))` so shrunk keys flatten the attention distribution. R² **rewards** that
+shrinkage, because shrinking toward the mean is what minimises squared error. So R² has been
+scoring the map on something the model does not do.
+
+Rescaling each mapped key to the target's own per-head RMS, and putting all of it through the
+gate:
+
+| variant | reused | top-1 | mean \|Δ\| | output |
+|---|---:|---:|---:|---|
+| reshape only, no map | 508/512 | 0.042 | 1.394 | `" in the plateau in the plateau in the plateau"` |
+| mapped, magnitudes as fitted | 508/512 | **0.000** | 1.897 | `" and found the maps were damaged."` |
+| **mapped + norm correction** | 508/512 | **0.208** | 1.550 | `" in late autumn and found the weather had turned c"` |
+| the 27B's own cache | 508/512 | matches | 0.000 | correct |
+
+```
+cold        : " in late autumn and found their maps disagreed with the terrain b"
+mapped+norm : " in late autumn and found the weather had turned c"
+```
+
+**The norm-corrected output starts correctly.** It reproduces the target's own continuation for
+several tokens before drifting, where the uncorrected map agreed on nothing at all and the bare
+reshape produced degenerate repetition.
+
+**0.000 to 0.208 top-1, from an intervention R² says is worse.** That is the whole argument of
+REQ-061 demonstrated: optimising squared error optimises the wrong thing, because a key is
+consumed as a direction with a constrained magnitude and not as a vector to be approximated in
+the least-squares sense.
+
+It is still nowhere near admissible - the gate wants agreement at essentially every position
+and this gives one in five. But it is the first change in this whole line of work that moved
+the number, and it came from reading `qwen35.cpp` rather than from more fitting. Everything
+tried before it - top-k concatenation, per-head fitting, four times the calibration, matching
+lineage, matching geometry - moved nothing.
+
+**Operational note.** The harness again reported `fleet reclaimed the GPUs; unloading and
+retrying` during this run, so models resident before it are not resident after. Recorded where
+the numbers are, as in REQ-056.
+
+Status: **measured once on this host** — one held-out prompt, 512 tokens, 24 generated, map
+fitted on 32,768 calibration tokens. **What it establishes**: the objective was wrong, and
+correcting it helps measurably. **What it does not**: admissibility, which remains far off.
+**The obvious next step**: fit the map *under* a norm constraint rather than fitting freely and
+rescaling afterwards - a projection onto the sphere the keys actually live on, rather than a
+correction applied to a fit that was aiming somewhere else.
