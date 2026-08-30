@@ -106,3 +106,62 @@ def positionwise_agreement(reference: list[dict], candidate: list[dict]) -> dict
         "shared_tokens": shared,
         "tokens_only_in_one": only_one,
     }
+
+
+def decision_margins(distributions: list[dict]) -> list[float]:
+    """Top-1 minus top-2 logprob at each position: how decided the model was.
+
+    A position with a margin near zero is one where the model was nearly indifferent between
+    two continuations. Measured on this host, the token at which a perturbed cache first
+    diverged was the **least certain position in the whole generation** on three prompts of
+    four, and second-least on the fourth - margins of 0.18 to 0.51 against medians of 5.3 to
+    7.9.
+    """
+    out = []
+    for position in distributions:
+        ordered = sorted(position.values(), reverse=True)
+        out.append(float("inf") if len(ordered) < 2 else ordered[0] - ordered[1])
+    return out
+
+
+def confident_agreement(reference: list[dict], candidate: list[dict], *,
+                        min_margin: float = 1.0) -> dict:
+    """Agreement scored only where the reference model was actually decided.
+
+    Exact-match over a whole generation is hostage to a single near-tied token: any
+    disturbance flips it and the cascade condemns everything after. That makes the verdict a
+    fact about the prompt rather than about the cache, and it is why the same blend ratio
+    passed on one prompt and failed on another.
+
+    Skipping positions the reference itself could not decide removes that hostage without
+    weakening the test elsewhere - every confident position is still scored, and there are
+    many more of them than undecided ones.
+
+    Refuses when no position clears the margin. "Perfect agreement over nothing" is the
+    vacuous pass this whole project is written against.
+    """
+    if min_margin < 0:
+        raise MetricsError(f"min_margin {min_margin} is negative; a margin is a distance")
+    compared = min(len(reference), len(candidate))
+    margins = decision_margins(reference[:compared])
+    scored = [i for i, m in enumerate(margins) if m >= min_margin]
+    if not scored:
+        raise MetricsError(
+            f"no position among {compared} reached a margin of {min_margin}; the reference "
+            f"was undecided throughout, so there is nothing this can measure")
+    agreed = 0
+    for index in scored:
+        first, second = reference[index], candidate[index]
+        top_a = max(first, key=first.get) if first else None
+        top_b = max(second, key=second.get) if second else None
+        agreed += int(top_a == top_b)
+    return {
+        "positions": compared,
+        "scored": len(scored),
+        "skipped_undecided": compared - len(scored),
+        "min_margin": min_margin,
+        "agreement": agreed / len(scored),
+        "first_disagreement": next((i for i in scored
+                                    if max(reference[i], key=reference[i].get)
+                                    != max(candidate[i], key=candidate[i].get)), None),
+    }

@@ -1757,3 +1757,44 @@ first-K agreement with K well short of the fragile region, and K is a policy cho
 whether fragile points cluster at similar positions for other prompts or models, and whether
 they can be predicted from the cold run's own logprob margins - if they can, the gate could
 score a cache only at positions where the model is confident.
+
+## REQ-050 — The fragile token is the one the model is least sure about
+
+REQ-049 established that each prompt diverges at a fixed position regardless of how badly the
+cache was perturbed, and that the 48-token gate was really testing whether that one token
+survived. This tests the obvious explanation.
+
+Cold generations from the target model alone - no map, no splicing - with the top-1 minus
+top-2 logprob margin recorded at every position:
+
+| prompt | fragile at | its margin | rank among 48 | median margin |
+|---|---:|---:|---|---:|
+| lighthouse | 29 | 0.514 | **0, the lowest** | 7.57 |
+| orchard | 30 | 0.416 | **0, the lowest** | 7.70 |
+| ledger | 27 | 0.195 | 1, second lowest | 5.30 |
+| survey | 22 | 0.183 | **0, the lowest** | 7.95 |
+
+**Four of four, three of them the single least certain position in the entire generation**, at
+margins 15 to 40 times below the median. The fragile token is the token where the model is
+nearly tied between two continuations, and a perturbed cache flips it because there is almost
+nothing to flip.
+
+### This makes the gate stable *and* strict
+
+REQ-049 offered a trade: a short horizon is stable but weaker. This removes the trade. A
+divergence at a position the reference model could not decide is not evidence about the cache -
+it is evidence the model was indifferent. Skipping those positions, and scoring every one where
+the model was confident, is both robust to the coin flip and no softer anywhere else.
+
+`kv_rosetta.metrics.confident_agreement` does that: it scores only positions whose reference
+margin clears a bar, reports how many were skipped so a thin score is visible, and **refuses
+when nothing clears it** - agreement over an empty set is the vacuous pass this project is
+written against.
+
+Status: **measured once on this host** — 4 prompts, 48 positions each, target model alone.
+**Proven by retained test**: the margin arithmetic and every refusal, including that a
+certain-position flip still counts, so skipping the undecided does not soften the test
+elsewhere (923 offline tests). **Untested, and the next thing to do**: whether the margin-aware
+gate actually separates the translated cache from the blends on the alpha grid. It should - the
+translation diverges at token 0-6, nowhere near the fragile region - but that is a prediction,
+not a result.

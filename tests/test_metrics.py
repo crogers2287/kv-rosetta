@@ -12,6 +12,8 @@ from kv_rosetta.metrics import (
     top1_agreement,
     tensor_cosine,
     positionwise_agreement,
+    confident_agreement,
+    decision_margins,
 )
 
 
@@ -164,3 +166,59 @@ class PositionwiseAgreementTest(unittest.TestCase):
         found = positionwise_agreement([], [])
         self.assertEqual(found["positions"], 0)
         self.assertIsNone(found["top1_agreement"])
+
+
+class ConfidentAgreementTest(unittest.TestCase):
+    """Scoring only where the reference model was decided.
+
+    Exact match over a whole generation is hostage to a single near-tied token: any
+    disturbance flips it and the cascade condemns the rest, so the verdict describes the
+    prompt rather than the cache. Measured on this host, the first-divergence token was the
+    least certain position in the entire generation on three prompts of four - margins of
+    0.18 to 0.51 against medians of 5.3 to 7.9.
+    """
+
+    def test_margins_are_the_gap_between_the_top_two(self):
+        self.assertEqual(decision_margins([{1: -0.1, 2: -8.0}]), [7.9])
+
+    def test_a_single_candidate_leaves_no_margin_to_measure(self):
+        """One alternative is not a decision; infinity keeps it out of the undecided set."""
+        self.assertEqual(decision_margins([{1: -0.1}]), [float("inf")])
+
+    def test_a_tied_position_is_skipped_rather_than_counted_against(self):
+        """The whole point: a flip where the model was indifferent is not cache error."""
+        reference = [{1: -0.1, 2: -8.0}, {1: -0.5, 2: -0.6}, {1: -0.2, 2: -9.0}]
+        candidate = [{1: -0.1, 2: -8.0}, {2: -0.5, 1: -0.6}, {1: -0.2, 2: -9.0}]
+        found = confident_agreement(reference, candidate, min_margin=1.0)
+        self.assertEqual(found["agreement"], 1.0)
+        self.assertEqual((found["scored"], found["skipped_undecided"]), (2, 1))
+
+    def test_a_flip_where_the_model_was_certain_still_counts(self):
+        """Skipping the undecided must not soften the test everywhere else."""
+        reference = [{1: -0.1, 2: -8.0}, {1: -0.1, 2: -8.0}]
+        candidate = [{1: -0.1, 2: -8.0}, {2: -0.1, 1: -8.0}]
+        found = confident_agreement(reference, candidate, min_margin=1.0)
+        self.assertEqual(found["agreement"], 0.5)
+        self.assertEqual(found["first_disagreement"], 1)
+
+    def test_the_skipped_count_is_reported_so_a_thin_score_is_visible(self):
+        reference = [{1: -0.5, 2: -0.6}] * 9 + [{1: -0.1, 2: -8.0}]
+        found = confident_agreement(reference, list(reference), min_margin=1.0)
+        self.assertEqual((found["scored"], found["skipped_undecided"]), (1, 9))
+
+    def test_scoring_nothing_is_refused_rather_than_reported_as_perfect(self):
+        """Agreement over an empty set is the vacuous pass this project is written against."""
+        reference = [{1: -0.5, 2: -0.6}, {1: -0.4, 2: -0.5}]
+        with self.assertRaises(MetricsError) as caught:
+            confident_agreement(reference, list(reference), min_margin=1.0)
+        self.assertIn("nothing this can measure", str(caught.exception))
+
+    def test_a_negative_margin_is_refused(self):
+        with self.assertRaises(MetricsError):
+            confident_agreement([{1: -0.1, 2: -8.0}], [{1: -0.1, 2: -8.0}], min_margin=-1.0)
+
+    def test_a_higher_bar_scores_fewer_positions(self):
+        reference = [{1: -0.1, 2: -2.0}, {1: -0.1, 2: -9.0}]
+        loose = confident_agreement(reference, list(reference), min_margin=1.0)
+        tight = confident_agreement(reference, list(reference), min_margin=5.0)
+        self.assertEqual((loose["scored"], tight["scored"]), (2, 1))
