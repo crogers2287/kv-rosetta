@@ -1225,3 +1225,47 @@ constants, and every refusal (10/10 guards mutation-checked; 759 offline tests).
 once on this host**: the six artifacts above. **Untested**: hybrid sizing, which needs a
 decoded hybrid artifact to learn which layers carry attention KV; quantised KV types, which
 are computed but never compared against a file written with one.
+
+## REQ-040 — The space guard derives the size instead of scaling a flat rate
+
+RA-003's first question, answered with the predictor from REQ-039.
+
+`predict_space` scaled a flat `--bytes-per-token 295390.0`. That figure was obtained by
+dividing a **hybrid** model's whole 2K artifact by its token count, which folds a fixed
+per-layer recurrent term into a per-token rate. Given a model, it now derives the size from
+the GGUF and the state-file layout instead.
+
+| prompt | derived | flat rate | over-prediction |
+|---|---:|---:|---:|
+| 8,192 | 0.281 GiB | 2.254 GiB | **8.0x** |
+| 32,000 | 1.099 GiB | 8.803 GiB | **8.0x** |
+
+Eight times, not the 2.4x RA-003 estimated — because the rate was measured on a different
+model as well as a hybrid one. The derived figures are the ones REQ-037 and REQ-038 actually
+wrote, to within the 16 bytes of header token ids a saved slot carries beyond its cells.
+
+A guard that refuses work which would have succeeded costs as much as one that admits work
+that fails, and this was refusing eightfold.
+
+Three things it deliberately does **not** do:
+
+- A **hybrid** model still falls back to the flat rate. The derivation does not describe
+  recurrent state and refuses rather than guess, which is the correct outcome — the rate was
+  measured on that model, so the fallback is at least the right one.
+- The record carries `basis` and `basis_note`, so a rate-based number can never be read as a
+  derived one. That distinction is the whole point of doing this rather than lowering the
+  constant.
+- A model path that does not exist **raises**. It is a configuration fault, every later step
+  of the run would fail on it, and answering a mistyped path with a plausible rate-based
+  number would hide it.
+
+Status: **proven by retained test** — six new cases covering both bases, the fallback, the
+refusal, and the fit decision changing with the basis (765 offline tests, CI green). The
+fallback is a `try`/`except` rather than an `if`-guarded raise, so `scripts/mutation_check.py`
+cannot reach it; it was mutated by hand instead — widening the except to `Exception`, and
+mislabelling the basis, each make a named test fail.
+
+**Honest note on that script's coverage:** the mutation tool reports **3 of 21** guards
+defended for `admitted_store_gate.py`. The other 18 live in the live-run path and only
+execute against a running server on a GPU. That is a pre-existing gap, not one this change
+introduced, and it is recorded here rather than left to be discovered from a passing summary.

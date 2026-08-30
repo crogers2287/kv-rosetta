@@ -319,3 +319,79 @@ class CoverageAcceptanceTest(unittest.TestCase):
         source = (REPO / "scripts" / "admitted_store_gate.py").read_text()
         self.assertIn('"kind": "admitted-store-gate"', source)
         self.assertNotIn("admitted-store-2k-gate", source)
+
+
+class DerivedSpacePredictionTest(unittest.TestCase):
+    """The space guard, given a model, derives the size instead of scaling a flat rate.
+
+    RA-003 is open on the flat rate over-predicting by 2.4x at 8K. It was obtained by
+    dividing a hybrid model's whole 2K artifact by its token count, which folds a fixed
+    per-layer recurrent term into a per-token rate - so it is wrong in a way that grows worse
+    the further the prefix gets from 2K, which is the direction the product goal points.
+    """
+
+    QWEN2 = Path("/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf")
+    HYBRID = Path("/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf")
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "admitted_store_gate", REPO / "scripts" / "admitted_store_gate.py")
+        self.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.gate)
+
+    def predict(self, tokens, **kw):
+        return self.gate.predict_space(tokens, 295390.0, free_bytes=int(64 * 2**30), **kw)
+
+    def test_without_a_model_it_still_scales_the_declared_rate(self):
+        found = self.predict(8192)
+        self.assertEqual(found["basis"], "declared-rate")
+        self.assertEqual(found["predicted_object_bytes"], int(8192 * 295390.0))
+
+    @unittest.skipUnless(QWEN2.is_file(), "the qwen2 test model is not on this host")
+    def test_with_a_model_it_predicts_the_size_that_was_actually_written(self):
+        """302,121,868 bytes is the measured 8K artifact from REQ-037."""
+        found = self.predict(8192, model=self.QWEN2)
+        self.assertEqual(found["basis"], "derived-from-gguf")
+        self.assertEqual(found["bytes_per_token"], 36880)
+        # The saved file carried four extra header token ids, worth 16 bytes.
+        self.assertEqual(found["predicted_object_bytes"], 302_121_868 - 16)
+
+    @unittest.skipUnless(QWEN2.is_file(), "the qwen2 test model is not on this host")
+    def test_the_flat_rate_over_predicts_this_model_eightfold(self):
+        """Not 2.4x here but 8x, because the rate came from a different, hybrid model.
+
+        A guard that refuses work which would have succeeded costs as much as one that
+        admits work that fails, and this is the arithmetic that made it do so.
+        """
+        derived = self.predict(8192, model=self.QWEN2)["predicted_object_bytes"]
+        flat = self.predict(8192)["predicted_object_bytes"]
+        self.assertGreater(flat / derived, 7.0)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_a_hybrid_model_falls_back_and_says_so(self):
+        """The derivation does not describe recurrent state, so it refuses rather than
+        guess - and the record has to show that the number is not a derived one."""
+        found = self.predict(2048, model=self.HYBRID)
+        self.assertEqual(found["basis"], "declared-rate")
+        self.assertIn("hybrid", found["basis_note"])
+        self.assertEqual(found["predicted_object_bytes"], int(2048 * 295390.0))
+
+    def test_a_model_path_that_does_not_exist_is_not_a_fallback_case(self):
+        """A mistyped path is a configuration fault, and every later step would fail on it.
+
+        Falling back would answer it with a plausible rate-based number and hide it. Only a
+        model that exists and cannot be described is allowed to fall back.
+        """
+        from kv_rosetta.gguf import GGUFError
+        with self.assertRaises(GGUFError) as caught:
+            self.predict(2048, model="/nonexistent/model.gguf")
+        self.assertIn("cannot open", str(caught.exception))
+
+    @unittest.skipUnless(QWEN2.is_file(), "the qwen2 test model is not on this host")
+    def test_the_fit_decision_follows_the_derived_size(self):
+        """8K on this model needs under a gigabyte; the flat rate calls 4 GiB too little."""
+        tight = self.gate.predict_space(8192, 295390.0, free_bytes=int(4 * 2**30),
+                                        model=self.QWEN2)
+        self.assertTrue(tight["fits"])
+        self.assertFalse(self.gate.predict_space(8192, 295390.0,
+                                                 free_bytes=int(4 * 2**30))["fits"])

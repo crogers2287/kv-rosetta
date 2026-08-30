@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from kv_rosetta import sizing  # noqa: E402
 from production_matrix import (  # noqa: E402
     N_PROBS,
     Server,
@@ -203,18 +204,45 @@ def check_coverage(cache_n: int, prompt_n: int, prompt_tokens: int,
 
 
 def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
-                  margin: float = 0.20) -> dict:
+                  margin: float = 0.20, *, model: str | Path | None = None,
+                  kv_type: str = "f16") -> dict:
     """Predict the object size and peak transient use, and say whether it fits.
 
     Admission copies the raw state into the store before the source is removed, so peak
     usage is roughly twice the object. Running out of space mid-admission would leave a
     partial object and a useless record, so this is checked before anything is generated
     rather than discovered during the run.
+
+    Given a `model`, the size is **derived** from its GGUF and the state-file layout, which
+    is exact on every artifact this project has written. The flat rate is the fallback, and
+    it is a poor one: the default was obtained by dividing a hybrid model's whole 2K artifact
+    by its token count, which folds a fixed per-layer recurrent term into a per-token rate
+    and over-predicts by about 2.4x at 8K. That over-prediction is what RA-003 is open on.
+
+    `basis` records which was used and `basis_note` why, so a record can never be read as
+    derived when it fell back. A hybrid model still falls back, because the derivation does
+    not describe recurrent state and refuses rather than guess.
+
+    A model path that does not exist is **not** a fallback case and is allowed to raise. That
+    is a configuration fault - every later step of the run would fail on it too - and quietly
+    producing a rate-based number for a mistyped path would hide it behind a plausible
+    prediction. Only a model that exists and cannot be described falls back.
     """
+    basis, note = "declared-rate", "no model given; using the rate as supplied"
     predicted = int(prompt_tokens * bytes_per_token)
+    if model is not None:
+        try:
+            geometry = sizing.geometry_of(model)
+            predicted = sizing.state_bytes(geometry, prompt_tokens, kv_type=kv_type)
+            bytes_per_token = sizing.bytes_per_token(geometry, kv_type=kv_type)
+            basis, note = "derived-from-gguf", f"{geometry.architecture} geometry {geometry}"
+        except sizing.SizingError as exc:
+            note = f"falling back to the declared rate: {exc}"
     peak = predicted * 2
     required = int(peak * (1 + margin))
     return {
+        "basis": basis,
+        "basis_note": note,
         "bytes_per_token": bytes_per_token,
         "predicted_object_bytes": predicted,
         "predicted_peak_transient_bytes": peak,
@@ -281,7 +309,7 @@ def main() -> int:
     if args.require_persistent:
         require_persistent(evidence)
     space = predict_space(args.prompt_tokens, args.bytes_per_token,
-                          evidence["available_bytes"])
+                          evidence["available_bytes"], model=args.model)
     print(f"  predicted object {space['predicted_object_bytes']/2**30:.2f} GiB, peak "
           f"{space['predicted_peak_transient_bytes']/2**30:.2f} GiB, need "
           f"{space['required_with_margin_bytes']/2**30:.2f} GiB with margin, free "
