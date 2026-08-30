@@ -250,3 +250,41 @@ class HybridRefusalTest(unittest.TestCase):
     def test_the_live_hybrid_model_is_refused_end_to_end(self):
         with self.assertRaises(SizingError):
             state_bytes(geometry_of(HYBRID), 2048)
+
+
+class SecondModelTest(unittest.TestCase):
+    """The same terms against a differently shaped model, predicted before it was run.
+
+    Everything else here is qwen2: 36 layers, 2 KV heads, head_dim 128. This is qwen3 with 28
+    layers and 8 KV heads - three times the cost per token, a different architecture string,
+    and a declared key_length of 128 where embedding_length over head_count would have given
+    64. The numbers below were printed by the predictor first and the artifacts written
+    afterwards.
+    """
+
+    #: qwen3, as read from Qwen3-Embedding-0.6B-Q8_0.gguf.
+    QWEN3 = KVGeometry(n_layer=28, n_kv_head=8, head_dim=128, architecture="qwen3",
+                       value_head_dim=128)
+
+    #: cells -> file size, measured on this host with the HIP build at ca3d5a3e1.
+    MEASURED = {128: 14_682_828, 129: 14_797_532}
+
+    def test_it_predicts_a_second_model_exactly(self):
+        for cells, actual in self.MEASURED.items():
+            with self.subTest(cells=cells):
+                self.assertEqual(state_bytes(self.QWEN3, cells, header_tokens=cells + 4),
+                                 actual)
+
+    def test_the_second_model_costs_three_times_as_much_per_token(self):
+        """Geometry, not a shared constant, is what the prediction rests on."""
+        self.assertEqual(self.MEASURED[129] - self.MEASURED[128],
+                         bytes_per_token(self.QWEN3))
+        self.assertEqual(bytes_per_token(self.QWEN3), 114_704)
+        self.assertEqual(bytes_per_token(QWEN2), 36_880)
+
+    def test_deriving_the_head_dimension_here_would_have_halved_it(self):
+        """This model declares key_length 128; embedding_length / head_count is 1024/16."""
+        derived = KVGeometry(n_layer=28, n_kv_head=8, head_dim=1024 // 16,
+                             architecture="qwen3")
+        self.assertNotEqual(state_bytes(derived, 128, header_tokens=132),
+                            self.MEASURED[128])

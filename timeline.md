@@ -1163,3 +1163,65 @@ evidence, not code); the short-prefix refusal, self-restore refusal and divergen
 are (728 offline tests, CI green). **Untested**: CUDA↔anything, still waiting on a 3090 slot;
 the hybrid model at any of these lengths; any second model. **Inferred**: that the size law
 holds above 32K — it has only been tested up to the model's own context limit.
+
+## REQ-039 — Artifact size derived from the format, exact on two models
+
+REQ-038 fitted `908 + 36,880 x tokens` to two points and it predicted a third exactly. A line
+through two points reproduces those two points by construction, so that was worth following
+up rather than believing. This replaces the fit with the writer's own arithmetic.
+
+A 128- and a 129-token artifact were saved back to back and one was decoded. The accounting
+closes exactly:
+
+```
+12                      magic, version, n_token_count
++ 4  x header_tokens    the prompt's token ids, four bytes each
++ 8                     n_stream, cell_count
++ 12 x cells            per cell: pos, n_seq_id, one seq_id
++ 8                     v_trans, n_layer
++ n_layer x (24 + cells x (k_row + v_row))
+= 4,721,548             measured 4,721,548
+```
+
+The term that had been missing is **four bytes per token for the prompt's token ids in the
+header**. Arithmetic over the documented per-cell fields came out 4 bytes per token short of
+the measured slope, and rather than absorb that into a constant it was found by decoding a
+real file. Invisible at 128 tokens; 128 KB adrift at 32,000.
+
+`kv_rosetta/sizing.py` reads geometry from the GGUF and predicts. Against every artifact this
+project has written:
+
+| model | cells | predicted | actual | error |
+|---|---:|---:|---:|---:|
+| qwen2 Q4_K_M | 128 | 4,721,548 | 4,721,548 | **0** |
+| qwen2 Q4_K_M | 129 | 4,758,428 | 4,758,428 | **0** |
+| qwen2 Q4_K_M | 8,192 | 302,121,868 | 302,121,868 | **0** |
+| qwen2 Q4_K_M | 32,000 | 1,180,160,908 | 1,180,160,908 | **0** |
+| **qwen3** 0.6B | 128 | 14,682,828 | 14,682,828 | **0** |
+| **qwen3** 0.6B | 129 | 14,797,532 | 14,797,532 | **0** |
+
+The last two are the ones that count. A second architecture, 28 layers against 36, 8 KV heads
+against 2, **114,704 bytes per token against 36,880** — and the figures were printed before
+the artifacts were written.
+
+### Two silent-wrong bugs this found
+
+**Head dimension.** The first version derived `head_dim = embedding_length / head_count`. On
+qwen35 that is 5120/24 = 213.33, floored to **213**, against a declared `key_length` of
+**256** — an estimate wrong by a fifth and entirely plausible. It surfaced only because
+subtracting the attention estimate from a measured hybrid artifact left a *negative*
+remainder. `attention.key_length` and `value_length` are now authoritative, keys and values
+are sized independently, and an indivisible `embedding_length` is refused rather than floored.
+The second model above would also have been wrong: it declares key_length 128 where the
+derivation gives 64.
+
+**A docstring that lied.** `state_bytes` said hybrid models were refused. Nothing checked.
+A caller reading it would have taken an attention-only figure for a whole file, and the terms
+are wrong for a hybrid twice over — the body continues into recurrent state, and not every
+layer carries attention KV. Hybrid and recurrent architectures are refused by name now.
+
+Status: **proven by retained test** — the arithmetic, both models' measured sizes as
+constants, and every refusal (10/10 guards mutation-checked; 762 offline tests). **Measured
+once on this host**: the six artifacts above. **Untested**: hybrid sizing, which needs a
+decoded hybrid artifact to learn which layers carry attention KV; quantised KV types, which
+are computed but never compared against a file written with one.
