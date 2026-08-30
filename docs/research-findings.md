@@ -1061,3 +1061,58 @@ neither writer was a patched build. The specific checkpoint-appendix-before-reje
 steer described is therefore *not* exercised by these two runs. What is established is that a
 model-mismatch rejection, including one that fails deep in the data section, leaves the slot
 pristine on this reader. The appendix path needs a patched writer and remains untested.
+
+---
+
+## 28. Same-geometry cross-model reuse works — §20 answered a narrower question than it was quoted for
+
+§20 is titled "cross-model translation, attempted and rejected" and has been cited, including
+by me, as "caches do not move between models". It does not show that. It tested `qwen35`
+(16 layers, 4 KV heads) into `qwen35moe` (10 layers, 2 KV heads) — a **geometry** change,
+requiring a learned mapping, which is what failed. The case where two models already lay their
+cache out identically was never run.
+
+llama.cpp's state format records shape, not model identity, so that case needs no translation
+at all: the file is simply accepted. Measured with `scripts/cross_model_gate.py`:
+
+**Qwen2.5-3B-Instruct Q4_K_M writes → Qwen2.5-3B-Instruct Q8_0 reads**, 3,088-token prompt:
+
+| | reused | top-1 vs target's own restore | text |
+|---|---:|---:|---|
+| identity (target reads its own cache) | 3087/3088 | — | reference |
+| **foreign (other quantisation's cache)** | **3087/3088** | **1.00** | **byte-identical** |
+| noise (same file, values scrambled) | 3087/3088 | 0.00 | `????????????????` |
+
+The max logprob delta against the target's own restore is 1.03: the two agree on every emitted
+token while differing in confidence behind it. Worth stating, because "identical output" and
+"identical distribution" are not the same claim and only the first is established.
+
+### Scored against the target's own restore, not against a cold prefill
+
+A first version of this gate required the identity control to reproduce the *cold prefill*
+output exactly, and failed the run when it did not. That was the wrong question. Restoring a
+cache and prefilling a prompt are different computations, and here they disagree on 3 of 32
+tokens **for a model reading its own cache** (`identity_top1_vs_native` 0.906). Scoring a
+foreign cache against a cold prefill charges it for a difference that has nothing to do with
+whose cache it is. The comparison that isolates the variable is foreign-restore against
+own-restore — both restores, differing only in who wrote the bytes. This is the same row §17
+found meaningful for cross-backend transfer.
+
+### The noise control had to be rebuilt before any of this counted
+
+The first noise control overwrote every byte after the token header, which destroyed the
+per-layer ggml type ids and row sizes as well as the values. The server answered 400. **A
+rejected noise control bounds nothing** — from outside it is indistinguishable from a control
+that was never run, and it would have left a high foreign score with no floor under it. It now
+scrambles only the tensor spans located by the repo's own GGSQ parser: 72 spans, 113.8 MB of
+values replaced, 50,316 structural bytes preserved. The rebuilt control restores, reuses 3,087
+tokens, and emits `????????????????`, which is what a floor is supposed to look like.
+
+### What this does and does not establish
+
+Two quantisations of one model are the **weakest** form of "different model": same training,
+same logical weights, differing only by rounding. It is nonetheless a real and practical case —
+different cards want different quantisations, and this says one warm cache can serve both.
+
+It does not yet establish reuse between two genuinely different fine-tunes that share a
+geometry. That is the next rung and it is testable; it was simply never on disk here.

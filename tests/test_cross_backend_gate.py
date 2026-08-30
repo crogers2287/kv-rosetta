@@ -18,6 +18,7 @@ from cross_backend_gate import (  # noqa: E402
     require_one_revision,
     source_revision,
 )
+from production_matrix import probs  # noqa: E402
 
 
 class RevisionParseTest(unittest.TestCase):
@@ -151,3 +152,33 @@ class LogprobDivergenceTest(unittest.TestCase):
         self.assertEqual(found["positions"], 1)
         self.assertEqual(found["max_abs_logprob_delta"], 0.0)
         self.assertFalse(found["identical"])
+
+
+class NullLogprobHandling(unittest.TestCase):
+    """llama.cpp scores some alternatives at probability zero and serialises them as null.
+
+    float(None) raises, which killed a gate run after both servers had already done their
+    work. Dropped rather than mapped to -inf: the divergence helper counts tokens present
+    in only one vector separately, so a drop stays visible as a membership difference,
+    while an -inf would saturate the delta and hide every token that agreed.
+    """
+
+    def _response(self, pairs):
+        return {"completion_probabilities": [
+            {"top_logprobs": [{"id": i, "logprob": lp} for i, lp in pairs]}]}
+
+    def test_a_null_logprob_is_dropped_not_crashed_on(self):
+        vectors = probs(self._response([(1, -0.5), (2, None), (3, -2.0)]))
+        self.assertEqual(vectors, [{1: -0.5, 3: -2.0}])
+
+    def test_a_dropped_entry_shows_up_as_a_membership_difference(self):
+        full = self._response([(1, -0.5), (2, -9.0)])
+        nulled = self._response([(1, -0.5), (2, None)])
+        result = logprob_divergence(full, nulled)
+        self.assertEqual(result["tokens_only_in_one"], 1)
+        self.assertEqual(result["shared_tokens"], 1)
+        # The surviving token agreed exactly, and that must remain visible.
+        self.assertEqual(result["max_abs_logprob_delta"], 0.0)
+
+    def test_all_null_leaves_an_empty_vector_rather_than_a_fake_one(self):
+        self.assertEqual(probs(self._response([(1, None)])), [{}])

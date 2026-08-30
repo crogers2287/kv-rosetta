@@ -331,7 +331,14 @@ def probs(response):
             raise RuntimeError(f"completion entry has no top_logprobs; keys were "
                                f"{sorted(entry)}. Refusing to compare vectors that were "
                                f"never returned.")
-        out.append({int(t["id"]): float(t["logprob"]) for t in top})
+        # llama.cpp emits a null logprob for an alternative it scored at probability
+        # zero. float(None) raises, which took down a whole gate run mid-flight. Dropping
+        # the entry is the honest handling: the comparison already counts tokens present
+        # in only one vector separately, so a dropped -inf shows up as a membership
+        # difference rather than saturating the delta to infinity and hiding every token
+        # that did agree. Keeping the entry at float("-inf") would do exactly that.
+        out.append({int(t["id"]): float(t["logprob"])
+                    for t in top if t.get("logprob") is not None})
     return out
 
 
