@@ -1,10 +1,12 @@
-# KV Rosetta research steer: ship the proven same-model path honestly and isolate translation later
+# KV Rosetta research steer: contain failed-restore state before expanding native portability
 
-Status basis: default-branch head 383e19626b1c67dcf0422606097189d67a1796f2.
+Status basis: default-branch head f3fa574ab3d9dac2ab46f87498d3ebd684090968.
 
-This steer supersedes be39b64. The newest work materially advances the same-model product path: Tiel-Coder restored 508/512 tokens through capture → admission → sidecar → runtime, the fleet's stock binary was refused, and an 8K RAM-backed run restored 8,188/8,192 tokens with a reported 14.68× advantage over cold prefill. Retain those results.
+This steer supersedes 619d496. The newest work proves that one native llama.cpp state file can cross NVIDIA/CUDA and AMD/ROCm in both directions at 8K and 32K for one exact non-hybrid qwen2 tuple. At 32K it reused 31,999/32,000 tokens with matching generated text and token IDs. Retain that as strong same-model native-portability evidence.
 
-They still do not satisfy the ordered P0 hybrid HIP↔Vulkan matrix, persistent-storage economics, production KV quantization, concurrent-load behavior, or the demand-driven no-wake contract. The benchmark record also lacks raw repetitions and full provenance. P0 remains the single next experiment; after it, the smallest shippable same-model sidecar gate is allowed before broader canonical work.
+The same batch exposed a more urgent fail-closed boundary. In a three-model raw-restore matrix, all six wrong-model restores returned HTTP 400, but llama.cpp logged that it restored the foreign checkpoint appendix before rejecting the main state body. The harness did not issue a completion afterward, so it did not prove that the target slot remained pristine. A rejected restore is not safe merely because the request returned an error.
+
+Before the production qwen35 backend matrix, run the smallest retained poisoning test and close any state-mutation path. Also make gate-protocol provenance and legacy requirements fail closed. Then resume the exact production qwen35 8K HIP↔Vulkan matrix. Do not substitute the non-hybrid CUDA↔ROCm result for that hybrid gate.
 
 ## Mission and non-negotiable boundaries
 
@@ -23,6 +25,26 @@ Primary hybrid evidence remains:
 
 Keep patches 0001 and 0002 pinned and identified. Do not post upstream.
 
+## P-1 — prove that failed restoration cannot poison a live slot
+
+Treat this as the immediate safety gate because it can invalidate fallback behavior.
+
+Use one process-owned target runtime and a known foreign artifact whose raw restore reproduces the logged checkpoint-before-rejection sequence:
+
+1. Establish a pristine target baseline: cold/native completion, token IDs, nonempty probability vectors, cache reuse, and save/checkpoint metadata.
+2. Attempt the foreign raw restore and retain the exact server log, response, endpoint-call count, checkpoint metadata, and process identity.
+3. Without clearing or restarting the slot, immediately run the identical target completion and compare it with the pristine baseline.
+4. Repeat through the public sidecar with both a requirements-bearing wrong-model artifact and a legacy artifact missing requirements. Both must refuse before any state endpoint call.
+5. If the raw failure changes any slot state, completion, probability, reuse, or checkpoint metadata, retain that failure and add the smallest recovery boundary: never expose the raw mismatch path, clear/restart or restore pristine state before fallback, and rerun the identical test.
+
+Pass requires zero public-path state endpoint calls for every mismatched or incomplete artifact and a bit-for-bit/threshold-equivalent pristine target after refusal. HTTP 400 alone is not acceptance evidence.
+
+Close the adjacent provenance gap in the same red-test-first patch set:
+
+- GateBinding currently defaults a missing scoring protocol to teacher_forced. Missing is not the same as explicitly recorded. Deserialization or construction without a protocol must refuse.
+- Teacher-forced scoring is a diagnostic quality measure, not a substitute for the separately frozen free-generation/behavioral admission gate.
+- Legacy manifests missing runtime requirements must refuse active restoration or be explicitly re-admitted through full validation.
+
 ## RA-005 answer — split the shippable product from cross-model research
 
 RA-005 is answered as follows:
@@ -37,6 +59,25 @@ The project headline and capability reporting must distinguish:
 - **proven now:** same-model persistence and selected same-runtime/backend transfer;
 - **next product work:** same-model conversion across cache dtypes, CUDA/ROCm/Vulkan, and live runtime connectors;
 - **research only:** different-model transformation, learned projectors, tokenizer remapping, and recurrent-state mapping.
+
+## What CUDA↔ROCm now proves—and does not
+
+Retain the new native same-model evidence:
+
+- one exact non-hybrid qwen2 GGUF moved CUDA→ROCm and ROCm→CUDA;
+- 8K restored 8,191/8,192 tokens in both directions;
+- 32K restored 31,999/32,000 tokens in both directions;
+- generated text and token IDs matched, and top-1 agreement was 1.0 for the retained positions;
+- writer and reader used the same llama.cpp revision.
+
+This is strong evidence that backend vendor alone need not force canonical conversion when model, runtime, state format, cache dtype, and context tuple are otherwise identical. It is not yet an admission-quality shipping allowlist:
+
+1. The retained records do not bind the model-weights digest, explicit K/V cache dtype value, prompt digest, complete launch commands, process identities, and device identity strongly enough.
+2. Only eight generated positions were compared.
+3. The 32K reverse leg evicted production models through llama-swap and left them unloaded until their next request. Keep that operational effect in the record; benchmark authorization is not proof of the no-wake sidecar contract.
+4. The model is non-hybrid qwen2. It contains neither qwen35 recurrent state nor SCKP checkpoint persistence.
+
+Do not repeat 32K merely for scale. After P-1 and the production hybrid P0, retain one admission-quality 8K CUDA↔ROCm repetition with complete identity and no hidden fleet side effects before allowlisting this tuple.
 
 ## What the latest Tiel live work proves—and does not
 
@@ -128,6 +169,8 @@ Do not call this “the last unbuilt piece of T3.” Cross-model transformation 
 
 ## Cross-model evidence is real, failed, confounded, and quarantined
 
+The new raw three-model matrix adds a narrower fact: same-model controls restored 508/512, and all six direct wrong-model restores returned HTTP 400. It does not prove safe refusal because the runtime restored a foreign checkpoint before rejecting the remaining file and post-failure slot state was never tested. Do not expose direct cross-model raw restore through a product path.
+
 The qwen38-27b → Tiel-Coder experiment is useful negative evidence:
 
 - exact shared tokenizer, matching head width and recurrent dimensions;
@@ -160,7 +203,7 @@ When T3 reopens after the same-model gates, use this isolation ladder and change
 
 Every rung needs exact model/weight/runtime/artifact/prompt identities, teacher-forced per-position logits, per-layer/per-kind cache error, identity/noise/native controls, and a separately frozen free-generation admission gate. A failure identifies the earliest causal boundary; it does not authorize skipping to a richer mapper.
 
-## P0 — the only next experiment: exact qwen35 8K HIP ↔ Vulkan
+## P0 — resume after P-1: exact qwen35 8K HIP ↔ Vulkan
 
 First apply only the smallest red-test-first runner corrections needed for an admission-quality record. Freeze the verdict before measurement:
 
@@ -206,7 +249,7 @@ Only after P0 passes or retains its first causal failure, run one product-shaped
 - server-visible persistent store with enforced path/device/ownership/digest invariants;
 - actual production KV dtype and context settings;
 - 8K minimum, three raw retained repetitions under normal slot/concurrent load;
-- cold, native-reuse, patched restore, stock/unpatched refusal, wrong-model/dtype/runtime, and unload-race controls;
+- cold, native-reuse, patched restore, stock/unpatched refusal, wrong-model/dtype/runtime, legacy-manifest, post-refusal slot-pristine, and unload-race controls;
 - output/token/probability parity and completely reconciled phase timings.
 
 Pass allows the opaque same-model route to replace kvwarm for that exact tuple. Failure falls back to native prefill and retains the earliest causal defect. This is a narrow shippable feature, not canonical or cross-model portability.
@@ -251,14 +294,16 @@ Keep vLLM inert and sidecar active restoration quarantined. No scheduled or proa
 ## Required execution order
 
 1. Freeze compose/translate/alignment, nonlinear mapping, and unrelated service expansion.
-2. Harden only the P0 runner provenance, raw records, exit-status handling, and predeclared verdict.
-3. Run the exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix.
-4. Run P0.5: one demand-driven, persistent, production-KV, no-wake same-model sidecar gate.
-5. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
-6. Prove bounded hybrid numeric decoding and choose canonical storage.
-7. Prove same-model f16→q8_0 behavioral conversion.
-8. Extend the same-model canonical path to CUDA and a live second runtime.
-9. Revisit cross-model work only through the isolation ladder above.
-10. Attempt nonlinear/tokenizer/recurrent mapping only after a controlled rung identifies that need.
+2. Run P-1: reproduce the checkpoint-before-rejection path and prove the target slot remains pristine after failure.
+3. Red-test and close missing GateBinding protocol, legacy requirements, and public-path zero-state-endpoint refusal.
+4. Harden only the P0 runner provenance, raw records, exit-status handling, and predeclared verdict.
+5. Run the exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix.
+6. Run P0.5: one demand-driven, persistent, production-KV, no-wake same-model sidecar gate.
+7. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
+8. Prove bounded hybrid numeric decoding and choose canonical storage.
+9. Prove same-model f16→q8_0 behavioral conversion.
+10. Repeat one admission-quality 8K CUDA↔ROCm tuple, then extend to a live second runtime.
+11. Revisit cross-model work only through the isolation ladder above.
+12. Attempt nonlinear/tokenizer/recurrent mapping only after a controlled rung identifies that need.
 
 Deferred: qwen35 32K execution, host-restart/cold-boot claims, 131K, learned cross-model mapping, MTP/draft/speculative support, broad service/authentication/distributed scheduling work, and upstream submissions/comments.
