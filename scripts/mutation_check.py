@@ -42,9 +42,23 @@ def guard_lines(source: str) -> list[tuple[int, str]]:
     return sorted(found.items())
 
 
-def run(tests: list[str], env: dict) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-B", "-m", "unittest", *tests],
-                          capture_output=True, text=True, env=env)
+TIMEOUT = 600
+
+
+def run(tests: list[str], env: dict) -> subprocess.CompletedProcess | None:
+    """Run the suite once. ``None`` means it hung.
+
+    A disabled guard can turn a refusal into a non-terminating loop rather than a wrong
+    answer -- container.extract_payload spins forever on a truncated file without its
+    ``if not block`` check, because read() keeps returning b"" and the remaining count
+    never decreases. Without a timeout the audit itself hangs at that mutation and reports
+    nothing at all for the module.
+    """
+    try:
+        return subprocess.run([sys.executable, "-B", "-m", "unittest", *tests],
+                              capture_output=True, text=True, env=env, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None
 
 
 def clear_bytecode(root: Path) -> None:
@@ -66,6 +80,9 @@ def main() -> int:
 
     clear_bytecode(repo)
     baseline = run(args.tests, env)
+    if baseline is None:
+        print(f"refusing to run: the unmutated suite did not finish in {TIMEOUT}s.")
+        return 2
     if baseline.returncode != 0:
         print("refusing to run: the suite fails before any mutation, so every guard would "
               "report as defended.\n" + baseline.stderr[-2000:])
@@ -85,8 +102,13 @@ def main() -> int:
             mutated[index] = " " * indent + "if False:"
             source.write_text("\n".join(mutated) + "\n")
             clear_bytecode(repo)
-            caught = run(args.tests, env).returncode != 0
-            print(f"{'CAUGHT ' if caught else 'SURVIVED'}  L{index + 1}: {text[:72]}")
+            result = run(args.tests, env)
+            # A hang is a detection: the suite did not pass. Reported separately so it is
+            # never read as a clean assertion failure.
+            hung = result is None
+            caught = hung or result.returncode != 0
+            label = "HUNG   " if hung else ("CAUGHT " if caught else "SURVIVED")
+            print(f"{label}  L{index + 1}: {text[:72]}")
             if not caught:
                 survived.append(f"L{index + 1}: {text}")
     finally:

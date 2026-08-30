@@ -2561,3 +2561,88 @@ Status: **verified on this host** — vLLM version and default read from the ser
 `~/qwen38-27b-rtx3090/venv`. **Accepted**: the verdict on cross-model translation, which
 matches REQ-064. **Rejected on evidence**: that enabling APC addresses the warmer, since it is
 already enabled.
+
+---
+
+## REQ-066 — A mutation audit of every guard, and the two things it caught in itself
+
+**Request:** "keep testing".
+
+Ran `scripts/mutation_check.py` across all 22 modules: disable each `if`-guarded `raise` in
+turn, require some test to fail. A guard no test notices the removal of is documentation, not
+behaviour.
+
+### First result was wrong, and the shape of the error matters
+
+The first pass hand-mapped modules to test files and reported **170/212**, with
+`container.py` at **0/23**. Zero is not a coverage level, it is a mapping error — the module
+was paired with `tests/test_artifact_store` and `tests/test_store`, neither of which imports
+it. Re-running against the modules that actually import it (`test_hardening`,
+`test_conformance`, `test_compound_format_agreement`, `test_segments`,
+`test_llamacpp_roundtrip`) gave **1/23**.
+
+So the guess was wrong twice over: wrong that the number was 0, and wrong in the prediction
+that the mapping error was the whole story. 1/23 is a real hole, in the one module that
+decides whether bytes on disk become tensors handed to a runtime.
+
+### Closed
+
+| Module | Before | After |
+|---|---|---|
+| `manifest.py` | 4/10 | 10/10 |
+| `container.py` | 1/23 | **23/23** |
+| `store.py` | 2/5 | 5/5 |
+| `admitted_store.py` | 9/12 | 12/12 |
+| `dtypes.py` | 2/3 | 3/3 |
+| `segments.py` | 0/1 | 1/1 |
+| `identity.py` | 0/1 | 1/1 |
+| `hybrid_schema.py` | 2/3 | 3/3 |
+| `gguf.py` | 6/7 | 7/7 |
+| `mappers/linear.py` | 10/12 | 12/12 |
+
+### Four of the new tests were themselves vacuous
+
+In `segments`, `hybrid_schema` and both `linear` cases, the guarded input **still raises the
+same error class** once the guard is deleted — from a field-extraction `except` clause, or
+from the underdetermined-fit check further down. `assertRaises(SegmentError)` passes either
+way. Only asserting the message distinguishes the guard from its absence.
+
+That is the same failure this audit exists to find, and it appeared inside the tests written
+to close the audit. Caught only because every new test was put back through the mutation check
+rather than trusted for being green.
+
+Every module in the repo now reports 100%. 1042 offline tests pass, up from 999.
+
+### The audit hung, and the hang was the finding
+
+The `container.py` run sat at 0% CPU for 30 minutes. Removing `extract_payload`'s
+`if not block: raise` does not produce a wrong answer — it produces a **non-terminating
+loop**, because `read()` at EOF returns `b""` forever and `remaining` never decreases. The
+harness had no timeout, so it hung at that mutation and reported nothing at all for the
+module. `scripts/mutation_check.py` now bounds each run at 600s and reports a hang as `HUNG`,
+distinct from a clean assertion failure: a hang is still a detection, but it is not the same
+evidence.
+
+Two copies of the audit were also running concurrently against the same file, each mutating
+what the other read, and the killed run left `container.py` mutated in the worktree. Restored
+from git and verified with `git status` before continuing. Worth stating plainly: an audit
+tool that rewrites the source it audits will leave the tree dirty if it is interrupted.
+
+The same mistake then repeated in a subtler form: the `gguf.py` audit was started while the
+`container.py` audit was still running, and its test list included `test_container_guards`.
+container's L261 was disabled at that moment, so the extraction test hit the infinite loop
+described above and the gguf baseline timed out. Two mutation audits must not run at once, even
+against different sources, if their test sets overlap at all. Re-run alone: **7/7**.
+
+### Security-relevant guards, previously undefended
+
+`store.path_for` and `ArtifactStore.path_for` refuse a path that resolves outside the store
+root, and `AdmittedStore.resolve` refuses an object that resolves outside the store or is not
+a regular file. Digest validation does not cover these: every path component is well-formed
+hex and the escape happens during *resolution*, reached by planting a symlink where a model
+directory or an object belongs. `os.open(dir, O_RDONLY|O_NOFOLLOW)` succeeds on Linux, so
+`O_NOFOLLOW` does not cover the directory case either — only the `S_ISREG` check on the open
+descriptor does.
+
+Status: **proven by retained test** — every figure above is a mutation-check result, not a
+line-coverage number.
