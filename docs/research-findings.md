@@ -1108,11 +1108,39 @@ scrambles only the tensor spans located by the repo's own GGSQ parser: 72 spans,
 values replaced, 50,316 structural bytes preserved. The rebuilt control restores, reuses 3,087
 tokens, and emits `????????????????`, which is what a floor is supposed to look like.
 
-### What this does and does not establish
+### The next rung: a genuinely different fine-tune
 
-Two quantisations of one model are the **weakest** form of "different model": same training,
-same logical weights, differing only by rounding. It is nonetheless a real and practical case —
-different cards want different quantisations, and this says one warm cache can serve both.
+Qwen2.5-3B **base** writes, Qwen2.5-3B-**Instruct** reads. Same architecture and tokenizer,
+same 36 layers / 2 KV heads / head_dim 128 / theta 1e6, different weight files — full
+instruction tuning, not rounding. 128 teacher-forced positions:
 
-It does not yet establish reuse between two genuinely different fine-tunes that share a
-geometry. That is the next rung and it is testable; it was simply never on disk here.
+| pair | foreign top-1 vs target's own restore | max Δ | free-running text |
+|---|---:|---:|---|
+| Q4_K_M → Q8_0 (rounding only) | **0.984** (126/128) | 1.03 | identical at 32 tokens |
+| **base → Instruct (fine-tune)** | **0.930** (119/128) | 3.56 | diverges |
+| noise floor (both) | 0.000 | — | `????????` |
+
+**Same geometry is necessary but not sufficient, and the gap is measurable.** Quantisation
+variants transfer at or above this machine's own reproducibility floor. A real fine-tune
+degrades: 9 of 128 next-token predictions change, and the logprob delta triples.
+
+### The threshold was stricter than the machine
+
+The gate shipped with `min_top1 = 0.99`. The identity leg — the same model, same weights, same
+prompt, differing only by restore-versus-prefill arithmetic — agrees on **0.969 to 0.977** of
+128 teacher-forced positions. So 0.99 was unreachable *for a model reading its own cache*, and
+nothing could ever have passed it for reasons having anything to do with the cache.
+
+The verdict now reports `baseline_top1` and `at_or_above_baseline` next to the absolute number,
+and flags `threshold_exceeds_baseline`. An absolute parity threshold is the wrong instrument
+when the identity case cannot reach it.
+
+### Free generation measured the cascade, not the cache
+
+The first version of this gate scored freely generated tokens. At 32 tokens it reported
+attractive numbers; at 128 it reported that a model restoring its **own** cache agreed with its
+own cold prefill on **0.23** of positions. That is the autoregressive cliff — one divergent
+token changes the next input and everything after it — and it says nothing about the cache.
+`gate.py` already declares `teacher_forced` as its default scoring protocol for exactly this
+reason, and this runner was not using it. Under teacher forcing the same identity case scores
+0.977.

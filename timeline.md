@@ -2899,3 +2899,61 @@ described is untested. Establishing it needs a patched writer.
 Status: **proven by retained test** — the runner's refusals (3/3 guards, 9 tests).
 **Measured once on this host** — both poisoning cases, records at
 `docs/records/slot-poisoning/`. **Untested** — the appendix path.
+
+---
+
+## REQ-072 — "Same geometry should work": tested, and largely right
+
+**Request:** "i still think theres a way to make this model agnostic. at the very least models
+with the same geometry should work."
+
+Correct on both counts, and my summary of §20 was wrong. §20 tested `qwen35` (16 layers,
+4 KV heads) into `qwen35moe` (10 layers, 2 KV heads) — a **geometry** change needing a learned
+mapping, which is what failed. I had been citing it as "caches do not move between models". The
+same-geometry case was never run. It needs no translation at all, because llama.cpp's state
+format records shape, not model identity.
+
+`scripts/cross_model_gate.py` measures it, with identity / noise / native controls.
+
+| pair (same geometry) | reused | foreign top-1 vs target's own restore | max Δ |
+|---|---:|---:|---:|
+| Qwen2.5-3B-Instruct Q4_K_M → Q8_0 | 3087/3088 | **0.984** | 1.03 |
+| Qwen2.5-3B **base** → **Instruct** | 3087/3088 | **0.930** | 3.56 |
+| noise (values scrambled, header intact) | 3087/3088 | 0.000 | — |
+
+128 teacher-forced positions. Quantisation variants transfer at or above this machine's own
+reproducibility floor; a real fine-tune degrades measurably but is nowhere near the 0.0 that
+cross-geometry produced.
+
+### Five things had to be corrected before any number meant anything
+
+1. **Free generation measured the cascade, not the cache.** At 128 freely generated tokens a
+   model restoring its *own* cache agreed with its own cold prefill on 0.23 of positions.
+   `gate.py` already declares `teacher_forced` the default protocol for this reason and this
+   runner was not using it. Under teacher forcing the same case scores 0.977.
+2. **The noise control was being rejected.** Scrambling everything after the token header
+   destroyed per-layer type ids and row sizes; the server answered 400. A rejected noise
+   control bounds nothing. It now scrambles only the spans the repo's own GGSQ parser locates.
+3. **The threshold was stricter than the machine.** `min_top1 = 0.99` against an identity
+   baseline of 0.969–0.977, so nothing could pass for reasons unrelated to the cache. The
+   verdict now reports `baseline_top1` and `threshold_exceeds_baseline`.
+4. **The gate scored against a cold prefill.** Restoring and prefilling are different
+   computations. Scoring foreign-restore against own-restore isolates authorship.
+5. **`probs()` crashed on a null logprob**, which llama.cpp emits for an alternative scored at
+   probability zero. It killed a run after both servers had done their work. Shared helper, so
+   this was latent for every gate in the repo.
+
+Also corrected: the geometry check compared `key_length` as `None == None` for `qwen2`, which
+omits it. Two models with different head dimensions would have passed on a pair of nulls.
+`head_dim` is now derived from `embedding_length / head_count`, and an indivisible pair is
+refused rather than floored — the 5120/24 → 213 error this project already made once.
+
+One flaw was corrected and changed nothing: the identity cache was saved after the 32-token
+native run while the foreign one was saved after a 1-token run, so the control carried 31 extra
+cells. Matching them left every number identical. Recorded because assuming the reverse would
+have been easy.
+
+Status: **measured once on this host**, records at `docs/records/cross-model/`.
+**Proven by retained test**: the gate's controls (7/7 guards, 28 tests). **Untested**: more
+than one prompt, other geometry-sharing families, and whether a fine-tune pair closer than
+base→instruct closes the gap.

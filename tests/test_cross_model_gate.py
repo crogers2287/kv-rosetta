@@ -22,17 +22,21 @@ from cross_model_gate import (GateError, geometry_of, require_same_geometry,
 
 def _geo(**over):
     base = {"arch": "qwen3", "n_layer": 36, "n_head_kv": 8, "key_length": 128,
-            "value_length": 128, "rope_freq_base": 1e6, "rope_dimension_count": 128}
+            "value_length": 128, "head_dim_derived": False, "rope_freq_base": 1e6}
     base.update(over)
     return base
 
 
-def _leg(cache_n=100, text_match=True, tokens_match=True, top1=1.0, vs_own=None):
+def _leg(cache_n=100, text_match=True, tokens_match=True, top1=1.0, vs_own=None,
+         forced_vs_native=None):
     return {"cache_n": cache_n, "text_matches_native": text_match,
             "tokens_match_native": tokens_match,
             "divergence_vs_native": {"top1_agreement": top1},
             "divergence_vs_identity": {"top1_agreement": top1 if vs_own is None else vs_own,
                                        "max_abs_logprob_delta": 0.1},
+            "forced_vs_identity": {"top1_agreement": top1 if vs_own is None else vs_own,
+                                   "max_abs_logprob_delta": 0.1},
+            "forced_vs_native": {"top1_agreement": forced_vs_native},
             "text_matches_identity": text_match}
 
 
@@ -51,6 +55,52 @@ class GeometryPrecondition(unittest.TestCase):
         with self.assertRaises(GateError) as caught:
             require_same_geometry(_geo(), _geo(n_layer=10))
         self.assertIn("§20", str(caught.exception))
+
+    def test_head_dim_is_never_compared_as_null(self):
+        # qwen2 omits attention.key_length. Left as None, two models with different head
+        # dimensions would pass the check by comparing None to None.
+        import struct as _s
+        def kv_string(k, v):
+            return (_s.pack("<Q", len(k)) + k.encode() + _s.pack("<I", 8)
+                    + _s.pack("<Q", len(v)) + v.encode())
+        def kv_u32(k, v):
+            return _s.pack("<Q", len(k)) + k.encode() + _s.pack("<I", 4) + _s.pack("<I", v)
+        blob = bytearray(b"GGUF" + _s.pack("<IQQ", 3, 0, 3))
+        blob += kv_string("general.architecture", "qwen2")
+        blob += kv_u32("qwen2.embedding_length", 2048)
+        blob += kv_u32("qwen2.attention.head_count", 16)
+        path = Path(tempfile.mkdtemp()) / "m.gguf"
+        path.write_bytes(bytes(blob))
+        geo = geometry_of(str(path))
+        self.assertEqual(geo["key_length"], 128)
+        self.assertTrue(geo["head_dim_derived"])
+
+    def _gguf(self, pairs, strings=(("general.architecture", "qwen2"),)):
+        import struct as _s
+        blob = bytearray(b"GGUF" + _s.pack("<IQQ", 3, 0, len(pairs) + len(strings)))
+        for k, v in strings:
+            blob += (_s.pack("<Q", len(k)) + k.encode() + _s.pack("<I", 8)
+                     + _s.pack("<Q", len(v)) + v.encode())
+        for k, v in pairs:
+            blob += _s.pack("<Q", len(k)) + k.encode() + _s.pack("<I", 4) + _s.pack("<I", v)
+        path = Path(tempfile.mkdtemp()) / "m.gguf"
+        path.write_bytes(bytes(blob))
+        return str(path)
+
+    def test_an_indivisible_embedding_is_refused_rather_than_floored(self):
+        # 5120/24 floors to 213 against a declared key_length of 256. Flooring silently
+        # produces a plausible head_dim and two models would then "match" on a wrong one.
+        path = self._gguf([("qwen2.embedding_length", 5120),
+                           ("qwen2.attention.head_count", 24)])
+        with self.assertRaises(GateError) as caught:
+            geometry_of(path)
+        self.assertIn("not divisible", str(caught.exception))
+
+    def test_a_model_with_no_derivable_head_dim_is_refused(self):
+        path = self._gguf([("qwen2.block_count", 36)])
+        with self.assertRaises(GateError) as caught:
+            geometry_of(path)
+        self.assertIn("no head dimension", str(caught.exception))
 
     def test_rope_base_is_part_of_the_geometry(self):
         # Same shapes but different theta means the cached keys were rotated differently,
@@ -191,6 +241,24 @@ class VerdictControls(unittest.TestCase):
                     min_top1=0.99)
         self.assertFalse(v["meets_threshold"])
 
+    def test_the_baseline_is_reported_next_to_the_absolute_threshold(self):
+        # Restore-versus-prefill on this host agrees on 0.969-0.977 of positions for a
+        # model reading its OWN cache, so a 0.99 absolute threshold is unreachable for
+        # reasons that have nothing to do with whose cache it is.
+        legs = self._legs(identity=_leg(forced_vs_native=0.97),
+                          foreign=_leg(vs_own=0.98))
+        v = verdict(legs, min_top1=0.99)
+        self.assertEqual(v["baseline_top1"], 0.97)
+        self.assertTrue(v["threshold_exceeds_baseline"])
+        self.assertTrue(v["at_or_above_baseline"])
+        self.assertFalse(v["meets_threshold"])
+
+    def test_a_foreign_result_below_the_baseline_is_marked_as_such(self):
+        legs = self._legs(identity=_leg(forced_vs_native=0.977),
+                          foreign=_leg(vs_own=0.930))
+        v = verdict(legs, min_top1=0.99)
+        self.assertFalse(v["at_or_above_baseline"])
+
     def test_a_low_foreign_score_does_not_meet_the_threshold(self):
         v = verdict(self._legs(foreign=_leg(vs_own=0.4)), min_top1=0.99)
         self.assertTrue(v["controls_ok"])
@@ -199,3 +267,67 @@ class VerdictControls(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MatchedCaches(unittest.TestCase):
+    def test_equal_cell_counts_are_accepted(self):
+        from cross_model_gate import require_matched_caches
+        require_matched_caches({"n_saved": 3088}, {"n_saved": 3088})
+
+    def test_a_longer_identity_cache_is_refused(self):
+        # The control must differ from the subject in authorship only.
+        from cross_model_gate import GateError as GE, require_matched_caches
+        with self.assertRaises(GE) as caught:
+            require_matched_caches({"n_saved": 3088}, {"n_saved": 3119})
+        self.assertIn("3119", str(caught.exception))
+
+
+class TeacherForcedComparison(unittest.TestCase):
+    """Free generation is a cliff; these pin the protocol that avoids it.
+
+    Measured, not assumed: over 128 freely generated tokens even a model restoring its OWN
+    cache agreed with its own cold prefill on 0.23 of positions. That is a fact about
+    autoregressive cascade, not about the cache, and it made the free-generation numbers
+    uninterpretable in both directions.
+    """
+
+    def test_identical_scores_agree_completely(self):
+        from cross_model_gate import compare_forced
+        scores = [{1: -0.1, 2: -2.0}, {3: -0.3, 4: -1.0}]
+        result = compare_forced(scores, scores)
+        self.assertEqual(result["top1_agreement"], 1.0)
+        self.assertEqual(result["max_abs_logprob_delta"], 0.0)
+        self.assertEqual(result["positions"], 2)
+
+    def test_one_disagreement_does_not_cascade(self):
+        # The whole point: position 0 differing must cost exactly one position, because
+        # every position is scored against the same fixed prefix.
+        from cross_model_gate import compare_forced
+        left = [{1: -0.1, 2: -2.0}, {3: -0.3, 4: -1.0}, {5: -0.2, 6: -1.0}]
+        right = [{1: -2.0, 2: -0.1}, {3: -0.3, 4: -1.0}, {5: -0.2, 6: -1.0}]
+        self.assertAlmostEqual(compare_forced(left, right)["top1_agreement"], 2 / 3)
+
+    def test_comparison_stops_at_the_shorter_run(self):
+        from cross_model_gate import compare_forced
+        result = compare_forced([{1: -0.1}], [{1: -0.1}, {2: -0.1}])
+        self.assertEqual(result["positions"], 1)
+
+    def test_a_position_with_no_vector_is_refused(self):
+        # An empty vector compares equal to any other empty vector, so a leg that silently
+        # returned none would score as perfect agreement.
+        from cross_model_gate import GateError as GE, teacher_forced
+
+        class _Reader:
+            def post(self, path, body):
+                return {"completion_probabilities": []}
+
+        with self.assertRaises(GE) as caught:
+            teacher_forced(_Reader(), [1, 2], [3], 0)
+        self.assertIn("no probability vector", str(caught.exception))
+
+    def test_no_positions_reports_none_rather_than_a_perfect_score(self):
+        # An empty comparison must never read as agreement.
+        from cross_model_gate import compare_forced
+        result = compare_forced([], [])
+        self.assertEqual(result["positions"], 0)
+        self.assertIsNone(result["top1_agreement"])

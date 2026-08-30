@@ -60,14 +60,32 @@ def geometry_of(path: str) -> dict:
         raise GateError(f"{path} declares no architecture")
     def g(key):
         return md.get(f"{arch}.{key}")
+
+    # Many architectures omit attention.key_length and derive head_dim from
+    # embedding_length / head_count instead. Left as None those fields compare None to
+    # None, so two models with different head dimensions would pass the geometry check on
+    # a pair of nulls - the same vacuous comparison this project keeps finding. Derived
+    # when absent, and the derivation is recorded so the two cases stay distinguishable.
+    key_length, value_length = g("attention.key_length"), g("attention.value_length")
+    derived = False
+    embd, n_head = g("embedding_length"), g("attention.head_count")
+    if key_length is None and embd and n_head:
+        if embd % n_head:
+            raise GateError(
+                f"{path}: embedding_length {embd} is not divisible by head_count "
+                f"{n_head}, so head_dim cannot be derived and is not declared")
+        key_length = value_length = embd // n_head
+        derived = True
+    if key_length is None:
+        raise GateError(f"{path} declares no head dimension and none can be derived")
     return {
         "arch": arch,
         "n_layer": g("block_count"),
         "n_head_kv": g("attention.head_count_kv"),
-        "key_length": g("attention.key_length"),
-        "value_length": g("attention.value_length"),
+        "key_length": key_length,
+        "value_length": value_length,
+        "head_dim_derived": derived,
         "rope_freq_base": g("rope.freq_base"),
-        "rope_dimension_count": g("rope.dimension_count"),
     }
 
 
@@ -119,6 +137,76 @@ def scramble_payload(src: Path, dest: Path, *, has_cell_ext: bool = False) -> di
             "spans_scrambled": len(section.spans),
             "payload_bytes_scrambled": scrambled,
             "structural_bytes_preserved": len(raw) - scrambled}
+
+
+def require_matched_caches(saved_a: dict, saved_b: dict) -> None:
+    """The identity cache must hold the same number of cells as the foreign one.
+
+    An earlier version saved the identity cache after the 32-token native run and the
+    foreign cache after a one-token run, so the control carried 31 extra cells the subject
+    did not. It then differed from the subject in length as well as authorship and
+    isolated nothing. (Correcting it left the measured numbers unchanged, so the flaw was
+    real but not what was driving the result - recorded because the reverse would have been
+    easy to assume.)
+    """
+    if saved_a.get("n_saved") != saved_b.get("n_saved"):
+        raise GateError(
+            f"identity cache holds {saved_b.get('n_saved')} cells against the foreign "
+            f"file's {saved_a.get('n_saved')}; the control differs from the subject in "
+            f"length as well as authorship and would not isolate anything")
+
+
+def tokenize(reader: Reader, text: str) -> list[int]:
+    return reader.post("/tokenize", {"content": text})["tokens"]
+
+
+def teacher_forced(reader: Reader, prompt_ids: list[int], continuation: list[int],
+                   slot: int) -> list[dict]:
+    """Score each continuation position against the SAME prefix for every leg.
+
+    Free generation is a cliff: one divergent token changes the next input and everything
+    after it, so a free-generation comparison past a few tokens measures the cascade rather
+    than the cache. Measured here rather than argued - over 128 freely generated tokens
+    even a model restoring its OWN cache agreed with its own cold prefill on 0.23 of
+    positions, which is not a fact about the cache at all.
+
+    Teacher forcing feeds the identical prefix at every position, so a disagreement at
+    position i cannot contaminate position i+1. This is the protocol gate.py already
+    declares as its default, for this reason.
+    """
+    scores = []
+    for index in range(len(continuation)):
+        response = reader.post("/completion", {
+            "prompt": prompt_ids + continuation[:index],
+            "n_predict": 1, "temperature": 0.0, "seed": 1,
+            "cache_prompt": True, "id_slot": slot, "n_probs": N_PROBS})
+        vectors = probs(response)
+        if not vectors:
+            raise GateError(f"no probability vector at teacher-forced position {index}")
+        scores.append(vectors[0])
+    return scores
+
+
+def compare_forced(left: list[dict], right: list[dict]) -> dict:
+    """Position-by-position agreement between two teacher-forced score sets."""
+    compared = min(len(left), len(right))
+    if compared == 0:
+        return {"positions": 0, "top1_agreement": None, "max_abs_logprob_delta": None}
+    agreed, worst, shared, only_one = 0, 0.0, 0, 0
+    for a, b in zip(left[:compared], right[:compared]):
+        if not a or not b:
+            continue
+        if max(a, key=a.get) == max(b, key=b.get):
+            agreed += 1
+        for token in set(a) | set(b):
+            if token in a and token in b:
+                worst = max(worst, abs(a[token] - b[token]))
+                shared += 1
+            else:
+                only_one += 1
+    return {"positions": compared, "top1_agreement": agreed / compared,
+            "max_abs_logprob_delta": worst, "shared_tokens": shared,
+            "tokens_only_in_one": only_one}
 
 
 def run_completion(reader: Reader, prompt: str, slot: int, predict: int) -> dict:
@@ -175,8 +263,20 @@ def verdict(legs: dict, *, min_top1: float) -> dict:
                         f"{noise_top1:.2f} of tokens, so scrambled values are not "
                         f"distinguishable here and the floor is not a floor")
 
-    vs_own = foreign.get("divergence_vs_identity") or {}
+    noise_forced = (noise.get("forced_vs_identity") or {}).get("top1_agreement")
+    if noise_forced is not None and noise_forced > 0.5:
+        problems.append(f"noise agreed with the target's own restore on {noise_forced:.2f} "
+                        f"of teacher-forced positions; the floor is not a floor")
+    vs_own = foreign.get("forced_vs_identity") or foreign.get("divergence_vs_identity") or {}
     top1 = vs_own.get("top1_agreement")
+    # The identity leg against a cold prefill is this machine's own reproducibility floor:
+    # the same model, the same weights, the same prompt, differing only by restore-versus-
+    # prefill arithmetic. Measured at 0.969-0.977 over 128 teacher-forced positions, which
+    # is BELOW the 0.99 absolute threshold this gate shipped with - so that threshold was
+    # unreachable even for a model reading its own cache, and a foreign result could never
+    # have passed it for reasons having nothing to do with the cache. Reported alongside so
+    # an absolute number is never read without it.
+    baseline = (identity.get("forced_vs_native") or {}).get("top1_agreement")
     return {
         "controls_ok": not problems,
         "problems": problems,
@@ -186,9 +286,17 @@ def verdict(legs: dict, *, min_top1: float) -> dict:
         "foreign_max_delta_vs_own_restore": vs_own.get("max_abs_logprob_delta"),
         "foreign_text_matches_own_restore": foreign.get("text_matches_identity"),
         # Context, not the verdict.
-        "identity_top1_vs_native": (identity["divergence_vs_native"] or {}).get("top1_agreement"),
+        "identity_forced_top1_vs_native": (identity.get("forced_vs_native") or {}).get("top1_agreement"),
+        "noise_forced_top1_vs_own": noise_forced,
+        "identity_free_top1_vs_native": (identity["divergence_vs_native"] or {}).get("top1_agreement"),
         "noise_top1_vs_own_restore": noise_top1,
         "min_top1": min_top1,
+        "baseline_top1": baseline,
+        # Whether the foreign cache is as good as this machine can do at all. The absolute
+        # threshold below is kept, but it is meaningless above the baseline.
+        "at_or_above_baseline": bool(not problems and top1 is not None
+                                     and baseline is not None and top1 >= baseline),
+        "threshold_exceeds_baseline": bool(baseline is not None and min_top1 > baseline),
         # Reported, never auto-promoted: a passing number is a research result about one
         # pair at one length, not an allowlist entry.
         "meets_threshold": bool(not problems and top1 is not None and top1 >= min_top1),
@@ -208,6 +316,8 @@ def main() -> int:
     ap.add_argument("--n-ctx", type=int, default=8192)
     ap.add_argument("--prompt-repeat", type=int, default=220)
     ap.add_argument("--min-top1", type=float, default=0.99)
+    ap.add_argument("--forced-positions", type=int, default=48,
+                    help="teacher-forced positions scored per leg")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -243,10 +353,26 @@ def main() -> int:
     b.start()
     legs = {}
     try:
-        responses = {}
+        responses, forced = {}, {}
         b.post(f"/slots/{args.slot}?action=erase", {})
         native = run_completion(b, prompt, args.slot, args.predict)
+        prompt_ids = tokenize(b, prompt)
+        # The continuation is fixed once, from the target's own uncached run, and every leg
+        # is scored against those same positions.
+        continuation = toks(native)[:args.forced_positions]
+        b.post(f"/slots/{args.slot}?action=erase", {})
+        native_forced = teacher_forced(b, prompt_ids, continuation, args.slot)
+
+        # The identity cache must be saved the same way the foreign one was: after a
+        # one-token completion, not after the 32-token native run. Saving it from the
+        # native run leaves 31 generated tokens in the slot that the foreign file does not
+        # have, so the two restores differ in cache length as well as in authorship - and
+        # the control stops controlling for anything. Caught when the FOREIGN leg scored
+        # better against the cold prefill than the identity leg did.
+        b.post(f"/slots/{args.slot}?action=erase", {})
+        run_completion(b, prompt, args.slot, 1)
         saved_b = b.post(f"/slots/{args.slot}?action=save", {"filename": "from-b.state"})
+        require_matched_caches(saved_a, saved_b)
 
         for name, filename in (("identity", "from-b.state"),
                                ("foreign", "from-a.state"),
@@ -263,8 +389,14 @@ def main() -> int:
                 continue
             response = run_completion(b, prompt, args.slot, args.predict)
             responses[name] = response
-            legs[name] = {"restored": {k: restored.get(k) for k in ("n_restored", "n_read")},
-                          "refused": refused, **summarise(response, native)}
+            leg = {"restored": {k: restored.get(k) for k in ("n_restored", "n_read")},
+                   "refused": refused, **summarise(response, native)}
+            # Teacher-forced pass on the same restored cache: re-restore first, because the
+            # free-generation completion above already advanced the slot.
+            b.post(f"/slots/{args.slot}?action=erase", {})
+            b.post(f"/slots/{args.slot}?action=restore", {"filename": filename})
+            forced[name] = teacher_forced(b, prompt_ids, continuation, args.slot)
+            legs[name] = leg
         # Both restores, differing only in who wrote the bytes.
         own = responses.get("identity")
         if own is not None:
@@ -274,6 +406,10 @@ def main() -> int:
                         responses[name], own)
                     legs[name]["text_matches_identity"] = (
                         responses[name]["content"] == own["content"])
+        for name, scores in forced.items():
+            legs[name]["forced_vs_native"] = compare_forced(scores, native_forced)
+            if "identity" in forced:
+                legs[name]["forced_vs_identity"] = compare_forced(scores, forced["identity"])
     finally:
         b.stop()
 
@@ -287,6 +423,8 @@ def main() -> int:
         "saved_a": {k: saved_a.get(k) for k in ("n_saved", "n_written")},
         "saved_b": {k: saved_b.get(k) for k in ("n_saved", "n_written")},
         "noise": noise_info,
+        "forced_positions": len(continuation),
+        "native_forced": native_forced,
         "native": {"text": native["content"], "cache_n": native["timings"].get("cache_n"),
                    "prompt_n": native["timings"].get("prompt_n"),
                    "token_ids": toks(native), "vectors": probs(native)},
