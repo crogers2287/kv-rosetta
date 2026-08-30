@@ -1376,7 +1376,7 @@ type id meant adding a `declared_v_type` to the builder: the first attempt searc
 for the type id's bytes and took the last match, which landed unaligned inside the payload —
 the hazard that builder's own docstring warns about.
 
-**42/42 guards defended.** 810 offline tests, CI green.
+**42/42 guards defended.** 817 offline tests, CI green.
 
 Status: **proven by retained test** — the appendix terms, both measured artifacts, the
 preamble length, every decoder refusal. **Measured once on this host**: the 256-token
