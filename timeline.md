@@ -3206,3 +3206,51 @@ Status: **measured once on this host** — the table above. **Proven by retained
 three-state reuse expectation (11/11 guards, 55 tests). **Not covered** — tiel specifically on
 the W6800 fork build, which carries no checkpoint persistence and so has nothing to measure
 until that build is patched.
+
+---
+
+## REQ-078 — The Gary 9B and a Gemma: two different reasons a cache needs checkpoints
+
+**Request:** try the qwopus model running on Gary, the 9b — "might be a 12b" — and then test
+KVX storage with a Gemma model.
+
+The model on Gary is `Qwythos-9B-Claude-Mythos-5-1M-Q6_K`, reached over Tailscale. It declares
+`qwen35`, 32 layers, 16 heads, 4 KV heads, head_dim 256 — **the same KV geometry as the local
+Qwen3.5-4B**, despite being a different model. Copied locally (7.4 GB) and run against the
+patched build rather than disturbing Gary. The 12B guess also landed: the Gemma on this host is
+`gemma-4-12b-it-qat-q4_0`.
+
+### Measured at 7,363 tokens
+
+| model | arch | build | cache_n | prefill ms | speedup |
+|---|---|---|---:|---|---:|
+| gemma-4-12b | `gemma4` sliding-window | stock | **0** | 2046 → 1950 | 1.05x |
+| gemma-4-12b | `gemma4` | **patched** | **7363** | 2028 → **669** | **3.03x** |
+| Qwythos-9B | `qwen35` hybrid | stock | **0** | 1557 → 1501 | 1.04x |
+| Qwythos-9B | `qwen35` | **patched** | **7362** | 1537 → **80** | **19.3x** |
+
+Both restore cleanly on stock (`n_restored` 7,371 and 7,369) and reuse nothing.
+
+### The prediction was wrong again, for a new reason
+
+REQ-077 taught the drive that **hybrid** architectures need checkpoint persistence. Gemma is not
+hybrid — `supports_prefix_reuse("gemma4")` returns True — so the drive predicted it would pay on
+a stock build. It reused zero of 7,363 tokens.
+
+The cause is **sliding-window attention**, which is a metadata key rather than anything in the
+architecture name. `uses_sliding_window` reads it and `expected_reuse` now takes it beside the
+hybrid flag. Second time a prediction from architecture labels has been wrong, and second time
+the fix was to name a runtime requirement instead of a model category.
+
+### Reuse is not speedup
+
+An earlier Gemma run at 578 tokens reused all 578 and was **slower** — 0.92x — because
+restoring a 48-layer, head_dim-512 cache costs more than prefilling 578 tokens. The same model
+gains 3.03x at 7,363, while Qwythos with a quarter of the per-token cache reaches 19.3x.
+`cache_n > 0` answers "was the cache used", not "was it worth using", so the tool reports both;
+reporting only the first would have logged the 578-token run as a success.
+
+Status: **measured once on this host** — the four rows. **Proven by retained test** — the
+sliding-window rule and that unknown never reads as paying (11/11 guards, 59 tests). **Not
+covered** — running on Gary itself; the model was copied here because Gary has no patched build
+and building one there was not worth the disruption.
