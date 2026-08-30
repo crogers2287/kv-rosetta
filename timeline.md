@@ -1708,3 +1708,52 @@ on a flip point that this shows is not stable. **The conclusion**: there is curr
 offline number that predicts admission, so map quality cannot yet be graded without running the
 target model. **Untested**: whether a first-K-token agreement criterion is stable enough to
 serve as the gate.
+
+## REQ-049 — Why the gate was chaotic: each prompt has one fragile token
+
+REQ-048 found exact-match-over-48-tokens is near-random near the boundary and could not
+explain it. Recording *where* the generation first diverges, instead of only whether it did,
+explains it completely.
+
+| alpha | 1 | 0.98 | 0.95 | 0.9 | 0.85 | 0.8 | 0.75 | 0.7 | 0.6 | 0.5 | 0.3 | 0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| lighthouse | 48 | 48 | 48 | 38 | 29 | 29 | 29 | 29 | 38 | 29 | 0 | 1 |
+| orchard | 48 | 30 | 48 | 30 | 31 | 30 | 30 | 30 | 30 | 30 | 30 | 0 |
+| ledger | 48 | 48 | 27 | 33 | 48 | 33 | 33 | 27 | 33 | 25 | 27 | 3 |
+| survey | 48 | 48 | 48 | 48 | 22 | 22 | 22 | 22 | 22 | 22 | 22 | 6 |
+
+**The divergence position is a property of the prompt, not of the perturbation.** survey
+diverges at token 22 for every ratio from 0.85 down to 0.3. orchard sits at 30, lighthouse at
+29, ledger between 25 and 33. Each prompt has a point where the model is nearly tied between
+two continuations, and any disturbance flips it - while everything before that point survives
+substantial cache error.
+
+So the 48-token gate was measuring **"did you survive this prompt's coin-flip token"**, which
+is a fact about the prompt. That is the whole of REQ-048's chaos, and REQ-045 and REQ-046's
+alpha thresholds were readings of it.
+
+### A shorter horizon is a stable criterion
+
+| K | alphas where the four prompts disagree | alphas where all four fail |
+|---|---|---|
+| 8 | 0.3 only | 0 |
+| **16** | **0.3 only** | **0** |
+| 32 | seven of twelve | 0.7, 0.5, 0.3, 0 |
+| 48 | four of twelve | everything below 0.85 |
+
+**First-16-token agreement is stable across prompts and still rejects the translation.** The
+pure map diverges at token 0-6 on every prompt - qualitatively different from any blend, which
+survives to 22-33. The gate can tell those apart without depending on a fragile token.
+
+The trade is real and worth stating plainly: a stable criterion is a **weaker** one. First-16
+would admit an alpha 0.5 cache, which does produce different long-form output. Where to sit on
+that curve is a product decision - how long a generation must stay identical - not something
+the measurement can settle.
+
+Status: **measured once on this host** — 4 prompts, 12 ratios, 48 free tokens, greedy and
+therefore deterministic, identity exact on all four. **Explains**: REQ-048's chaos, and why
+REQ-045/046's thresholds moved with the prompt. **The usable conclusion**: admission should be
+first-K agreement with K well short of the fragile region, and K is a policy choice. **Untested**:
+whether fragile points cluster at similar positions for other prompts or models, and whether
+they can be predicted from the cold run's own logprob margins - if they can, the gate could
+score a cache only at positions where the model is confident.
