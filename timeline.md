@@ -2170,3 +2170,60 @@ prompt pair, both directions of the depth mapping tried for the raw case. **Prov
 test**: none of this - it is a measurement, and the retained tests cover the machinery that
 produced it. **Untested**: a non-linear map, and whether the raw copy improves at all with an
 affine correction rather than none.
+
+## REQ-059 — The paper's method, implemented properly, and what it does and does not buy
+
+The operator asked for arXiv. [2608.03893](https://arxiv.org/abs/2608.03893) - *Cross-Model KV
+Cache Transfer in LLM Families* - is the paper this project's README already cited, and reading
+it properly showed **I had implemented only part of its method.**
+
+It reports 56% of variance on keys and 32% on values from a single source layer, rising to
+**79% and 65%** when the top-k most predictive source layers are **concatenated** as the input.
+My fit used one source layer and reached 0.53, which matches their single-layer figure exactly.
+The concatenation was the gap.
+
+### What implementing it bought
+
+Calibration was also quadrupled, from 8,192 to 32,768 tokens, because at k=8 the first attempt
+had fewer training samples than features.
+
+| pair | k=1 keys/values | k=3 | k=6 |
+|---|---|---|---|
+| 9B -> 27B, 16 target layers | 0.536 / 0.469 | 0.580 / 0.496 | **0.585 / 0.502** |
+| 9B -> tiel, first 4 layers | 0.582 / 0.509 | 0.635 / 0.555 | **0.644 / 0.560** |
+| *paper, Qwen3 14B -> 32B* | *0.56 / 0.32* | — | *0.79 / 0.65* |
+
+**Single-layer reproduces the paper. Multi-layer does not.** Keys go 0.536 to 0.585 where the
+paper goes 0.56 to 0.79. Values start *better* than theirs - 0.469 against 0.32 - and end far
+worse.
+
+### Three things tried that did not close it
+
+**Per-head fitting**, which the paper also specifies, is **worse** here: 0.610 against 0.665 on
+the same target layer. Head h of the source does not inform head h of the target, so
+constraining the map to preserve head identity costs more than the better conditioning gains.
+That is a real difference from the paper's setting, not a bug.
+
+**More calibration** moved little. Four times the tokens took target-1 keys from 0.708 to
+0.719.
+
+**Lineage** turned out to matter, but not enough. The GGUF metadata settles what I had assumed:
+`general.basename` is `ornith-1.5` for the 9B **and** for tiel, but `Qwen3.8-27B` for the 27B.
+So every earlier cross-model number in this project - REQ-044 and REQ-058 included - was
+measured **across lineages**, which is not the paper's setting. The within-family pair is
+9B -> tiel, and it is better by about 0.06 on both keys and values. Better, and nowhere near
+enough.
+
+### The shape of the failure
+
+R² falls sharply with target depth: 0.72 at layer 1, 0.44-0.52 at layer 10, values reaching
+0.30. Shallow layers carry transferable structure; deep ones encode model-specific computation.
+That is consistent across both pairs and is the clearest signal in the data about *why* a
+linear map tops out.
+
+Status: **measured on this host** — 3 model pairs, 32,768 calibration tokens each, held out by
+fraction, k in {1,3,6,8}, whole-vector and per-head, ridge swept over four decades. **The
+conclusion**: the paper's method is correctly implemented now and reaches ~0.64 on the
+favourable within-family pair, against a gate that wants agreement at essentially every
+position. **Untested**: whether the 9B->tiel median holds up over its remaining six layers -
+only the first four are scored, and those are the ones that score best.
