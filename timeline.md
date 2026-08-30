@@ -2033,3 +2033,29 @@ Status: **measured once on this host** — one prompt, 8,192 tokens, one non-hyb
 (qwen2 Q4_K_M), both builds at one revision, identity controls exact. **Untested**: CUDA at
 32,000 tokens, CUDA with a hybrid model, and Vulkan-on-NVIDIA, which would close the matrix
 entirely.
+
+## REQ-056 — CUDA to ROCm at 32,000 tokens
+
+REQ-055 proved the cross-vendor transfer at 8,192. This takes it to the top of the range the
+use case lives in, on the same two builds at `ca3d5a3e1`.
+
+| direction | reused | text | token ids | artifact |
+|---|---:|---|---|---:|
+| CUDA -> ROCm/HIP | **31,999 / 32,000** | identical | identical | 1.10 GiB |
+| ROCm/HIP -> CUDA | **31,999 / 32,000** | identical | identical | 1.10 GiB |
+
+99.997% reuse across vendors at 32,000 tokens. The one-token shortfall is llama.cpp always
+reprocessing the final token, so it is constant and the reuse fraction only improves with
+length.
+
+**An operational note that belongs in the record rather than a footnote.** The harness reported
+`fleet reclaimed the GPUs; unloading and retrying` twice during the second direction: its
+built-in retry called llama-swap's unload endpoint to take memory back. That is the sanctioned
+route and the operator had authorised taking the cards, but the effect is real - models that
+were resident before the run are not resident after it, and llama-swap reloads them on the next
+request rather than immediately. A benchmark that can evict production models should say so
+where the numbers are, not somewhere else.
+
+Status: **measured once on this host** — one prompt, 32,000 tokens, one non-hybrid model, both
+builds at one revision, identity controls exact. **Untested**: CUDA with a hybrid model, and
+Vulkan on NVIDIA, which would close the vendor/API matrix entirely.
