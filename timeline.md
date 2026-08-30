@@ -1429,3 +1429,80 @@ mutation-checked), and the real qwen2.5/ornith-a1 alignment, skipped when those 
 absent (846 offline tests). **Untested**: alignment feeding an actual cross-model transfer —
 that needs a fitted mapper and both models resident, and the divergence gate has the final say
 on whether the result is usable at all.
+
+## REQ-044 — The first cross-model translation, and the gate rejects it
+
+The whole point of the gate, on real data at last: a cache captured from
+`qwen38-27b` (qwen35, 16 attention layers, 4 KV heads) translated into `tiel-coder`
+(qwen35moe, 10 attention layers, 2 KV heads) and offered to tiel.
+
+### What made the pair promising
+
+Every semantic axis matches and only capacity differs — head_dim 256 both, d_state 128 both,
+d_conv 4 both, n_group 16 both. And they turned out to share a tokenizer exactly: identical
+token ids and pieces, so no byte-span alignment was needed at all. If a linear cross-model map
+were going to work anywhere, here.
+
+### The fit
+
+15,981 tokens from 8 varied passages, captured from both models on the vacant W6800. Held out
+by **whole prompts** — a within-prompt split leaks, because adjacent tokens share context, and
+an earlier run that split by token reported 0.98 where the honest number is 0.55.
+
+| | |
+|---|---|
+| median held-out R² | **0.55** |
+| above 0.5 | 13/20 |
+| above 0.9 | **0/20** |
+| source layers chosen | 1, 3, 5, 6, 7, 10, 8, 11, 12, 15 |
+
+That layer selection came out **near-monotonic without being asked to be** — deeper target
+layers independently picked deeper source layers. Real structure, not an artifact.
+
+### The gate
+
+The translated attention was spliced into tiel's own artifact, leaving its recurrent section
+exactly as tiel wrote it. If translated attention cannot pass with everything else held
+perfect, no amount of recurrent work would rescue it.
+
+| run | reused | tokens match | top-1 | max logprob delta |
+|---|---:|---|---:|---:|
+| identity control | 764/768 | **yes** | **1.00** | **0.000** |
+| **translated** | 764/768 | no | **0.00** | 2.42 |
+| noise control | 764/768 | no | 0.00 | 7.99 |
+
+The identity control reproduces the cold output byte for byte, so the splice, the restore and
+the measurement are correct. Noise is degenerate, so the measurement is sensitive. Between
+them, the translation **fails**:
+
+```
+cold/identity : " had unknowingly assembled the longest continuous record of coastal fo"
+translated    : ", having spent his life reading the sea, had learned to"
+noise         : ":\n\n<think>\nThis is a prompt that appears to be"
+```
+
+Fluent, grammatical, on topic, and disagreeing with the target model on **every generated
+token**. This is the exact failure the gate exists for: wrong in the one way that does not
+look wrong. Nobody reading that sentence would suspect the cache.
+
+Translated does sit well clear of noise — 2.42 against 7.99 — so the map carries real signal.
+It is simply nowhere near enough, which is what an R² of 0.55 predicts.
+
+### Two invalid runs before this one
+
+The first attempt reported all three variants producing identical output. It had
+`--ctx-checkpoints 0` set, disabling the very feature the patched build exists to provide, so
+on a hybrid model nothing was reused and every run was a plain cold prefill. **The noise
+control is the only reason that was caught** — three identical outputs including noise is
+impossible if anything was actually restored. The identity control is now a hard precondition:
+if it reuses nothing, the run aborts rather than reporting numbers.
+
+The same run also saved the target state after generating, giving 779 cells against 768
+translated rows.
+
+Status: **measured once on this host** — one prompt, 768 tokens, one fitted map.
+**Proven by retained test**: the translator, the divergence arithmetic, the composition rules
+(908 offline tests). **The honest conclusion**: a per-layer linear map on 16k calibration
+tokens does not produce an admissible cache for this pair, and the gate says so. A linear map
+is the floor, not the ceiling — C2C-style learned projectors are the next rung — but nothing
+here supports admitting a translated cache today.

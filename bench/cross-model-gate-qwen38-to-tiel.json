@@ -1,0 +1,44 @@
+{
+ "identity": {
+  "cache_n": 764,
+  "tokens_match": true,
+  "content_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 0.0,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 0,
+   "shared_tokens": 60,
+   "identical": true
+  },
+  "content": " had unknowingly assembled the longest continuous record of coastal fo"
+ },
+ "translated": {
+  "cache_n": 764,
+  "tokens_match": false,
+  "content_match": false,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 2.4170990606071427,
+   "top1_agreement": 0.0,
+   "tokens_only_in_one": 118,
+   "shared_tokens": 1,
+   "identical": false
+  },
+  "content": ", having spent his life reading the sea, had learned to"
+ },
+ "noise": {
+  "cache_n": 764,
+  "tokens_match": false,
+  "content_match": false,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 7.9945387840271,
+   "top1_agreement": 0.0,
+   "tokens_only_in_one": 114,
+   "shared_tokens": 3,
+   "identical": false
+  },
+  "content": ":\n\n<think>\nThis is a prompt that appears to be"
+ }
+}
