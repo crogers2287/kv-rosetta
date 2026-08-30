@@ -2283,3 +2283,67 @@ no fitted map. **Proven by retained test**: the converter itself, including that
 value came from the input (981 offline tests). **What this shows**: geometry conversion is
 solved and the remaining obstacle is entirely representational. **What it does not show**: any
 quality claim - the fitted map on top of this reshape was not run here.
+
+## REQ-061 — How the models actually consume the cache, and why R² is the wrong objective
+
+The operator asked how each model uses the file. Reading `src/models/qwen35.cpp`, the key path
+is:
+
+```
+Kcur = wk @ x
+Kcur = RMSNorm(Kcur, attn_k_norm)     per-head normalisation with a learned gain
+Kcur = ggml_rope_multi(...)           M-RoPE, then cached
+```
+
+### The RoPE question, settled rather than assumed
+
+`ggml_rope_multi` is multi-section M-RoPE with `sections=[11,11,10,0]` on all three models, and
+qwen35 uses the *interleaved* variant. That looked like it might invalidate every de-rotation
+in this project. It does not: in `ops.cpp` all four component thetas advance unconditionally
+each iteration (`theta_t *= theta_scale; theta_w *= ...; theta_h *= ...; theta_e *= ...`), so
+for text-only input, where every position component is the token position, the sector selection
+chooses between four **identical** values. **M-RoPE degenerates exactly to standard RoPE here.**
+The existing strip is correct, now by verification rather than by luck.
+
+### Keys live on a sphere
+
+RMSNorm implies the cached keys have a constrained magnitude, and they do. Coefficient of
+variation of the per-head key RMS, after stripping rotation:
+
+| layer | source cv | target cv |
+|---|---:|---:|
+| 0 | 0.039 | 0.035 |
+| 3 | 0.022 | 0.039 |
+| 7 | 0.022 | 0.019 |
+
+Two to four percent. The norm is essentially fixed, so a key is a direction and almost nothing
+else - and a linear map's output does not lie on that manifold.
+
+### The error is mostly magnitude, and R² rewards getting it wrong
+
+| target | kind | R² | cosine | predicted/true magnitude |
+|---|---|---:|---:|---:|
+| 0 | k | 0.641 | **0.897** | 0.933 |
+| 4 | k | 0.584 | **0.844** | 0.827 |
+| 8 | k | 0.472 | **0.783** | 0.770 |
+| 8 | v | 0.316 | 0.621 | 0.630 |
+
+**Cosine runs far ahead of R².** The map recovers direction better than the variance figure
+suggests, and systematically under-predicts magnitude by 7 to 37 percent - which is exactly
+what ridge shrinkage does, because shrinking toward the mean minimises squared error.
+
+Attention computes `softmax(q·k/sqrt(d))`. Under-scaled keys **compress the logits and flatten
+the attention distribution**, and diffuse attention is what the degenerate repetition in
+REQ-060 looks like from the outside. So the shrinkage that R² rewards is the very thing that
+would damage the model's behaviour.
+
+Rescaling each predicted key to the target's norm makes R² **worse** - 0.621 against 0.641 at
+layer 0 - and that is the point: **R² is not how the model consumes the cache**, so optimising
+it has been optimising the wrong thing. Whether the rescale helps the *gate* is a separate
+question and the only one that matters.
+
+Status: **measured on this host** — norms and error decomposition over 8,192 held-out tokens
+at four target layers, source read from llama.cpp at `src/models/qwen35.cpp` and
+`ggml/src/ggml-cpu/ops.cpp`. **Untested, and the next thing to run**: whether a
+norm-corrected map passes the gate where the uncorrected one produced degenerate output. R²
+says it is worse; the gate has not been asked.
