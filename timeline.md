@@ -2117,3 +2117,56 @@ path.**
 Status: **measured once on this host** — 3 models, 9 pairings, 512 tokens, same tokenizer
 throughout, same patched build. **Untested**: whether a failed restore leaves foreign
 checkpoints resident, and every pairing at longer prefixes.
+
+## REQ-058 — Why the tensors are not readable across models, at the representation level
+
+REQ-057 showed llama.cpp rejects a foreign artifact, and the log gives the exact check -
+`state_read_data: mismatched layer count (16 instead of 8)` at `llama-kv-cache.cpp:2542`.
+**That is not our handoff and not our transformers**: the file declares how many attention
+layers it carries, the model has a fixed number of slots, and 8 layers of tensors are not 16.
+
+But that is a *format* answer, and the real question is whether the tensors could be made
+readable. This tests it on the most favourable pair on the machine.
+
+**Ornith-1.5-9B and Qwen3.8-27B share everything except depth.** Both `qwen35`, both 4 KV
+heads of 256, both rope base 1e7 over 64 dimensions, and the same tokenizer. A per-token
+attention vector is 1024 values in **both**. Only the layer count differs: 8 against 16. So for
+the first time a raw copy is even expressible - and the map, if fitted, is square.
+
+| approach | median held-out R² | best | above 0.9 |
+|---|---:|---:|---:|
+| **raw depth copy**, no map at all | **−1.8146** | +0.3005 | 0/32 |
+| fitted per-layer ridge, 1024 → 1024 | **+0.5324** | +0.6397 | 0/32 |
+| *27B → tiel for comparison (heads 4→2, widths differ)* | +0.55 | — | 0/20 |
+
+### Two findings, and the second is the important one
+
+**A raw copy is far worse than predicting the mean.** Median R² −1.81. If the 9B and the 27B
+shared a representation, copying layer to layer by normalised depth would score positive. It
+does not. The vectors occupy the same *shape* and not the same *space*.
+
+**Removing the geometric difficulty changed nothing.** 0.53 here against 0.55 for a pair that
+also had to halve the head count and cross different widths. **The obstacle is not geometry.**
+It is not the layer count, not the head count, not the file format, and not the handoff. Two
+models trained separately encode the same text differently, and a per-layer linear map
+recovers about half of it either way.
+
+That is worth stating plainly because it redirects the work: making the file readable is
+solved - splicing translated tensors into a target-geometry artifact produces a file llama.cpp
+accepts, and REQ-044 did exactly that. What no amount of format work fixes is that the numbers
+inside mean something different to each model.
+
+### What would be needed
+
+A per-layer linear map is the weakest thing that could have worked. Its ceiling here is ~0.64
+on a single layer and ~0.53 typical, against a gate that wants agreement at essentially every
+position. The next rung is a learned non-linear projector in the C2C direction, trained across
+layers rather than one at a time. Nothing measured here says that is hopeless; everything
+measured here says linear is not enough, and that the reason is representational rather than
+structural.
+
+Status: **measured once on this host** — 8,192 calibration tokens, held out by fraction, one
+prompt pair, both directions of the depth mapping tried for the raw case. **Proven by retained
+test**: none of this - it is a measurement, and the retained tests cover the machinery that
+produced it. **Untested**: a non-linear map, and whether the raw copy improves at all with an
+affine correction rather than none.
