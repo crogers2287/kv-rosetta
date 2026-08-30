@@ -1,0 +1,74 @@
+[
+ {
+  "target": 0,
+  "kind": "k",
+  "source": 0,
+  "ridge_cosine": 0.9000834822654724,
+  "mlp_cosine": 0.9096968770027161,
+  "gain": 0.009613394737243652,
+  "seconds": 30.4
+ },
+ {
+  "target": 0,
+  "kind": "v",
+  "source": 0,
+  "ridge_cosine": 0.8124754428863525,
+  "mlp_cosine": 0.8522071838378906,
+  "gain": 0.039731740951538086,
+  "seconds": 29.5
+ },
+ {
+  "target": 4,
+  "kind": "k",
+  "source": 1,
+  "ridge_cosine": 0.8461611270904541,
+  "mlp_cosine": 0.853906512260437,
+  "gain": 0.00774538516998291,
+  "seconds": 29.5
+ },
+ {
+  "target": 4,
+  "kind": "v",
+  "source": 1,
+  "ridge_cosine": 0.7087610960006714,
+  "mlp_cosine": 0.731398344039917,
+  "gain": 0.022637248039245605,
+  "seconds": 29.4
+ },
+ {
+  "target": 8,
+  "kind": "k",
+  "source": 3,
+  "ridge_cosine": 0.783683717250824,
+  "mlp_cosine": 0.7895367741584778,
+  "gain": 0.005853056907653809,
+  "seconds": 29.5
+ },
+ {
+  "target": 8,
+  "kind": "v",
+  "source": 4,
+  "ridge_cosine": 0.6093237996101379,
+  "mlp_cosine": 0.6222321391105652,
+  "gain": 0.012908339500427246,
+  "seconds": 29.6
+ },
+ {
+  "target": 12,
+  "kind": "k",
+  "source": 4,
+  "ridge_cosine": 0.8196399211883545,
+  "mlp_cosine": 0.8235167860984802,
+  "gain": 0.0038768649101257324,
+  "seconds": 29.6
+ },
+ {
+  "target": 12,
+  "kind": "v",
+  "source": 4,
+  "ridge_cosine": 0.6891577839851379,
+  "mlp_cosine": 0.6996645927429199,
+  "gain": 0.010506808757781982,
+  "seconds": 29.5
+ }
+]

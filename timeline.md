@@ -2451,3 +2451,65 @@ direction and a training problem rather than a closed-form one.
 Status: **measured on this host** — 12 layer/kind combinations, 8,192 held-out tokens, six
 ridge values per fit. **What jlens contributed**: the principle, already applied. **What it did
 not**: any code, since its lens package is absent from this machine.
+
+## REQ-064 — A non-linear projector, and the conclusion it forces
+
+The last untried thing inside this approach. Every linear variant was exhausted and direction
+was the binding constraint, so this trains a small network on the objective that matters.
+
+The design is deliberately generous to the hypothesis: two hidden layers of 4,096 units with
+GELU, **plus a linear skip connection**, so the model can represent any linear map and can only
+improve on ridge. Trained directly on **cosine loss** rather than squared error - the metric
+REQ-061 established is the right one - on 24,576 samples with the source layer ridge itself
+preferred, and scored on identical held-out data.
+
+| target | kind | ridge cosine | MLP cosine | gain |
+|---|---|---:|---:|---:|
+| 0 | k | 0.9001 | 0.9097 | +0.010 |
+| 0 | v | 0.8125 | 0.8522 | **+0.040** |
+| 4 | k | 0.8462 | 0.8539 | +0.008 |
+| 4 | v | 0.7088 | 0.7314 | +0.023 |
+| 8 | k | 0.7837 | 0.7895 | +0.006 |
+| 8 | v | 0.6093 | 0.6222 | +0.013 |
+| 12 | k | 0.8196 | 0.8235 | +0.004 |
+| 12 | v | 0.6892 | 0.6997 | +0.011 |
+
+**Median gain +0.0101.** Values benefit about three times as much as keys, and nothing benefits
+enough to matter.
+
+### What that forces
+
+A network that can express any linear map, given the right objective and 24,576 examples,
+recovers one additional point of cosine. **The ceiling is not the map's expressiveness.** It is
+that the information required to reconstruct the target's keys is not present in the source's
+keys.
+
+That is not a surprising conclusion once stated. A cached key is `RMSNorm(W_k · h)` - a
+learned, lossy projection of the hidden state into one model's own subspace. Two models trained
+separately have different `W_k`, and the source's projection discards whatever its own `W_k`
+happened not to preserve. No map from the source's keys can restore what was never in them.
+Reconstructing the target's keys needs the *hidden states*, not another model's keys - and
+anything that has the hidden states already has the text, at which point prefilling is the
+direct route.
+
+### The full record of what was tried
+
+| lever | effect on the result |
+|---|---|
+| geometry match (heads 4→2 against 4→4) | none |
+| lineage match (Ornith→Ornith against Ornith→Qwen) | none |
+| top-k source concatenation, the paper's method | +0.05 R², plateaus |
+| per-head fitting, also the paper's | **worse** |
+| calibration 8,192 → 32,768 tokens | +0.01 |
+| raw copy, no map | −1.81 R², far worse than the mean |
+| fitting on the unit sphere | +0.01 cosine |
+| **magnitude correction** | **0.000 → 0.208 gate agreement** |
+| non-linear projector with a linear skip | +0.01 cosine |
+
+One intervention mattered, and it came from reading how the model consumes the cache rather
+than from fitting harder. Everything else moved nothing.
+
+Status: **measured on this host** — 8 layer/kind combinations, 60 epochs each, held out by
+fraction, ridge given its best source layer and four ridge values as a fair baseline.
+**The conclusion**: cross-model KV translation from source KV alone is limited by information,
+not by model class, and no map of this family will close the gap.
