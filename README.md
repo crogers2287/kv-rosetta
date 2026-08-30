@@ -109,19 +109,20 @@ Two results matter more than the speedup:
 
 ### Known limits
 
-- **Hybrid and recurrent architectures cannot reuse a restored prefix on an unpatched
-  runtime.** Not because their state is unrestorable - state after an exact token sequence is
-  deterministic - but because llama.cpp's slot save omits the *context checkpoint* those
-  models need, and its restore clears the checkpoint list. The runtime says so itself:
-  *"forcing full prompt re-processing due to lack of cache data (likely due to SWA or
-  hybrid/recurrent memory)"*. Upstream issue ggml-org/llama.cpp#25913. Until a patched build
-  advertises checkpoint persistence, the adapter probes `general.architecture` and withholds
-  the capability; the failure is retained as a live negative control.
-- **Large-model economics are unmeasured.** Every model above 3 GB on the development host
-  is `qwen35`/`qwen35moe`, all hybrid.
-- **Not implemented:** canonical extraction of llama.cpp state, cross-backend transfer,
-  the HF and vLLM adapters, and any cross-model mapping. Nothing here should be read as
-  covering them.
+- **Hybrid and recurrent architectures need a patched runtime, and it now exists.** llama.cpp's
+  slot save omits the *context checkpoint* those models resume from (upstream issue
+  ggml-org/llama.cpp#25913). Measured on a 35B-A3B hybrid: **252 of 256 tokens reused** on a
+  build carrying the patch against **0 of 256** on a stock one - both reporting the same
+  `n_restored`, which is why a restore count is not evidence. An artifact records what its
+  runtime must provide and the sidecar refuses rather than restoring into a build that will
+  silently reuse nothing.
+- **An artifact carrying checkpoints is not portable to a stock build.** The same hazard
+  shimquant states of its own format: files built with the patch need the patch. This is
+  recorded in the artifact rather than discovered at restore.
+- **Cross-model translation does not pass the gate.** See below. Nothing in this repository
+  should be read as delivering a cache that moves between *models*.
+- **Large-model economics are unmeasured** for non-hybrid models: every model above 3 GB on
+  the development host is `qwen35`/`qwen35moe`.
 
 ## Using it
 
@@ -149,8 +150,58 @@ python3 scripts/bench_restore.py --url http://127.0.0.1:8781 \
   --slots /dev/shm/kvx-slots/ --medium tmpfs --kv-type q4_0 --repeats 3
 ```
 
+### Cross-backend: proven
+
+One artifact, written on one compute backend and restored on another, both directions, on
+llama.cpp builds pinned to the same source revision - a mismatch is rejected for the
+state-file *format* and is indistinguishable from a backend failure, which cost a whole
+result before the guard existed.
+
+| prompt | ROCm/HIP <-> Vulkan | text | token ids |
+|---|---|---|---|
+| 128 | 127/128 reused | identical | identical |
+| 8,192 | 8,191/8,192 | identical | identical |
+| 32,000 | 31,999/32,000 | identical | identical |
+
+Logprob vectors are *not* identical, and the record decomposes why rather than reporting a
+bare boolean: restoring a foreign cache diverges by about what two cold runs on different
+backends already diverge by with no cache involved at all.
+
+### Artifact size: derived, not fitted
+
+`kv_rosetta/sizing.py` computes an artifact's size from the GGUF and the state-file layout,
+every term read off `llama-kv-cache.cpp`. Exact to the byte on seven artifacts across three
+architectures - qwen2 dense, qwen35 hybrid, qwen35moe hybrid-MoE - including a 32,000-token
+file predicted from terms checked only up to 8,192, and a 2,048-token hybrid artifact this
+project did not produce. The space guard derives instead of scaling a rate, which it had been
+over-predicting by 8x.
+
+### Cross-model translation: measured, and rejected
+
+Attempted on the most favourable pair available: qwen35 and qwen35moe, identical head_dim
+256, identical `d_state` 128, and - as it turned out - an identical tokenizer, so no
+alignment error is even possible.
+
+| | |
+|---|---|
+| calibration | 15,981 tokens, 8 varied passages, held out by whole prompt |
+| per-layer linear map | median held-out R2 **0.55**, none above 0.9 |
+| gate, teacher-forced agreement | **0.733** and **0.903** against 1.000 for every blend |
+| first divergence from the target's own output | within **6 tokens** |
+
+The translated cache produces fluent, grammatical, on-topic English that the target model
+would not have written. That is the failure this project exists to catch, and the gate caught
+it.
+
+Establishing that the gate could be trusted took eight iterations and corrected itself three
+times: exact-match over a free generation turned out to be chaotic near the boundary, because
+each prompt has a single near-tied token - the least confident position in the whole
+generation on three prompts of four - and a perturbed cache flips it. Scoring is now
+teacher-forced, so one early mistake cannot condemn every position after it.
+
 ## Next
 
-Gated behind a large non-hybrid model, which the development host does not have: the
-large-model q4 ladder, then 131K, then canonical extraction, then same-revision CUDA-to-HIP
-transfer. Cross-model mapping comes after all of those, behind the quality gate.
+The proven half - durable, cross-backend, hybrid-capable caching for one model - is what this
+would ship. Cross-model translation remains research: a linear map has lost on the best pair
+available, no cheap offline metric predicts admission, and the recurrent half of a hybrid
+cache is not addressed by the map at all.
