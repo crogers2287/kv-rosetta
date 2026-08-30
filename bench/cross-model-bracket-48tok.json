@@ -1,0 +1,126 @@
+{
+ "lighthouse": {
+  "1": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.7": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.6": {
+   "tokens_match": false,
+   "top1": 0.041666666666666664,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.55": {
+   "tokens_match": false,
+   "top1": 0.041666666666666664,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.5": {
+   "tokens_match": false,
+   "top1": 0.041666666666666664,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.45": {
+   "tokens_match": false,
+   "top1": 0.08333333333333333,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.4": {
+   "tokens_match": false,
+   "top1": 0.0625,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.35": {
+   "tokens_match": false,
+   "top1": 0.041666666666666664,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.3": {
+   "tokens_match": false,
+   "top1": 0.125,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0": {
+   "tokens_match": false,
+   "top1": 0.041666666666666664,
+   "cache_n": 764,
+   "positions": 48
+  }
+ },
+ "orchard": {
+  "1": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.7": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.6": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.55": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.5": {
+   "tokens_match": true,
+   "top1": 1.0,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.45": {
+   "tokens_match": false,
+   "top1": 0.9583333333333334,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.4": {
+   "tokens_match": false,
+   "top1": 0.3541666666666667,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.35": {
+   "tokens_match": false,
+   "top1": 0.3541666666666667,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0.3": {
+   "tokens_match": false,
+   "top1": 0.125,
+   "cache_n": 764,
+   "positions": 48
+  },
+  "0": {
+   "tokens_match": false,
+   "top1": 0.0625,
+   "cache_n": 764,
+   "positions": 48
+  }
+ }
+}

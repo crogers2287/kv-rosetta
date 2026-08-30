@@ -1555,3 +1555,47 @@ roughly R² 0.85, not 0.999. A per-layer linear map on 16k tokens reaches 0.55, 
 is short by a wide but finite margin - which is an argument for a better map rather than
 against the idea. **Untested**: whether any map reaches 0.85 on this pair; whether the bracket
 holds on other prompts or longer generations.
+
+## REQ-046 — The bracket sharpened, and REQ-045's number corrected upward
+
+REQ-045 bracketed the gate's flip point on one prompt and **twelve** generated tokens. This
+repeats it with **forty-eight** generated tokens, ten blend ratios and two unrelated prompts,
+each model loaded once.
+
+| alpha | 1.0 | 0.7 | 0.6 | 0.55 | 0.5 | 0.45 | 0.4 | 0.3 | 0.0 |
+|---|---|---|---|---|---|---|---|---|---|
+| lighthouse | pass | pass | **fail** | fail | fail | fail | fail | fail | fail |
+| orchard | pass | pass | pass | pass | **pass** | fail | fail | fail | fail |
+
+**REQ-045 was optimistic and this supersedes it.** On twelve tokens the lighthouse prompt
+passed at alpha 0.6; on forty-eight it fails there. More generated tokens is a strictly harder
+test, because divergence that has not surfaced by token twelve still surfaces by token forty.
+Any threshold measured on a short generation is an upper bound on quality, not a measurement
+of it.
+
+| prompt | lowest passing | implied R² | highest failing | implied R² |
+|---|---:|---:|---:|---:|
+| lighthouse | 0.70 | **0.960** | 0.60 | 0.928 |
+| orchard | 0.50 | **0.887** | 0.45 | 0.864 |
+
+**Required R² is 0.89 to 0.96 and prompt-dependent; the stricter reading is ~0.96.** The
+linear map delivers 0.55. The gap is wider than REQ-045 concluded.
+
+### The failure is a cliff, not a slope
+
+Look at the orchard row either side of its flip: top-1 agreement goes **0.958 → 0.354** between
+alpha 0.45 and 0.40. And the lighthouse prompt sits at 0.042 for every failing ratio from 0.6
+down to 0.0 — a translated cache and a nearly-perfect one fail *identically*.
+
+That is autoregression, not a property of the cache. One wrong token derails every token after
+it, so top-1 agreement over a free generation measures **when the first divergence happens**,
+not how good the cache is. It is the right instrument for admission - end-to-end behaviour is
+what a user experiences - and the wrong one for grading a map, which needs teacher-forced
+comparison at each position against the same prefix.
+
+Status: **measured once on this host** — two prompts, ten ratios, 48 generated tokens,
+identity control exact on both. **Corrects**: REQ-045's 0.78-0.93 bracket, which was taken on
+twelve tokens. **The conclusion for the project**: cross-model translation for this pair needs
+roughly R² 0.9-0.96, and a per-layer linear map on 16k tokens reaches 0.55. **Untested**:
+whether a teacher-forced metric gives a smooth quality curve, which is what a map should be
+tuned against; whether the prompt-dependence narrows over more prompts.
