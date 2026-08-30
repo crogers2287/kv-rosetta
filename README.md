@@ -3,21 +3,36 @@
 Portable KV-cache exchange across model families, inference runtimes, and
 hardware backends.
 
-KV Rosetta separates three things that serving stacks usually conflate:
+An agentic harness re-reads the same heavy system prompt, tool schemas and memory on every
+request. KV Rosetta prefills that once and hands it back, across machines, GPU vendors and
+compute APIs.
 
-1. **Prompt corpus** — canonical messages and tool schemas.
-2. **KVX artifact** — device-neutral cache tensors plus exact model/token metadata.
+It separates three things serving stacks usually conflate:
+
+1. **Content** — canonical messages, tool schemas and memory entries. Model-neutral.
+2. **KVX artifact** — cache tensors plus exact model, token and cache-ABI identity. Model-specific.
 3. **Adapter** — runtime-specific export/import for llama.cpp, vLLM, or another engine.
 
+The first is shared. The second is not, and §20, §29 and §30 are the measurements that settled
+that rather than an assumption it was built on.
+
 ```text
-prompt corpus ──compile──> source-native KV
-                              │
-                 exact reuse ─┼──────────────> target runtime
-                              │
-                              └─translate──quality gate──> target-native KV
-                                              │
-                                              └─fail──> normal target prefill
+  content (system + tools + memory)          one copy, every model reads it
+        │
+        ├── attachment: model A, cache ABI x   ─┐
+        ├── attachment: model B, cache ABI x    ├─ each served only to its own model
+        └── attachment: model A, cache ABI y   ─┘
+                    │
+                    └── miss ──> normal prefill, then deposit an attachment
 ```
+
+**The tensors are not the shareable part, and measurement says so.** Translating a cache
+across models was attempted three ways and failed three ways: across differing geometries
+(§20), through a fitted per-layer converter that is worse than doing nothing at every layer
+(§29), and by reusing only the layers that agree (§30). The difference between two models'
+caches is the target's own weight drift, and the source cache carries no information about it.
+
+What *is* shareable is the content, and that turns out to be what the goal needed.
 
 ## Hardware contract
 
@@ -34,21 +49,63 @@ ROCm is the software stack, HIP is its programming/runtime layer, and RDNA/gfx10
 is a device architecture. KV Rosetta records all three without coupling the core
 format to any of them.
 
-## Cross-model paths
+## What a cache survives, measured
 
-| Pair | Transfer path |
+Hardware and runtime are free; weights are not.
+
+| Change | Result |
 |---|---|
-| Same model ABI, different GPU backend | Exact KVX import |
-| Shared tokenizer and matched KV heads/dimensions | RoPE-stripped per-head ridge mapper |
-| Different layers, heads, dimensions, tokenizer, or architecture | Learned projector plus token alignment |
-| Any pair failing its held-out quality gate | Native target prefill |
+| GPU backend, vendor, or compute API | **exact reuse** — 2047/2048, content and tokens identical (§17, §26) |
+| Weight quantisation, same model | 0.984 top-1 against the target's own restore (§28) |
+| Fine-tune of the same base | 0.930 (§28) |
+| Unrelated model, same KV geometry | 0.859 (§35) |
+| Different KV geometry | 0.000 — no path found (§20) |
 
-The linear path follows [Cross-Model KV Cache Transfer in LLM Families](https://arxiv.org/abs/2608.03893).
-The heterogeneous learned path is compatible with ideas in [C2C](https://github.com/thu-nics/C2C).
+Same geometry buys acceptance and reuse; how much of the output survives tracks how close the
+weights are. Nothing here is admitted on tensor similarity: cosine is reported and never read
+by admission logic.
 
-No translated cache is trusted because its tensor reconstruction score looks
-good. Admission requires held-out next-token divergence and task-quality gates;
-the fallback is always a normal target prefill.
+## Whether a restored cache is reused at all
+
+This is a property of the **architecture and the runtime together**, not of the model. Two
+separate model properties require the runtime to persist context checkpoints, and predicting
+from the architecture name alone was wrong twice:
+
+| model property | runtime persists checkpoints | reuse |
+|---|---|---|
+| plain dense | anything | yes |
+| hybrid attention+recurrent (`qwen35`, `qwen35moe`) | yes | **yes** |
+| sliding-window attention (`gemma4`) | yes | **yes** |
+| either of the above | no | **none** — restores cleanly, reuses zero |
+| either of the above | unrecorded | unknown, never assumed |
+
+Measured at 7,363 tokens on one host: `gemma-4-12b` went from 0 reused on a stock build to
+7,363 reused and 3.03x on a checkpoint-persisting one; a 9B `qwen35` went from 0 to 7,362 and
+**19.3x** (§34). `scripts/build_patched_llama.sh` rebuilds that runtime from a sha256-pinned
+copy of upstream PR #26004.
+
+Note that reuse is not speedup: the same Gemma at 578 tokens reused every token and was
+*slower*, because restoring a 48-layer head_dim-512 cache costs more than prefilling 578
+tokens. `scripts/drive_payoff.py` reports both.
+
+## The shared drive
+
+`kv_rosetta/shared.py` is the product shape. A drive holds one model-neutral **content**
+document — system text, tool schemas, memory entries — and one cache **attachment** per
+`(model identity, cache ABI)` that has warmed it. A model with no attachment still gets the
+content, prefills it, and deposits its own for next time, so a drive fills in as it is used.
+
+An attachment is returned only to the exact model and cache ABI that wrote it. There is no
+"closest available" fallback, deliberately: a cache from a fine-tune of the same base still
+shifts 7% of next-token predictions, and fluent output conditioned on the wrong tensors is the
+failure this project exists to refuse.
+
+Attachments are also addressed by **token prefix**, which is what makes memory affordable.
+Growing a memory entry behind an unchanged system prompt reused 820 of 892 tokens and cut the
+prefill from 108ms to 19ms rather than starting over. That is safe for one specific reason that
+does not generalise: llama.cpp checks the token prefix itself, so a wrong guess costs a
+re-prefill rather than wrong output. It checks tokens, not weights — which is exactly why a
+foreign model's attachment stays refused.
 
 ## What is proven, measured, and not
 
