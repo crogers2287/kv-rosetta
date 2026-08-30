@@ -2646,3 +2646,64 @@ descriptor does.
 
 Status: **proven by retained test** — every figure above is a mutation-check result, not a
 line-coverage number.
+
+---
+
+## REQ-067 — Two untested matrix cells, and a determinism problem found by the control
+
+**Request:** "keep testing", continued after the guard audit.
+
+Closed two cells that had been on the untested list: **CUDA with a hybrid model**, and
+**Vulkan on NVIDIA**. Both 3090s were free; the llama-swap fleet on ROCm0 (tiel-coder, 5819)
+and the embedding server were left untouched throughout, and both 3090s were released after.
+
+### What was measured
+
+| cell | result |
+|---|---|
+| hybrid (`qwen35` 27B) on CUDA | `n_restored=453`, `cache_n=0` — reuses nothing |
+| CUDA-written 186 MB state accepted by Vulkan | yes: `n_restored=453`, full `n_read` |
+| Vulkan-on-NVIDIA determinism, 6 cold runs | **3 distinct outputs** |
+| CUDA determinism, same model/flags/cards | **1 distinct output** |
+
+Full write-up in `docs/research-findings.md` §24 and §25.
+
+### The finding that was nearly reported backwards
+
+The first observation was that Vulkan's output after restoring a CUDA-written cache differed
+from Vulkan's own cold run — which reads as "restoring a foreign cache perturbs generation even
+though it reuses nothing". That is a striking claim and it was wrong. Running the cold case a
+second time showed the two cold runs differed from *each other*. The restore was never
+implicated; the backend simply is not reproducible against itself here.
+
+Six identical cold runs at temperature 0 with a fixed seed, slot erased and displaced between
+each, no cache involved anywhere: Vulkan produced 3 distinct outputs, CUDA produced 1. One of
+Vulkan's three is byte-identical to CUDA's, so it is variation rather than a systematic offset.
+
+This matters beyond the immediate test. The acceptance harness uses identical text and token
+ids as evidence that a restored cache reproduced the uncached result. That check is only as
+strong as the determinism of the configuration it runs on, and that determinism had never been
+measured. On Vulkan here it does not hold.
+
+It does not invalidate REQ-036's HIP <-> Vulkan results — different model, AMD cards, and real
+reuse with `cache_n` in the thousands rather than everything being recomputed. But whether AMD
+Vulkan is deterministic under those flags is now an open question that the existing data cannot
+answer. Logged rather than assumed either way.
+
+### Two smaller corrections along the way
+
+A first hybrid save reported `n_saved=0` and a 1,200-byte file — which looks exactly like the
+known unpatched-build signature and would have been easy to write down as one. It was slot
+routing: the completion had landed on a different slot than the one saved. Pinning `id_slot`
+gave 453 cells and 186 MB.
+
+`laguna-s-2.1` was picked as a non-hybrid candidate and does not load on upstream `ca3d5a3`
+("wrong number of tensors; expected 76, got 69") — it is a fork-specific architecture. Every
+locally available model is either hybrid or fork-specific, so the strongest form of the
+Vulkan-on-NVIDIA test — one with actual prefix reuse to compare — still needs a model this
+repo does not have on disk.
+
+Status: **measured once on this host** for every number above. **Untested**: whether
+`--parallel 1` or flash attention removes the Vulkan nondeterminism (batch composition under
+4 slots and `kv_unified=true` is a plausible mechanism, stated as hypothesis); whether AMD
+Vulkan shows the same; whether it holds for non-hybrid models.

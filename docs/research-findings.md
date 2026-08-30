@@ -817,3 +817,80 @@ cache diverges from the target's own output within six tokens while writing flue
 A linear map is the floor rather than the ceiling, and the harness to evaluate a better one now
 exists and is trustworthy. But nothing measured here supports admitting a translated cache, and
 describing the format as model-agnostic today would be claiming the half that failed.
+
+---
+
+## 24. Vulkan is not run-to-run deterministic here, and that undermines a check we rely on
+
+Measured while closing two untested matrix cells. The headline is methodological rather than
+architectural: **on this host the Vulkan backend produces different text for identical work,
+with no cache involved at all.**
+
+Same model, same flags, same two cards, same source revision (`ca3d5a3e1`), temperature 0,
+fixed seed, slot erased and displaced between every run:
+
+| backend | distinct outputs across 6 identical cold runs |
+|---|---:|
+| CUDA, 2x RTX 3090 | **1** (deterministic) |
+| Vulkan, the same 2x RTX 3090 | **3** |
+
+One of Vulkan's three outputs is byte-identical to CUDA's single output, so this is not a
+systematic backend offset — it is genuine run-to-run variation.
+
+### Why this matters more than it first looks
+
+The acceptance harness treats *identical text and identical token ids* as evidence that a
+restored cache reproduced the uncached result. On a backend that is not reproducible against
+itself, that check can fail for reasons that have nothing to do with the cache, or pass by
+luck. It is only as strong as the determinism of the configuration it runs on, and that
+determinism has to be **measured, not assumed** — which it had not been before this.
+
+This does not retroactively invalidate §17's HIP <-> Vulkan results. Those used a different
+model on AMD cards and had real prefix reuse (`cache_n` in the thousands), so most of the
+computation came from cache rather than being recomputed. But it does open a question that
+section cannot answer from its own data: whether AMD Vulkan is deterministic under the flags
+used there. Untested.
+
+Not tested here either: whether `--parallel 1` or flash attention changes it. With four slots
+and `kv_unified=true`, batch composition is a plausible cause, and if that is the mechanism
+then the finding is about slot scheduling rather than about Vulkan. Stated as a hypothesis, not
+a result.
+
+### How the finding was nearly missed, and then nearly reported backwards
+
+The first observation was that Vulkan's output *after restoring a CUDA-written cache* differed
+from Vulkan's own cold run, which reads as "the restore perturbed the model despite reusing
+nothing" — an alarming and publishable-sounding claim. Running the cold case twice killed it:
+the two cold runs differed from each other too. The restore was never implicated. Only the
+control separated a property of the backend from a property of the cache.
+
+Scope: this host, `ca3d5a3e1`, Qwen3.8-27B UD-Q4_K_XL (`qwen35`), `-c 8192`, 4 slots, 430-token
+prompt, 24 predicted tokens.
+
+## 25. Hybrid on CUDA: the same architectural refusal, on a backend where it was untested
+
+`qwen35` hybrid restore had been measured on ROCm and Vulkan but never on CUDA. It behaves
+identically, and it is a fresh instance of the rule that `n_restored` is not evidence:
+
+```
+save    : n_saved=453, n_written=186,595,276
+restore : n_restored=453, n_read=186,595,276    <- reports complete success
+next    : prompt_n=430,  cache_n=0              <- reuses nothing, re-prefills every token
+```
+
+The state file carries no `SCKP` appendix, so this build is unpatched, and the failure is the
+documented one: a recurrent state is a function of the whole processed sequence and has no
+common-prefix semantics. **The failure is architectural, not backend-specific** — three
+backends now, one behaviour.
+
+A first attempt at this measurement reported `n_saved=0` and a 1,200-byte file, which looks
+exactly like the unpatched signature and would have been an easy thing to write down. It was
+slot routing: the completion had landed on a different slot than the one being saved. Pinning
+`id_slot` gave 453 cells and 186 MB.
+
+### The container itself is backend-portable, even when the cache is useless
+
+The 186 MB file written by the CUDA build was handed to the Vulkan build and **accepted**:
+`n_restored=453`, `n_read` equal to the full file. Reuse was still 0, for the architectural
+reason above. So format portability across backends and *usefulness* of the restored state are
+independent properties, and the first one holds here while the second does not.
