@@ -1,20 +1,20 @@
-# KV Rosetta research steer: promote the production hybrid cross-backend gate
+# KV Rosetta research steer: retain the real-layout correction and resume the production transfer gate
 
-Status basis: default-branch head 0d205a09ff86ae84aea926d6f422b3813c952ccb.
+Status basis: default-branch head 6ef470d7287caf6fc864bb53db0369e74e3dce0a.
 
-This steer supersedes fd3aeff. The latest retained HIP/Vulkan series is material discovery evidence: an unpatched non-hybrid llama.cpp state file from one backend was accepted by the other at 128, 8,192, and 32,000 tokens in both directions. At 32K, 31,999/32,000 tokens were reused and generated text/token ids matched. This shows that native llama.cpp sequence state can be backend-independent when runtime revision, model, state format, and cache dtype are held fixed.
+This steer supersedes ae04ce7. The sizing detour produced one material causal correction: the recurrent section written by `llama_memory_recurrent::state_write` has no `n_stream` field. The decoder, layout inventory, and synthetic fixtures had agreed with one another but not with llama.cpp. A real qwen35 artifact exposed the error. Preserve that fix and its failure history.
 
-That narrows the canonical product problem. A canonical conversion layer remains necessary across cache dtypes, inference runtimes, and later models. It may not be necessary merely to cross HIP and Vulkan inside one compatible llama.cpp tuple. The next break-first experiment is therefore the exact production qwen35 8K compound state across HIP and Vulkan, after making the runner admission-quality.
+Do not continue expanding sizing work now. The exact production qwen35 8K HIP↔Vulkan gate ordered in the prior steer has not run and remains the largest justified falsifiable experiment. Checkpoint-bearing size prediction correctly refuses rather than extrapolating from one residual; keep that refusal and return execution to transfer portability.
 
 ## Mission and boundaries
 
 Deliver portable reuse of large agentic prefixes:
 
-1. exploit a strict native fast path wherever an exact llama.cpp tuple is genuinely portable;
-2. use canonical KVX transformation at dtype/runtime/backend boundaries the native format cannot cross;
+1. exploit a strict native fast path wherever an exact llama.cpp tuple is proven portable;
+2. use canonical KVX transformation across cache dtypes, inference runtimes, and backend pairs the native format cannot cross;
 3. add quality-gated cross-model transformation only after same-model paths are proven.
 
-The qwen35 opaque foundation remains fail closed. Preserve refusal on unpatched, incomplete, mismatched, unsupported, or active draft/speculative runtimes and artifacts. Never weaken model/GGUF identity, CacheABIIdentity, GGSQ/3+SCKP/1 identity, checkpoint metadata, or admitted-store guards.
+For qwen35, GGSQ/3+SCKP/1 remains a strict opaque foundation. Preserve refusal on unpatched, incomplete, mismatched, unsupported, active-draft/speculative, or incompletely attested runtimes and artifacts. Do not weaken model/GGUF identity, CacheABIIdentity, checkpoint metadata, admitted-store guarantees, or exact runtime/protocol identity.
 
 Primary hybrid evidence remains:
 
@@ -23,155 +23,138 @@ Primary hybrid evidence remains:
 
 Keep patches 0001 and 0002 pinned and identified. Do not post upstream.
 
-## What the new records prove
+## New retained evidence
 
-For one qwen2 Q4_K_M model on one W6800, using llama.cpp revision ca3d5a3 through HIP and Vulkan builds:
+The corrected recurrent layout closes a real unpatched Qwen3.8-27B/qwen35 256-token state file exactly:
 
-- 127/128, 8,191/8,192, and 31,999/32,000 tokens were reused in both directions;
-- each direction used a source-backend native state file unchanged by the reader;
-- generated text and token ids matched;
-- same-backend self-restore controls reused the expected prefix;
-- reader cold controls reused zero tokens;
-- at 8K and 32K, foreign-cache divergence was of the same order as the two backends' ordinary cold-run divergence;
-- the non-hybrid size law `908 + 36,880 * tokens` predicted the held-out 32K artifact exactly.
+- total: 173,679,168 bytes;
+- header: 12 bytes plus 4 × 260 token-id bytes;
+- attention: 16,783,760 bytes, 16 layers, 256 cells, f16 rows of 2,048;
+- recurrent: 156,894,356 bytes, one cell, 48 present layers of 64 declared;
+- leftover: zero bytes.
 
-This is strong evidence that the state serialization itself is not tied to HIP versus Vulkan for that tuple.
+The 256→257 delta is exactly 65,564 bytes and the recurrent section is byte-identical. Recurrent state is therefore a fixed per-model/configuration term and accounts for 90.3% of the 256-token artifact. GGUF metadata yields the recurrent row sizes exactly: 122,880 bytes for convolution state and 3,145,728 bytes for SSM state. The NextN/MTP layer is not present in the KV cache, so the attention count is 16 rather than the 17 implied by a naive recurrence rule.
 
-It does not prove:
+This is valuable evidence because eight tests failed when the parser was corrected: the fixtures had encoded a body no writer produces. Future parser claims must include a retained real-writer artifact, digest, exact-consumption result, and independent metadata source. Synthetic self-consistency is insufficient.
 
-- qwen35 recurrent state or SCKP portability;
-- CUDA, a second device, or a second model;
-- cache-dtype conversion;
-- canonical KVX encoding;
-- cross-runtime or cross-model transfer;
-- persistent-storage or host-restart behavior.
+The new hybrid size code derives the unpatched/no-checkpoint object exactly. For the patched 2,048-token object it predicts 291,169,840 bytes before checkpoints versus 604,958,676 observed. The residual equals two recurrent sections plus 124 bytes, but that is one observation, not a decoded checkpoint law. Refusing nonzero or unspecified checkpoint counts and falling back to a clearly labeled conservative estimate is correct fail-closed behavior.
 
-Each length is one retained run, and probability comparison covers only eight generated positions.
+## Audit corrections still open
 
-## Audit corrections required before the next live run
+The parser is not yet an artifact trust boundary:
 
-The current cross-backend runner is research instrumentation, not an admission gate:
+1. `Reader.skip()` advances a logical offset but does not prove physical EOF for skipped final payloads.
+2. Attacker-controlled cell counts are not bounded before loops and allocation.
+3. A declared cell extension can still resolve ambiguously to zero rather than an exact positive descriptor-bound size.
+4. Transposed q8_0 V still uses an element-size interpretation inconsistent with the writer's 34-byte block contract; refuse it until the pinned writer layout is proven.
+5. Layer counts and recurrent maps are range-checked but not bound exactly to source GGUF geometry and ordering.
+6. Empty/zero-coverage checkpoint sections can be accepted by the low-level parser.
+7. Schema JSON decoding must use strict types, finite positive geometry, exact digest forms, unique roles, and a versioned unknown-field policy.
+8. Architecture-based sizing semantics are hardcoded. Bind them to the pinned llama.cpp revision/protocol rather than treating architecture names as timeless truth.
+9. The retained real-artifact evidence must open and parse a digest-identified file; arithmetic constants copied into a test are evidence summaries, not a live parse gate.
 
-1. It records a model path and architecture but no model/GGUF digest or before/after file facts.
-2. K/V cache dtypes, context parameters, launch arguments, environment, actual device, offloaded-layer count, and backend/runtime attestation are absent from the record. Backend names are caller-supplied labels.
-3. It compares only abbreviated source revisions. Retain the fullest available source identity plus binary/library digests.
-4. It records booleans and deltas but does not fail the run against thresholds fixed before measurement. Any positive `cache_n` makes `both_directions_reuse` true.
-5. It does not require `cache_n == prompt_tokens - documented_tail`, save/restore token counts, complete probability positions, output parity against both the reader's cold run and writer reference, or artifact immutability as a final verdict.
-6. It does not retain process ids/generations or explicit writer-stop-before-reader-start evidence.
-7. The records do not establish that the configured backend actually executed rather than silently falling back.
+These defects block canonical transformation and admission, but they do not block the raw behavioral cross-backend experiment below. Do not let parser expansion displace that gate again.
 
-Write red tests for these omissions and apply only the smallest runner fixes. Do not broaden product code.
+## P0 — exact qwen35 8K HIP ↔ Vulkan
 
-Predeclare the hybrid gate thresholds in the runner or a checked-in gate specification before the live result exists:
+First harden only the cross-backend runner omissions already identified, with red tests. Predeclare the verdict before collecting the live result:
 
-- exact model/GGUF digest and exact prompt-token digest;
-- same full llama.cpp source revision and patched protocol tuple on both legs;
-- complete live CacheABIIdentity, including f16/f16 or the actual matching K/V dtypes;
-- verified HIP and Vulkan device/backend execution with retained command lines and startup/device evidence;
-- writer process fully stopped before reader start, with different process identities;
-- save and restore metadata equality, including checkpoint count, positions, coverage, state version, SCKP version, and active-state classes;
-- expected constant uncovered tail only; no generic `cache_n > 0` pass;
-- zero reuse on cold controls and unpatched hybrid refusal with zero state-endpoint calls;
-- identical generated token ids/text against the reader-native reference;
-- nonempty probability vectors for every declared generated position;
-- frozen divergence thresholds defined relative to the reader's same-backend self-restore and cross-backend cold floor;
-- artifact digest and file facts unchanged before and after each transfer;
-- any missing provenance or partial vector is a refusal, not a warning.
+- exact model/GGUF digest and prompt-token digest;
+- full llama.cpp source identity, patch set, binary and loaded-library digests;
+- complete CacheABIIdentity, including actual K/V dtypes and context parameters;
+- retained launch commands, environment, device identity, backend startup evidence, and offloaded-layer count;
+- proof that the writer stopped before the reader started, with distinct process identities;
+- save/restore metadata equality, including state version, SCKP version, checkpoint count, positions, coverage, and active-state classes;
+- exact expected uncovered tail, not merely `cache_n > 0`;
+- same-backend self-restore and cold-prefill controls for each reader;
+- unpatched hybrid refusal before any state endpoint call;
+- identical output token ids/text against the reader-native reference;
+- nonempty probability vectors at every declared generated position under frozen divergence thresholds;
+- unchanged artifact digest and file facts before and after transfer;
+- missing provenance, partial vectors, silent backend fallback, or a threshold not fixed in advance is a refusal.
 
-## P0 — largest justified break-first experiment: exact qwen35 8K HIP ↔ Vulkan
+Then run, on the exact production-tested Qwen3.8-27B/qwen35 8,192-token prefix:
 
-Use the exact production-tested Qwen3.8-27B/qwen35 model and the existing 8,192-token prefix. Hold model digest, prompt, K/V dtype, context parameters, llama.cpp revision, patch set, and checkpoint policy fixed. Change only HIP versus Vulkan.
+1. HIP save → full stop → Vulkan restore → completion.
+2. Vulkan save → full stop → HIP restore → completion.
+3. Same-backend self-restore and cold controls for HIP and Vulkan.
+4. Same-source unpatched hybrid controls.
 
-Run both directions through full process replacement:
-
-1. HIP save → stop → Vulkan restore → completion.
-2. Vulkan save → stop → HIP restore → completion.
-3. Same-backend native self-restore and cold-prefill controls for each reader.
-4. Same-source unpatched hybrid controls that must refuse before state endpoint use.
-5. Retain one failure record at the earliest violated predeclared gate; do not massage thresholds or continue to CUDA.
-
-Why this is now first: it directly tests whether the new non-hybrid backend-portability result extends across the exact recurrent/SCKP boundary that blocked the production model. It is larger and more product-relevant than another synthetic parser test, while all prerequisites have already been demonstrated separately on this host.
+Hold model, prompt, K/V dtype, context, runtime revision, patch set, checkpoint policy, and generation settings fixed. Change only backend.
 
 Decision:
 
-- **Pass:** classify exact-tuple native state as a proven llama.cpp HIP/Vulkan fast path for this model. Backend alone must no longer be part of the opaque refusal identity when every serialization-affecting field is identical and the compatible backend pair is explicitly allowlisted by retained evidence. This does not relax dtype, runtime, model, or patch identity.
-- **Fail:** retain the first divergent save/restore/checkpoint field. Apply the smallest causal parser/runtime/identity fix and rerun the identical 8K matrix.
-- **Missing attestation:** refuse the run; do not infer backend execution from a binary pathname.
+- **Pass:** allowlist this exact llama.cpp HIP/Vulkan serialization tuple as a native fast path. Backend alone may be omitted from refusal identity only for the explicitly proven compatible pair; dtype, runtime, model, protocol, patch, and active-state identities remain strict.
+- **Fail:** retain the first divergent field or behavioral position, make the smallest causal fix, and rerun the identical matrix.
+- **Missing attestation:** refuse the run. Do not infer backend execution from a filename or caller-supplied label.
 
-Do not run 32K hybrid, CUDA, or a second model before this gate resolves.
+Do not run qwen35 32K, CUDA, a second model, or more sizing experiments before P0 resolves.
 
-## P1 — real 8K hybrid structural account
+## P1 — real patched 8K structural account
 
-Whether P0 passes or fails, retain a bounded structural record of the exact admitted GGSQ/3+SCKP/1 object. P0 can establish behavioral portability; P1 establishes that the project understands and can safely transform the bytes.
+After P0, close the parser/schema defects above red-test first. Then structurally parse the exact digest-identified 8K GGSQ/3+SCKP/1 artifact written by the live patched runtime:
 
-First close the inherited trust boundaries:
+- prove physical EOF, exact total consumption, ordered/non-overlapping/exhaustive spans, and bounded peak memory;
+- bind attention/recurrent layer maps, row geometry, cache dtypes, and cell extensions to the source GGUF and pinned writer revision;
+- decode checkpoint framing rather than inferring it from residual size;
+- require positive checkpoint coverage matching the live save metadata;
+- retain truncation, oversized-count, wrong-map/geometry/tuple, zero-checkpoint, and one-byte-boundary refusal controls.
 
-- physical EOF independent of declared bounds;
-- bounded cell counts before loops/allocations;
-- descriptor-bound cell extensions and exact layer/recurrent maps;
-- correct q8_0 transposed-V block semantics or explicit refusal;
-- positive checkpoint coverage and continued draft/speculative refusal;
-- exact byte accounting without magic scanning;
-- strict schema JSON types, finite geometry, exact digests, unique segment roles, and versioned unknown-field policy.
-
-Then retain:
-
-- exact envelope, attention, recurrent, and SCKP bounds;
-- every span in-bounds, ordered, non-overlapping, and collectively exhaustive;
-- checkpoint positions/coverage equal to live save metadata;
-- bounded bytes read and peak memory;
-- wrong-geometry/map/tuple, truncation, and one-byte-boundary refusal controls.
+Only this decoded result may replace the conservative checkpoint size fallback. If it yields a source-derived component formula, validate it on a held-out hybrid length before changing persistent-storage admission.
 
 ## P2 — canonical dtype/runtime seam
 
-The ggml-verified f16/q8_0/q4_0 codecs are useful unit evidence. They are not behavioral conversion proof.
-
 After P1:
 
-1. Decode bounded attention, recurrent, and checkpoint samples from the real 8K object against the pinned ggml oracle.
-2. Choose and version the canonical physical dtype/chunking with measured storage and conversion costs; float32 is an intermediate unless explicitly justified.
+1. Validate bounded attention, recurrent, and checkpoint numeric samples against pinned ggml reference code.
+2. Choose and version a canonical physical dtype and chunking from measured fidelity, storage, and conversion costs; float32 remains an intermediate unless justified.
 3. Build the narrowest same-model f16→q8_0 target encoder/import seam.
-4. Fix quality thresholds before the run and compare converted reuse against target-native q8_0 reuse.
-5. Require exact prompt/model identity, reuse, output parity, nonempty probability divergence, bounded memory, and native-prefill fallback.
+4. Freeze quality thresholds before the live run.
+5. Compare converted reuse against target-native q8_0 reuse with exact identity, output, probability, bounded-memory, and native-prefill fallback gates.
 
-Only a pass unlocks cross-runtime work and the broader CUDA/ROCm/Vulkan matrix. Native same-dtype backend portability and canonical cross-dtype portability are separate capabilities and must remain separately labeled.
+The ggml-verified q8_0/q4_0 codecs remain unit evidence only. No converted cache is behaviorally admitted until this gate passes.
 
-## P3 — runtime integrations
+## P3 — broader portability and service
 
-The sidecar and vLLM work remain quarantined:
+Only after P2:
 
-- Sidecar active restore stays off by default until readiness and restoration are bound to one exact runtime instance/generation and a live sacrificial no-wake matrix passes.
-- vLLM returns zero matched tokens and performs no loads until its actual `[B,H,N,C]` layout, MLA/non-MLA indexing, scheduler metadata, and TP/PP shard identity are captured from the pinned live runtime and proven end to end.
-- No scheduled/proactive warming.
+1. extend the proven native/canonical distinction to CUDA and a second device;
+2. prove a live second inference-runtime connector;
+3. activate vLLM only after its actual `[B,H,N,C]`/MLA layout, scheduler metadata, and TP/PP shard identity pass end to end;
+4. activate the demand-driven sidecar only after readiness and restoration are atomic to one exact runtime generation and every route passes a live sacrificial no-wake matrix.
 
-## RA-003 — answered
+Keep vLLM inert and sidecar active restoration quarantined meanwhile. No scheduled or proactive warming.
 
-Use a componentized affine estimator derived from writer geometry, not a single worst-case bytes/token rate. The non-hybrid held-out 32K point validates that method for qwen2, not its fitted constants for qwen35.
+## RA-003 — answered with source-derived evidence
 
-For qwen35, the 2K/8K affine law remains a hypothesis until it predicts a held-out hybrid point. A tmpfs run is acceptable as a research-only size/mechanism falsifier after P0, but it is not evidence for persistent storage or host restart. The current NVMe admission decision changes only after a held-out hybrid measurement and a fresh recorded space budget.
+The affine mechanism is now demonstrated for the exact qwen35 configuration, not merely fitted:
 
-Do not prioritize hybrid 32K ahead of P0/P1/P2.
+- fixed unpatched recurrent term: 156,894,356 bytes;
+- exact attention marginal term: 65,564 bytes/token;
+- exact closure at 256 and 257 tokens.
+
+The earlier ~449 MiB fitted “fixed term” combined base recurrent state with patched checkpoint copies/framing. The observed patched residual of two recurrent sections plus 124 bytes is suggestive but not an admission formula. Therefore:
+
+- use source-derived component accounting for no-checkpoint/unpatched artifacts;
+- keep nonzero-checkpoint prediction conservative and explicitly labeled;
+- do not generate hybrid 32K on an inferred checkpoint law;
+- decode the patched SCKP appendix and validate a held-out hybrid prediction before changing the persistent-space guard.
+
+Tmpfs remains valid for research-only mechanism tests, not persistence claims. RA-003 can be marked answered.
 
 ## RA-004 — answer unchanged
 
-Scheduled/proactive warming is excluded outright. The service is demand driven and may touch only an already-requested, exact ready runtime instance. A separate `/running` check followed by `/upstream/<model>` is not atomic and remains a wake race; active restore stays quarantined until the live no-wake gate passes.
-
-## Deferred
-
-- hybrid 32K until the held-out size gate is justified;
-- host-restart/cold-boot claims;
-- 131K;
-- learned cross-model mapping/token alignment;
-- MTP/draft/speculative state;
-- broad service/authentication/distributed scheduling work;
-- upstream comments/submissions.
+Scheduled/proactive warming is excluded. The sidecar is demand driven and may touch only an already-requested, exact ready runtime instance. A separate readiness check followed by a model-routed request is a wake/replacement race; active restore stays quarantined until readiness and restore are bound atomically and the live no-wake gate passes. RA-004 can be marked answered.
 
 ## Required execution order
 
-1. Harden only the cross-backend runner's provenance and predeclared verdict.
-2. Run the exact qwen35 8K HIP↔Vulkan patched/unpatched matrix.
-3. Retain the exact structural account of the real 8K hybrid artifact.
-4. Prove bounded hybrid numeric decoding and choose canonical physical storage.
-5. Prove same-model f16→q8_0 behavioral conversion.
-6. Extend to CUDA and then a live second runtime.
-7. Activate vLLM and the demand-driven sidecar only after their own live gates.
+1. Retain the recurrent-layout failure and exact real-artifact evidence.
+2. Harden only cross-backend runner provenance and its predeclared verdict.
+3. Run the exact qwen35 8K HIP↔Vulkan patched/unpatched matrix.
+4. Red-test parser/schema trust boundaries and parse the real patched 8K artifact completely.
+5. Prove bounded hybrid numeric decoding and choose canonical physical storage.
+6. Prove same-model f16→q8_0 behavioral conversion.
+7. Extend to CUDA and a live second runtime.
+8. Activate vLLM and the demand-driven sidecar only after their live gates.
+
+Deferred: qwen35 32K, host-restart/cold-boot claims, 131K, learned cross-model mapping/token alignment, MTP/draft/speculative support, broad service/authentication/distributed scheduling work, and upstream submissions/comments.
