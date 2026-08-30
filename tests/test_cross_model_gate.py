@@ -346,3 +346,42 @@ class TeacherForcedComparison(unittest.TestCase):
         result = compare_forced([], [])
         self.assertEqual(result["positions"], 0)
         self.assertIsNone(result["top1_agreement"])
+
+
+class CellExtensionSizing(unittest.TestCase):
+    """has_cell_ext without its size silently parses as if there were no extension.
+
+    The parser defaults cell_ext_size to 0, so passing only the flag reproduces the
+    no-extension parse and desynchronises one cell in. On a real qwen35 state that
+    surfaced as "cell 1 claims 2523 sequence ids" -- a corruption message for a missing
+    argument, which is the hardest kind of bug to read.
+    """
+
+    def _state(self, cell_ext=b""):
+        from tests.test_ggsq_decoder import build_attention
+        body = build_attention(cell_count=4, n_layer=2, cell_ext=cell_ext)
+        path = Path(tempfile.mkdtemp()) / "s.state"
+        path.write_bytes(b"qsgg" + struct.pack("<I", 3) + struct.pack("<I", 3)
+                         + b"\x00" * 12 + body)
+        return path
+
+    def test_a_state_with_cell_extensions_scrambles_cleanly(self):
+        from kv_rosetta.sizing import BYTES_PER_CELL_EXT
+        src = self._state(cell_ext=b"\x01" * BYTES_PER_CELL_EXT)
+        dest = src.with_name("noise.state")
+        info = scramble_payload(src, dest, has_cell_ext=True)
+        self.assertEqual(info["spans_scrambled"], 4)
+        self.assertNotEqual(src.read_bytes(), dest.read_bytes())
+
+    def test_omitting_the_extension_on_such_a_state_is_refused(self):
+        # Not silently mis-parsed: the guard turns a desync into a refusal.
+        from kv_rosetta.sizing import BYTES_PER_CELL_EXT
+        src = self._state(cell_ext=b"\x01" * BYTES_PER_CELL_EXT)
+        with self.assertRaises(GateError) as caught:
+            scramble_payload(src, src.with_name("n.state"), has_cell_ext=False)
+        self.assertIn("cannot locate the cache values", str(caught.exception))
+
+    def test_a_state_without_extensions_is_unaffected(self):
+        src = self._state()
+        info = scramble_payload(src, src.with_name("noise.state"), has_cell_ext=False)
+        self.assertEqual(info["spans_scrambled"], 4)

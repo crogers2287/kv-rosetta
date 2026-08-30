@@ -42,7 +42,7 @@ from reader_determinism import Reader, digest_text  # noqa: E402
 
 from kv_rosetta import gguf  # noqa: E402
 from kv_rosetta.adapters import ggsq_envelope, llamacpp_ggsq  # noqa: E402
-from kv_rosetta.sizing import writes_cell_ext  # noqa: E402
+from kv_rosetta.sizing import BYTES_PER_CELL_EXT, writes_cell_ext  # noqa: E402
 
 GGSQ_MAGIC = b"qsgg"
 PREAMBLE = 12
@@ -104,7 +104,8 @@ def require_same_geometry(a: dict, b: dict) -> None:
             f"research-findings §20; this runner measures the same-geometry case.")
 
 
-def scramble_payload(src: Path, dest: Path, *, has_cell_ext: bool = False) -> dict:
+def scramble_payload(src: Path, dest: Path, *, has_cell_ext: bool = False,
+                     cell_ext_size: int = BYTES_PER_CELL_EXT) -> dict:
     """Copy a state file with every structural field intact and only the tensor data destroyed.
 
     A first version overwrote everything after the token header, which also destroyed the
@@ -124,8 +125,13 @@ def scramble_payload(src: Path, dest: Path, *, has_cell_ext: bool = False) -> di
     try:
         envelope = ggsq_envelope.parse_file_envelope(bytes(raw))
         with open(src, "rb") as handle:
+            # cell_ext_size must accompany has_cell_ext. The parser defaults it to 0, so
+            # passing the flag alone silently reproduces the has_cell_ext=False parse and
+            # desynchronises one cell in -- which surfaces as "cell 1 claims 2523 sequence
+            # ids" rather than as a missing argument.
             section = llamacpp_ggsq.read_attention_section(
-                handle, envelope.body_offset, len(raw), has_cell_ext=has_cell_ext)
+                handle, envelope.body_offset, len(raw), has_cell_ext=has_cell_ext,
+                cell_ext_size=cell_ext_size if has_cell_ext else 0)
     except ValueError as exc:
         raise GateError(f"cannot locate the cache values in {src}: {exc}") from exc
     scrambled = 0

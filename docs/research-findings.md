@@ -1559,3 +1559,53 @@ recorded the 578-token Gemma run as a success.
 The agreement check first scored an *unknown* prediction against a measured `False` as a
 disagreement, which flagged every stock-build run as a contradiction. Unknown is not wrong. Only
 a prediction that was actually made and then falsified is reported.
+
+---
+
+## 35. Two unrelated hybrid models sharing a geometry: the gradient's far end
+
+§28 measured same-geometry cross-model reuse on dense models only, because hybrid models
+reused nothing on any build available at the time. With a checkpoint-persisting build (§33)
+that restriction is gone, and `Qwythos-9B-Claude-Mythos` — fetched from another host — turns
+out to declare exactly the KV geometry of the local Qwen3.5-4B: `qwen35`, 32 layers, 4 KV
+heads, head_dim 256, theta 1e7. Two genuinely unrelated models, not a quantisation or a
+fine-tune of one base.
+
+128 teacher-forced positions, all controls healthy:
+
+| leg | cache_n | top-1 vs the target's own restore | max Δ | mean Δ |
+|---|---:|---:|---:|---:|
+| identity (target reads its own cache) | 3084 | 1.000 | 0.00 | 0.00 |
+| **foreign (Qwythos-9B's cache)** | 3084 | **0.859** | **12.75** | **2.12** |
+| noise (values scrambled) | 3084 | 0.000 | — | — |
+
+**The identity baseline is 1.000** — on this build the model restoring its own cache reproduces
+its cold prefill exactly, where the dense pair in §28 managed only 0.977. That makes the gap
+unambiguous: 0.859 is not measurement noise, it is the foreign weights.
+
+### The gradient, now four points
+
+| pair | relationship | top-1 vs own restore | max Δ |
+|---|---|---:|---:|
+| Qwen2.5-3B Q4 → Q8 | same weights, different rounding | 0.984 | 1.03 |
+| Qwen2.5-3B base → Instruct | same base, fine-tuned | 0.930 | 3.56 |
+| **Qwythos-9B → Qwen3.5-4B** | **unrelated models** | **0.859** | **12.75** |
+| qwen35 → qwen35moe (§20) | different geometry | 0.000 | — |
+
+Same geometry buys acceptance and reuse — 3,084 tokens in every leg — and nothing more. How
+much the output survives tracks how close the weights are, and the max logprob delta degrades
+far faster than top-1: a twelvefold spread in the distribution behind answers that still agree
+six times in seven.
+
+### A missing argument that read as file corruption
+
+The first attempt refused with `cell 1 claims 2523 sequence ids`, which reads as a damaged
+state file. The file was fine. `read_attention_section` takes `has_cell_ext` **and**
+`cell_ext_size`, and the size defaults to 0 — so passing only the flag silently reproduces the
+no-extension parse and desynchronises one cell in. `qwen35` writes a 12-byte
+`llama_kv_cell_ext` per cell, `BYTES_PER_CELL_EXT` was already defined, and the caller simply
+never passed it.
+
+Worth recording because of how it presented: a missing argument produced a corruption message
+about a healthy file. The gate refused rather than proceeding without a noise floor, which is
+the behaviour that made this cheap to find.
