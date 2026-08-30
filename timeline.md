@@ -1798,3 +1798,54 @@ elsewhere (923 offline tests). **Untested, and the next thing to do**: whether t
 gate actually separates the translated cache from the blends on the alpha grid. It should - the
 translation diverges at token 0-6, nowhere near the fragile region - but that is a prediction,
 not a result.
+
+## REQ-051 — The gate, settled: teacher-forced agreement over confident positions
+
+REQ-050 predicted that skipping near-tied positions would make the gate stable without making
+it weaker. Two things were needed to test it, and the first attempt at a rule failed.
+
+### The simple rule is unsound
+
+"Admit if the first divergence falls at an undecided position" can be checked against data
+already collected - the first-divergence indices from REQ-049 and the margins from REQ-050 -
+and it does not work. On lighthouse the **alpha 0.9** cache survived to token 38 and diverged
+at a margin of 7.04, a confident position; the **worse alpha 0.85** cache diverged at the
+near-tied token 29, margin 0.514. The better cache is rejected and the worse one admitted,
+because the rule asks where you stopped and ignores how far you got.
+
+It does get the important case right: at alpha 0 the translation diverges at margins of 2.41
+to 7.46 on all four prompts - confident positions, real cache error - and is rejected.
+
+### The sound combination
+
+Free generation cannot be scored past the first divergence, since after it the candidate is
+conditioned on different tokens. Teacher forcing keeps every position comparable; margin
+skipping removes the positions where a flip says nothing. Both are needed.
+
+| alpha | 1.0 | 0.9 | 0.8 | 0.7 | 0.6 | 0.5 | 0.3 | 0.15 | 0.0 |
+|---|---|---|---|---|---|---|---|---|---|
+| lighthouse, confident-only | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 0.867 | 0.867 | **0.733** |
+| lighthouse, all positions | 1.000 | 1.000 | 0.969 | 0.969 | 1.000 | 0.969 | 0.813 | 0.844 | 0.719 |
+| survey, confident-only | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 0.968 | **0.903** |
+| survey, all positions | 1.000 | 1.000 | 0.969 | 0.969 | 0.969 | 0.969 | 0.969 | 0.938 | 0.875 |
+
+**Both confident-only rows are monotonic in alpha. Neither all-positions row is** - lighthouse
+goes 0.969, 0.969, 1.000, 0.969 across the middle and 0.813, 0.844 at the bottom. Skipping one
+or two positions out of thirty-two is what turns a wobbling number into an ordered one.
+
+### The gate
+
+**Admit when confident agreement is 1.000**: no disagreement at any position the reference
+model was sure about. That admits every blend down to alpha 0.5, rejects the translation on
+both prompts, and is monotonic so it cannot reverse on a better cache.
+
+It saturates above alpha 0.5, so it decides admission and does not grade quality. Tuning a map
+still needs `mean |Δlogprob|`, which is smooth across the whole range. Two instruments, two
+jobs - the mistake in REQ-047 was expecting one number to do both.
+
+Status: **measured once on this host** — 2 prompts, 9 ratios, 32 forced positions, margin bar
+1.0, identity exact on both. **Proven by retained test**: the margin arithmetic and every
+refusal (923 offline tests). **Remaining prompt dependence**: at alpha 0.3 lighthouse scores
+0.867 and survey 1.000, so the two disagree at one ratio out of nine - much reduced, not
+eliminated. **Untested**: the margin bar of 1.0 was chosen, not derived; whether a different
+bar removes the last disagreement is unmeasured.

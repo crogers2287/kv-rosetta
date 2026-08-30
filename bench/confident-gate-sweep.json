@@ -1,0 +1,200 @@
+[
+ {
+  "prompt": "lighthouse",
+  "alpha": 1.0,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 1.0
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.9,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 1.0
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.8,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.7,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.6,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 1.0
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.5,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.3,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 0.8666666666666667,
+  "first_disagreement": 6,
+  "all_positions_agreement": 0.8125
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.15,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 0.8666666666666667,
+  "first_disagreement": 4,
+  "all_positions_agreement": 0.84375
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.0,
+  "positions": 32,
+  "scored": 30,
+  "skipped_undecided": 2,
+  "min_margin": 1.0,
+  "agreement": 0.7333333333333333,
+  "first_disagreement": 1,
+  "all_positions_agreement": 0.71875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 1.0,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 1.0
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.9,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 1.0
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.8,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.7,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.6,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.5,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.3,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 1.0,
+  "first_disagreement": null,
+  "all_positions_agreement": 0.96875
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.15,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 0.967741935483871,
+  "first_disagreement": 11,
+  "all_positions_agreement": 0.9375
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.0,
+  "positions": 32,
+  "scored": 31,
+  "skipped_undecided": 1,
+  "min_margin": 1.0,
+  "agreement": 0.9032258064516129,
+  "first_disagreement": 6,
+  "all_positions_agreement": 0.875
+ }
+]
