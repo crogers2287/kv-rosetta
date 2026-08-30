@@ -1,10 +1,10 @@
-# KV Rosetta research steer: retain the failed cross-model gate and run production hybrid P0
+# KV Rosetta research steer: ship the proven same-model path honestly and isolate translation later
 
-Status basis: default-branch head 305131ed7163a135ed14d02031852e2d7935c962.
+Status basis: default-branch head 383e19626b1c67dcf0422606097189d67a1796f2.
 
-This steer supersedes 5ba97d0. The work after that freeze produced the first real cross-model behavioral failure: a qwen38-27b attention cache was translated into tiel-coder geometry, restored into tiel's target-native recurrent artifact, and correctly rejected by the output gate. Retain that result and the corrected RoPE finding. They materially improve the later T3 method, but they do not displace the required same-model production gate.
+This steer supersedes be39b64. The newest work materially advances the same-model product path: Tiel-Coder restored 508/512 tokens through capture → admission → sidecar → runtime, the fleet's stock binary was refused, and an 8K RAM-backed run restored 8,188/8,192 tokens with a reported 14.68× advantage over cold prefill. Retain those results.
 
-The exact qwen35 8K HIP↔Vulkan patched/unpatched matrix still did not run, and no concrete hardware/runtime blocker was retained. Cross-model threshold sweeps continued instead. P0 therefore remains the single next break-first experiment. No implementation or measurement outside the P0 runner and its live record is in scope until P0 produces a retained pass, first-causal-failure record, or a concrete blocker naming the unavailable binary, device, model, port, process, or resource and the failed prerequisite check.
+They still do not satisfy the ordered P0 hybrid HIP↔Vulkan matrix, persistent-storage economics, production KV quantization, concurrent-load behavior, or the demand-driven no-wake contract. The benchmark record also lacks raw repetitions and full provenance. P0 remains the single next experiment; after it, the smallest shippable same-model sidecar gate is allowed before broader canonical work.
 
 ## Mission and non-negotiable boundaries
 
@@ -22,6 +22,47 @@ Primary hybrid evidence remains:
 - https://github.com/ggml-org/llama.cpp/pull/26004
 
 Keep patches 0001 and 0002 pinned and identified. Do not post upstream.
+
+## RA-005 answer — split the shippable product from cross-model research
+
+RA-005 is answered as follows:
+
+1. **Yes, ship the proven half when its production gates pass.** The honest product claim is durable exact-prefix reuse for the same model, with explicitly allowlisted native backend/runtime tuples and strict fallback. It is not “one cache for any model.”
+2. **Cross-backend and cross-dtype portability remain product work.** Native HIP↔Vulkan can be allowlisted only where behaviorally proven. CUDA, different runtimes, and different cache dtypes require canonical conversion or an independently proven native tuple.
+3. **Do not fund a larger nonlinear cross-model mapper yet.** The qwen38→Tiel failure changed model weights, capacity, dense/MoE structure, attention-layer/head counts, weight quantization, and possibly KV-cache quantization at once. Matching tokenizer and several dimensions made it favorable but did not isolate the cause.
+4. **Do not attempt recurrent cross-model mapping yet.** Supplying Tiel's own recurrent state made the attention experiment a useful upper-bound diagnostic, not a complete transferable hybrid cache. Recurrent transformation remains research-only until attention crosses controlled isolation gates.
+
+The project headline and capability reporting must distinguish:
+
+- **proven now:** same-model persistence and selected same-runtime/backend transfer;
+- **next product work:** same-model conversion across cache dtypes, CUDA/ROCm/Vulkan, and live runtime connectors;
+- **research only:** different-model transformation, learned projectors, tokenizer remapping, and recurrent-state mapping.
+
+## What the latest Tiel live work proves—and does not
+
+Retain the live Tiel-Coder evidence:
+
+- patched runtime: 508/512 reuse through the public pipeline;
+- stock runtime: refused before restore because state version/checkpoint persistence were absent;
+- requirements and model identity are now bound from the admitted bytes and caller-derived weights identity;
+- 8K RAM-backed f16/f16 run: 8,188/8,192 reused, reported 410.9 ms restored versus 6,029.9 ms cold.
+
+Treat the 1.8×/4.3×/14.7× economics as directional, not admission-quality:
+
+1. bench/tiel-coder-restore-latency.json retains only three medians, not the three raw repetitions.
+2. It omits exact model, prompt, artifact, binary, patch, library, launch, process, and device digests/identity.
+3. It records reuse but not output/token/probability parity or same-backend native-reuse parity.
+4. The phase totals do not reconcile: 2K leaves about 8.7 ms unattributed and 8K about 20.7 ms.
+5. Storage was /dev/shm; NVMe cost is arithmetic, not measured.
+6. KV was f16/f16 on an idle W6800; actual kvwarm uses quantized KV, longer prompts, two slots, and live contention.
+7. The producing runner was not committed with the record.
+
+Also close these fail-closed gaps before shipping:
+
+- artifacts missing the new requirements field currently skip the capability check; active restore must refuse incomplete/legacy manifests or explicitly re-admit them through full validation;
+- the live run found that the admitted store must equal the server-visible slot-save path, but this is not yet an enforced invariant;
+- the sidecar still needs atomic binding to one already-ready runtime generation; a separate capability/readiness check followed by restore can race an unload/replacement and must not wake a model;
+- test commands must preserve the real exit status (pipefail or no status-hiding pipe); a green-looking piped failure already landed once.
 
 ## What the checkpoint work now proves
 
@@ -85,37 +126,39 @@ The implementation is currently quadratic and dense: `align()` loops over every 
 
 Do not call this “the last unbuilt piece of T3.” Cross-model transformation still lacks a fitted/derived state mapper, architecture correspondence, recurrent-state treatment, live target encoding, and behavioral admission evidence.
 
-## Cross-model evidence is now real, failed, and quarantined
+## Cross-model evidence is real, failed, confounded, and quarantined
 
-`compose.py` remains metadata planning only. It neither reuses a cache nor performs the selective recomputation it prices. `appendable()` bypasses validation and continuity checks enforced by `plan()`; keep it out of admission and runtime paths.
+The qwen38-27b → Tiel-Coder experiment is useful negative evidence:
 
-The new qwen38-27b → tiel-coder experiment is worth retaining because it crossed a real runtime boundary and failed honestly:
+- exact shared tokenizer, matching head width and recurrent dimensions;
+- whole-prompt holdout instead of leaked adjacent-token splits;
+- Tiel-native recurrent state and an exact identity control;
+- translated attention restored 764/768 tokens but failed target-native behavior;
+- teacher forcing later measured 0.733 and 0.903 agreement on two prompts, separating the translation from accepted blends;
+- margin-threshold sweeping corrected the claim that skipping near-ties materially improves the gate. Keep teacher forcing; do not base policy on the chosen margin.
 
-- the models share the exact tokenizer and favorable head/state geometry, so token alignment was not involved;
-- the mapper was fit on 15,981 tokens from eight passages with whole prompts held out;
-- the target's own recurrent state was preserved while translated attention was spliced into its artifact;
-- the identity control restored 764/768 tokens with exact output and 1.0 top-1 agreement;
-- the translated cache also restored 764/768 tokens, but top-1 agreement was 0.0 and maximum log-probability delta was 2.417;
-- the noise control restored 764/768 tokens and also failed, proving that reuse count alone says nothing about semantic validity;
-- an earlier token-level split reported about 0.98 R² because adjacent-context leakage made the holdout invalid; whole-prompt holdout reduced the per-layer results to roughly 0.32–0.67, with no layer above 0.9.
+It is not a causal verdict on cross-model translation. The run changed model weights, parameter capacity, qwen35 versus qwen35moe structure, 16/4 versus 10/2 attention layers/heads, and apparently Q4_K_XL versus Q5 weight quantization. The retained records do not prove matched KV-cache dtypes. The result says only that this simple linear mapper did not overcome the complete bundle of differences.
 
-The RoPE correction is also causal evidence: both observed models declare theta 10,000,000 and 64 rotary dimensions within a 256-wide head. Correcting those values moved real held-out key fits toward the value fits. However, `translate()` still defaults source theta to 10,000, permits unspecified rotary widths, inherits target settings from source, and does not bind either model's complete rotary semantics to mapper identity. A caller can still obtain a finite candidate under guessed geometry.
+The implementation also remains incomplete or fail open:
 
-The 12- and 48-token alpha-blend sweeps show that free-running generation has a prompt-dependent cliff. In the retained 48-position records, exact output changed between alpha 0.70/0.60 for one prompt and 0.50/0.45 for another. Treat those as two empirical blend brackets, not as a general R² admission threshold. The published 0.89–0.96 figures are inferred from one scalar median mapper R² even though error is heterogeneous by layer and K/V kind; the actual blended-cache error was not recorded. The JSON also lacks a committed runner, model/binary/artifact/prompt digests, launch and process provenance, nonempty probability vectors, and per-position teacher-forced comparisons. It is not reproducible admission-quality evidence.
+1. LinearMapper.require_applicable() is not called with exact source/target model digests.
+2. Architecture, layer counts, full target-layer coverage, head geometry, and complete RoPE semantics are not identity-bound.
+3. Missing target layers can be omitted or zero-filled.
+4. Only attention is mapped; recurrent state is target-native.
+5. Cross-tokenizer alignment is dense/quadratic and was bypassed.
+6. Benchmark files do not retain the executable runner and full provenance.
 
-The current implementation and experiment remain fail open or incomplete at the transformation boundary:
+Keep compose, translate, alignment, learned mapping, vLLM activation, and all cross-model capability reporting inert.
 
-1. `LinearMapper.require_applicable()` is not called; actual source and target model digests are not accepted or checked.
-2. Source/target architecture, declared layer counts, exact layer coverage, and target head geometry are not bound. Missing target layers can be omitted or zero-filled.
-3. RoPE theta, rotary dimensions, layout/scaling/sections, and other model-specific semantics can be guessed or inherited.
-4. The experiment maps only attention; target recurrent state is supplied natively, so it is not a complete hybrid cross-model transformation.
-5. Cross-tokenizer alignment remains dense and quadratic and was bypassed by this same-tokenizer pair.
-6. Evidence covers one favorable model pair, one 768-token prefix, and short free generations.
-7. The retained benchmark files do not identify the exact executable experiment that produced them.
+When T3 reopens after the same-model gates, use this isolation ladder and change one variable per rung:
 
-Keep compose, translate, alignment, and all cross-model capability reporting inert. Do not expose this path through `transfer.py`, vLLM, the sidecar, or an artifact identity.
+1. exact same model/GGUF/cache dtype across backend only—complete the hybrid P0;
+2. exact same model and weights across KV-cache dtype via canonical conversion;
+3. same base model, size, and architecture across weight quantizations with KV dtype held fixed;
+4. same base architecture and size across finetunes;
+5. only then change parameter size, dense/MoE structure, heads/layers, tokenizer, or recurrent geometry.
 
-When T3 is reopened after P0/P1/P2, do not begin by fitting a larger model. First retain a reproducible teacher-forced, multi-prompt harness for this same pair with exact source/target/model/runtime/artifact/prompt digests; complete mapper/geometry identity; per-layer and per-kind cache error; per-position target-native logit divergence; identity and noise controls; and a separately frozen free-generation admission gate. Use that measurement to identify the earliest causal defect before choosing a richer mapper. The final admission criterion remains target-native behavioral parity, not R² or fluent-looking output.
+Every rung needs exact model/weight/runtime/artifact/prompt identities, teacher-forced per-position logits, per-layer/per-kind cache error, identity/noise/native controls, and a separately frozen free-generation admission gate. A failure identifies the earliest causal boundary; it does not authorize skipping to a richer mapper.
 
 ## P0 — the only next experiment: exact qwen35 8K HIP ↔ Vulkan
 
@@ -151,6 +194,22 @@ Decision:
 - **Missing attestation:** refuse the run. Backend names supplied by the caller or inferred from binary paths are not evidence.
 
 Do not perform more unrelated work while the live matrix is pending. If hardware availability blocks it, retain that concrete blocker and work only on the runner prerequisites—not T3 or service features.
+
+## P0.5 — smallest shippable same-model sidecar gate
+
+Only after P0 passes or retains its first causal failure, run one product-shaped same-model gate on the models the owner actually serves:
+
+- demand-driven request for an already-ready Tiel or qwen38 instance; no scheduled/proactive warming;
+- atomic identity and readiness for the exact runtime generation used for restore;
+- sacrificial unloaded model remains unloaded across every sidecar route;
+- current requirements-bearing artifact only; missing/incomplete requirements refuse;
+- server-visible persistent store with enforced path/device/ownership/digest invariants;
+- actual production KV dtype and context settings;
+- 8K minimum, three raw retained repetitions under normal slot/concurrent load;
+- cold, native-reuse, patched restore, stock/unpatched refusal, wrong-model/dtype/runtime, and unload-race controls;
+- output/token/probability parity and completely reconciled phase timings.
+
+Pass allows the opaque same-model route to replace kvwarm for that exact tuple. Failure falls back to native prefill and retains the earliest causal defect. This is a narrow shippable feature, not canonical or cross-model portability.
 
 ## P1 — real patched 8K structural account
 
@@ -191,14 +250,15 @@ Keep vLLM inert and sidecar active restoration quarantined. No scheduled or proa
 
 ## Required execution order
 
-1. Freeze compose/translate/alignment and all other non-P0 implementation.
-2. Harden only the cross-backend runner provenance and predeclared verdict.
-3. Run the exact qwen35 8K HIP↔Vulkan patched/unpatched matrix.
-4. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
-5. Prove bounded hybrid numeric decoding and choose canonical storage.
-6. Prove same-model f16→q8_0 behavioral conversion.
-7. Extend to CUDA and a live second runtime.
-8. Revisit sparse cross-tokenizer/cross-model mapping only after same-model gates pass.
-9. Activate vLLM and the demand-driven sidecar only after their live gates.
+1. Freeze compose/translate/alignment, nonlinear mapping, and unrelated service expansion.
+2. Harden only the P0 runner provenance, raw records, exit-status handling, and predeclared verdict.
+3. Run the exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix.
+4. Run P0.5: one demand-driven, persistent, production-KV, no-wake same-model sidecar gate.
+5. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
+6. Prove bounded hybrid numeric decoding and choose canonical storage.
+7. Prove same-model f16→q8_0 behavioral conversion.
+8. Extend the same-model canonical path to CUDA and a live second runtime.
+9. Revisit cross-model work only through the isolation ladder above.
+10. Attempt nonlinear/tokenizer/recurrent mapping only after a controlled rung identifies that need.
 
 Deferred: qwen35 32K execution, host-restart/cold-boot claims, 131K, learned cross-model mapping, MTP/draft/speculative support, broad service/authentication/distributed scheduling work, and upstream submissions/comments.
