@@ -1,0 +1,226 @@
+[
+ {
+  "prompt": "lighthouse",
+  "alpha": 1.0,
+  "mean_delta": 0.0,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.9,
+  "mean_delta": 0.29672657475098213,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.8,
+  "mean_delta": 0.44486926144149597,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.75,
+  "mean_delta": 0.5455750333092991,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.7,
+  "mean_delta": 0.5143867764900278,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.65,
+  "mean_delta": 0.5684408839142914,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.6,
+  "mean_delta": 0.5759878594047336,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "lighthouse",
+  "alpha": 0.5,
+  "mean_delta": 0.8954577045376443,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 1.0,
+  "mean_delta": 0.0,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.9,
+  "mean_delta": 0.1707790051571194,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.8,
+  "mean_delta": 0.31956697070543744,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.75,
+  "mean_delta": 0.3531319414909725,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.7,
+  "mean_delta": 0.367581599772772,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.65,
+  "mean_delta": 0.4128479370880606,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.6,
+  "mean_delta": 0.4732967625005227,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "orchard",
+  "alpha": 0.5,
+  "mean_delta": 0.5767679051052131,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 1.0,
+  "mean_delta": 0.0,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.9,
+  "mean_delta": 0.25738043767035523,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.8,
+  "mean_delta": 0.5090362870042382,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.75,
+  "mean_delta": 0.4743947204467936,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.7,
+  "mean_delta": 0.4489484090242423,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.65,
+  "mean_delta": 0.5630128286956118,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.6,
+  "mean_delta": 0.7011699683871484,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "ledger",
+  "alpha": 0.5,
+  "mean_delta": 0.890131997719263,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "survey",
+  "alpha": 1.0,
+  "mean_delta": 0.0,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.9,
+  "mean_delta": 0.3156402254415396,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.8,
+  "mean_delta": 0.3846459208776958,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.75,
+  "mean_delta": 0.44173884362723637,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.7,
+  "mean_delta": 0.637295020383013,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.65,
+  "mean_delta": 0.6669483530651743,
+  "forced_top1": 1.0,
+  "free_match": true
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.6,
+  "mean_delta": 0.6725598805246591,
+  "forced_top1": 1.0,
+  "free_match": false
+ },
+ {
+  "prompt": "survey",
+  "alpha": 0.5,
+  "mean_delta": 1.2503147028589316,
+  "forced_top1": 1.0,
+  "free_match": false
+ }
+]

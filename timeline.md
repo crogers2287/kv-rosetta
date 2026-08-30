@@ -1651,3 +1651,60 @@ identity exact at alpha 1.0. **Proven by retained test**: `positionwise_agreemen
 that it varies smoothly with perturbation, which is the property the cliff metric lacks (915
 offline tests). **Untested**: whether mean |Δ| below some value predicts a passing generation;
 that needs the two metrics measured together across more prompts.
+
+## REQ-048 — mean |Δ| does not predict admission, and the admission test is chaotic
+
+REQ-047 proposed that teacher-forced `mean |Δlogprob|` could grade a map offline, so candidate
+maps could be compared without a GPU generation run each. This tests that directly: both
+metrics measured on the **same restored cache**, four prompts, eight blend ratios, 32 runs.
+
+**It does not work, and the reason matters more than the result.**
+
+| | |
+|---|---:|
+| passing runs, highest mean \|Δ\| | **0.667** |
+| failing runs, lowest mean \|Δ\| | **0.171** |
+| verdict | **overlapping** |
+
+A mean |Δ| of 0.3 sometimes passes and sometimes fails. There is no threshold to set.
+
+### Teacher-forced top-1 saturates and carries no information
+
+Across all 32 runs, forced top-1 took exactly **one** distinct value: 1.000. At alpha 0.5,
+where free generation fails everywhere, sixteen forced positions still agree perfectly. REQ-047
+read a signal from this metric that at these ratios it does not carry - it discriminates
+between alpha 0.4 and 0.0, and not at all above 0.5.
+
+### The admission test itself is chaotic near the boundary
+
+The `survey` prompt passes at alpha 0.9, fails at 0.8, 0.75 and 0.7, **passes again at 0.65**,
+then fails at 0.6. That is not a threshold being crossed; it is a coin flip. One token grazes
+a decision boundary, and whichever way it falls decides the whole generation.
+
+| prompt | alphas that pass |
+|---|---|
+| lighthouse | 1.0 |
+| orchard | 1.0 |
+| ledger | 1.0 |
+| survey | 1.0, **0.9, 0.65** |
+
+**This undermines REQ-045 and REQ-046.** Both located a "flip point" in alpha and converted it
+to an R² target. Those flip points were measurements of a chaotic quantity, so the R² figures
+of 0.78-0.96 are not reliable. Three of four prompts here fail at alpha 0.9 - a ten percent
+admixture of translation - which is far stricter than REQ-046's bracket and shows how much the
+answer moves with the prompt.
+
+### What follows for the gate
+
+Exact token equality over a free generation is the right thing for a *user* to care about and
+the wrong thing to *tune against*: it is brittle, prompt-dependent, and near-random in the
+transition region. An admission rule needs a criterion that degrades smoothly - agreement over
+the first few tokens, or a distributional bound - rather than one that a single unlucky token
+decides.
+
+Status: **measured once on this host** — 4 prompts, 8 ratios, both metrics on the same restored
+cache, identity exact everywhere. **Corrects**: REQ-045's and REQ-046's R² targets, which rest
+on a flip point that this shows is not stable. **The conclusion**: there is currently no cheap
+offline number that predicts admission, so map quality cannot yet be graded without running the
+target model. **Untested**: whether a first-K-token agreement criterion is stable enough to
+serve as the gate.
