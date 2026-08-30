@@ -1849,3 +1849,57 @@ refusal (923 offline tests). **Remaining prompt dependence**: at alpha 0.3 light
 0.867 and survey 1.000, so the two disagree at one ratio out of nine - much reduced, not
 eliminated. **Untested**: the margin bar of 1.0 was chosen, not derived; whether a different
 bar removes the last disagreement is unmeasured.
+
+## REQ-052 — The margin bar, swept: skipping helps less than REQ-051 claimed
+
+REQ-051 chose a margin bar of 1.0 and asserted that skipping near-tied positions "turns a
+wobbling number into an ordered one". Capturing the raw forced distributions once and sweeping
+the bar offline tests that properly, and it does not hold up.
+
+| bar | positions skipped of 32 | monotonic | ratios where prompts disagree |
+|---:|---:|---|---|
+| **0.0** | 0 | yes | **1** (alpha 0.6) |
+| 0.25 | 1 | yes | 4 |
+| 0.5 | 1 | yes | 4 |
+| 1.0 | 2 | yes | 2 |
+| 2.0 | 3 | yes | 2 |
+| 6.0 | 8 | yes | 2 |
+
+**Every bar is monotonic on this grid, including no skipping at all**, and skipping nothing
+gives the fewest prompt disagreements. REQ-051's monotonicity advantage was measured on a grid
+sampling alphas 0.9, 0.8, 0.7 and 0.15; this grid samples 0.6, 0.4, 0.2 and 0.1 and the
+wobble does not appear. The effect was a property of which ratios were sampled, not a robust
+property of the metric.
+
+The reason is simple arithmetic that REQ-051 did not check: **only one or two positions of
+thirty-two fall below margin 1.0.** Skipping them can move agreement by about three percent,
+which is the same order as the differences being compared. A correction built on moving one
+position in thirty-two was never going to be stable.
+
+| prompt | min margin | median | below 1.0 |
+|---|---:|---:|---:|
+| lighthouse | 0.420 | 7.94 | 2/32 |
+| survey | 0.582 | 8.07 | 1/32 |
+| orchard | 0.017 | 7.27 | 1/32 |
+
+**No bar removes the prompt disagreement.** It persists at alpha 0.3-0.6 for every value
+tried, so the residual variation is not something bar-tuning fixes.
+
+### What survives from REQ-051
+
+Two claims hold and one does not.
+
+- **Teacher forcing is necessary** — free generation cannot be scored past the first
+  divergence, and REQ-051's demonstration that a better cache can be rejected while a worse
+  one is admitted stands on data.
+- **The gate separates the translation from every blend** — 0.733 and 0.903 against 1.000.
+  That is the result the project needed and it is unaffected.
+- **Margin skipping is not established.** It is defensible in principle - a flip where the
+  model was indifferent says nothing about the cache - but on this evidence it changes little
+  and does not reliably improve anything. `confident_agreement` stays, since the principle is
+  sound and the reporting is useful, but no claim rests on the skipping.
+
+Status: **measured once on this host** — 3 prompts, 8 ratios, 32 forced positions, nine bars
+swept offline from one capture. **Corrects**: REQ-051's monotonicity claim for margin skipping.
+**Unchanged**: teacher forcing as the scoring protocol, and the separation of the translated
+cache from the blends.
