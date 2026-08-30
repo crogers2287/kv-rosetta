@@ -7,6 +7,7 @@ shift, not a crash, and a shifted cache produces fluent wrong output.
 """
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -181,3 +182,71 @@ class CoverageInvariantTest(unittest.TestCase):
         up even though the characters do not."""
         found = align([b"\xc3\xa9"], [b"\xc3", b"\xa9"])
         np.testing.assert_allclose(found.weights, [[1.0], [1.0]])
+
+
+QWEN25 = Path("/mnt/storage/pre1940_finetune/base_qwen25_3b")
+ORNITH = Path("/mnt/storage/ornith-a1-src")
+try:
+    from transformers import AutoTokenizer
+    HAVE_TOKENIZERS = QWEN25.is_dir() and ORNITH.is_dir()
+except ImportError:                                # pragma: no cover
+    HAVE_TOKENIZERS = False
+
+
+@unittest.skipUnless(HAVE_TOKENIZERS, "the two local tokenizers are not on this host")
+class RealTokenizerTest(unittest.TestCase):
+    """Two tokenizers with different vocabularies, on real text.
+
+    Everything above is constructed. This is qwen2.5 (151,643 tokens) against ornith-a1
+    (248,044), which is the case the whole module exists for: the same sentence tokenizes to
+    17 pieces in one and 16 in the other, and no token index means the same thing in both.
+    """
+
+    TEXT = ("The naturalist recorded the following observations in detail, including a "
+            "café au lait.")
+
+    @classmethod
+    def setUpClass(cls):
+        import warnings
+        warnings.filterwarnings("ignore")
+        cls.a = AutoTokenizer.from_pretrained(str(QWEN25))
+        cls.b = AutoTokenizer.from_pretrained(str(ORNITH))
+
+    def pieces(self, tokenizer):
+        ids = tokenizer.encode(self.TEXT, add_special_tokens=False)
+        return [tokenizer.decode([i]).encode("utf-8") for i in ids]
+
+    def test_per_token_decoding_reconstructs_the_text_exactly(self):
+        """If it did not, align would refuse - and this is how a caller checks first."""
+        for tokenizer in (self.a, self.b):
+            with self.subTest(tokenizer=type(tokenizer).__name__):
+                self.assertEqual(b"".join(self.pieces(tokenizer)), self.TEXT.encode())
+
+    def test_the_two_tokenizations_differ_in_length(self):
+        """Otherwise this proves nothing that the identity case does not."""
+        self.assertNotEqual(len(self.pieces(self.a)), len(self.pieces(self.b)))
+
+    def test_they_align_over_the_full_byte_range(self):
+        found = align(self.pieces(self.a), self.pieces(self.b))
+        self.assertEqual(found.nbytes, len(self.TEXT.encode()))
+        np.testing.assert_allclose(found.weights.sum(axis=1),
+                                   np.ones(found.target_tokens))
+
+    def test_a_token_split_by_one_tokenizer_is_pooled_by_byte_count(self):
+        """qwen2.5 writes ' lait' as ' la' + 'it'; ornith-a1 keeps it whole. Three bytes and
+        two of five, so 0.6 and 0.4."""
+        source, target = self.pieces(self.a), self.pieces(self.b)
+        found = align(source, target)
+        whole = target.index(b" lait")
+        covered = found.sources_for(whole)
+        self.assertEqual([source[i] for i in covered], [b" la", b"it"])
+        np.testing.assert_allclose([found.weights[whole][i] for i in covered], [0.6, 0.4])
+
+    def test_pooling_a_real_alignment_keeps_the_token_axis_honest(self):
+        source, target = self.pieces(self.a), self.pieces(self.b)
+        found = align(source, target)
+        cache = np.random.default_rng(0).normal(
+            size=(2, 2, len(source), 2, 4)).astype(np.float32)
+        pooled = pool(cache, found)
+        self.assertEqual(pooled.shape, (2, 2, len(target), 2, 4))
+        self.assertTrue(np.isfinite(pooled).all())

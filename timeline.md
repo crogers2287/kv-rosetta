@@ -1382,3 +1382,50 @@ Status: **proven by retained test** — the appendix terms, both measured artifa
 preamble length, every decoder refusal. **Measured once on this host**: the 256-token
 one-checkpoint file. **Unknown**: what the eight preamble bytes hold. **Untested**: any
 hybrid other than this one; checkpoint restoration, which is a separate claim from sizing.
+
+## REQ-043 — Cross-tokenizer alignment, checked against two real vocabularies
+
+The last unbuilt piece of the cross-model path. Two models with different tokenizers share no
+token positions: "the naturalist" is three tokens in one vocabulary and five in another, and
+token 2 of the first has no relationship whatever to token 2 of the second. What they share is
+the bytes.
+
+`kv_rosetta/mappers/align.py` turns each tokenization into half-open byte intervals and
+weights every target token by the bytes it shares with each source token. Rows sum to one, so
+pooling is a weighted mean and never rescales the vectors — pinned by pooling a constant cache
+and getting the constant back.
+
+Checked on real tokenizers rather than only on constructed cases: **qwen2.5** (151,643 tokens)
+against **ornith-a1** (248,044), both present on this host. The same sentence is 17 pieces in
+one and 16 in the other.
+
+| | |
+|---|---|
+| qwen2.5 tail | `' a'  ' café'  ' au'  ' la'  'it'  '.'` |
+| ornith-a1 tail | `' a'  ' café'  ' au'  ' lait'  '.'` |
+
+ornith-a1's ` lait` covers qwen2.5's ` la` and `it` — three bytes and two of five, weighted
+**0.6 and 0.4**. That is the case the module exists for, and it is now a retained test.
+
+Three refusals carry the weight, because a misalignment is a quiet one-token shift rather than
+a crash, and a shifted cache produces fluent wrong output:
+
+- **Identical bytes on both sides**, or refuse. A leading space or a different unicode
+  normalisation lands here. Equal lengths are not enough; the bytes are compared.
+- **RoPE must be stripped.** Pooling post-RoPE keys averages vectors rotated by different
+  position angles, and the mean encodes no position faithfully.
+- **Pieces are bytes, never str, never empty.** Encoding here would pick an encoding on the
+  caller's behalf; a zero-width span would match anything or nothing depending on comparison
+  order.
+
+One guard was written and then removed. "Target token overlaps no source token" cannot happen
+once the byte-equality and empty-piece refusals hold, since the source spans tile the range
+contiguously — an untestable guard is decoration, so the invariant is asserted by test across
+a range of tokenizations instead, including a byte-fallback case that cuts a multibyte
+character in half where the bytes still line up though the characters do not.
+
+Status: **proven by retained test** — the arithmetic, every refusal (7/7 guards
+mutation-checked), and the real qwen2.5/ornith-a1 alignment, skipped when those tokenizers are
+absent (846 offline tests). **Untested**: alignment feeding an actual cross-model transfer —
+that needs a fitted mapper and both models resident, and the divergence gate has the final say
+on whether the result is usable at all.
