@@ -3153,3 +3153,56 @@ what would be wrong is letting a caller assume a hit saved something. Unknown re
 Status: **measured once on this host** — the six-row table. **Proven by retained test** — the
 payoff reporting and that unknown never reads as paying (11/11 guards, 49 tests). **Not
 covered** — the fleet's fork binary, which is what serves tiel in production.
+
+---
+
+## REQ-077 — "do it": the fleet stayed up, and the hybrid attachment paid
+
+Authorised to unload the fleet and test tiel on a W6800 with the fork binary. **Did not unload
+it**, because checking the binary first showed the test could not have worked.
+
+### What the check found
+
+The fleet's fork is commit `8663224` and carries no checkpoint persistence. Neither do any of
+the three `ca3d5a3` builds. Unloading a live service would have bought an impossible
+measurement.
+
+That first scan was also wrong in method: `strings` was run against `llama-server`, a
+17,920-byte launcher stub whose real code lives in shared libraries. Rescanning the `.so` files
+gave the same answer for these five builds, but the method would have missed a patched build
+had one existed. Corrected before drawing on it.
+
+The patch was never lost — `patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch` is
+upstream PR #26004, sha256-pinned, with a build script that refuses an unexpected base. It
+rebuilt by three-way merge onto `ca3d5a3e1`, and it builds CUDA, so this ran on the free 3090s.
+The fleet was never touched and both tiel instances were still `ready` at the end.
+
+### The measurement
+
+Qwen3.8-27B (`qwen35`, hybrid), 673 tokens, through the drive:
+
+| | n_restored | cache_n | prefilled | ms |
+|---|---:|---:|---:|---:|
+| cold, no attachment | — | 0 | 676 | 780 |
+| **via the drive attachment** | 679 | **672** | **4** | **211** |
+
+`SCKP` appendix present, `slot_checkpoint_persistence: true` advertised. **3.7x on a hybrid
+model**, against 0 of 676 for the identical code and model on a stock build (REQ-076).
+
+### The bug it exposed in my own work
+
+REQ-076's payoff reporting predicted from the architecture alone, so it labelled this 3.7x win
+"does not pay". Its own refusal text gave it away: *"this runtime's slot save does not persist
+checkpoints"* is a claim about the runtime made from the model. `expected_reuse` now takes
+architecture **and** runtime capability, with unknown as a third state rather than collapsed
+into "no" — the same model reused 0 on one build and 672 on another, so without knowing the
+build neither answer is available, and "no" would tell an operator to discard a 3.7x win.
+
+The retained negative control did its job unprompted: pointed at the patched runtime it
+detected the patch and **skipped itself**, refusing to report a difference in binaries as a
+code failure.
+
+Status: **measured once on this host** — the table above. **Proven by retained test** — the
+three-state reuse expectation (11/11 guards, 55 tests). **Not covered** — tiel specifically on
+the W6800 fork build, which carries no checkpoint persistence and so has nothing to measure
+until that build is patched.
