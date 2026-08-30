@@ -1943,3 +1943,50 @@ Status: **measured once on this host** — one prompt, 512 tokens, one model, bo
 **Proven by retained test**: the requirements arithmetic and every refusal including the
 caller-identity path (949 offline tests). **What this does not show**: any cross-model claim,
 and any timing - this run measured correctness, not latency.
+
+## REQ-054 — Restore against prefill on tiel-coder: the case for replacing kvwarm
+
+REQ-053 showed the pipeline is correct. This measures whether it is worth using.
+
+Patched build, vacant W6800, `Tiel-Coder-35B-A3B`, three repetitions per rung, medians. Total
+restore latency is the restore call **plus** whatever the runtime still prefills afterwards -
+reporting only the restore call would flatter it.
+
+| tokens | artifact | cold prefill | restore total | of which call / residual | reused | speedup |
+|---:|---:|---:|---:|---|---|---:|
+| 512 | 135.6 MB | 443.8 ms | 246.9 ms | 106.4 + 140.4 | 508/512 | **1.80x** |
+| 2,048 | 228.5 MB | 1,643.7 ms | 385.4 ms | 193.0 + 183.7 | 2,044/2,048 | **4.26x** |
+| 8,192 | 348.7 MB | 6,029.9 ms | 410.9 ms | 244.6 + 145.6 | 8,188/8,192 | **14.68x** |
+
+**The shape matters more than any single number.** Cold prefill grows linearly - 444, 1,644,
+6,030 ms - while total restore stays nearly flat at 247, 385, 411 ms. The advantage therefore
+widens with prefix length, which is the direction an agentic harness pushes.
+
+### Against what kvwarm actually does
+
+The observed kvwarm behaviour that started this work: up to 51 prefixes cycled into a server
+with **2 slots**, every 900 seconds, 13 of the last 20 cycles complete re-prefills costing 15
+to 84 seconds each. Those are recomputes of exactly the work a 411 ms restore reproduces.
+
+The comparison is not quite like for like and should not be dressed up as one: kvwarm's
+re-prefills were on the fleet's own quantised-KV configuration and included prompts longer
+than 8,192 tokens. What this measures is that at the sizes tested, restoring is between 1.8
+and 14.7 times cheaper than recomputing on the same machine and model.
+
+### The caveat that matters
+
+**Artifacts here live in `/dev/shm`, which is RAM.** Read time is a floor, not a typical
+figure. The host's disks are at 99% and writing a 349 MB artifact there was not a risk worth
+taking for a benchmark. Charging a notional NVMe read at 2 GB/s:
+
+| tokens | +read | total | vs cold | speedup |
+|---:|---:|---:|---:|---:|
+| 512 | +68 ms | 315 ms | 444 ms | 1.41x |
+| 2,048 | +114 ms | 500 ms | 1,644 ms | 3.29x |
+| 8,192 | +174 ms | 585 ms | 6,030 ms | 10.30x |
+
+Still decisive at the sizes that matter, and this is arithmetic rather than a measurement.
+
+Status: **measured once on this host** — 3 rungs, 3 repetitions, medians, RAM-backed storage,
+one model. **Not measured**: NVMe-backed reads, quantised KV, prefixes above 8,192, and
+concurrent load - every figure here is from an otherwise idle GPU.

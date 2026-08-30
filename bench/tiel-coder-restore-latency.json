@@ -1,0 +1,38 @@
+[
+ {
+  "tokens": 512,
+  "artifact_bytes": 142229280,
+  "bytes_per_token": 277791.5625,
+  "checkpoints": 1,
+  "cold_ms": 443.84,
+  "restore_total_ms": 246.86808645629884,
+  "restore_call_ms": 106.41908645629883,
+  "residual_prefill_ms": 140.449,
+  "reused": 508,
+  "speedup": 1.797883259724499
+ },
+ {
+  "tokens": 2048,
+  "artifact_bytes": 239594036,
+  "bytes_per_token": 116989.275390625,
+  "checkpoints": 2,
+  "cold_ms": 1643.714,
+  "restore_total_ms": 385.4034296417236,
+  "restore_call_ms": 193.01342964172363,
+  "residual_prefill_ms": 183.666,
+  "reused": 2044,
+  "speedup": 4.264917936843529
+ },
+ {
+  "tokens": 8192,
+  "artifact_bytes": 365595188,
+  "bytes_per_token": 44628.31884765625,
+  "checkpoints": 2,
+  "cold_ms": 6029.856,
+  "restore_total_ms": 410.86379705810543,
+  "restore_call_ms": 244.64154243469238,
+  "residual_prefill_ms": 145.564,
+  "reused": 8188,
+  "speedup": 14.676046035633657
+ }
+]
