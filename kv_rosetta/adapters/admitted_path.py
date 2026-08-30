@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from kv_rosetta import requirements
 from kv_rosetta import gguf, weights
 from kv_rosetta.admitted_store import AdmissionError, AdmittedObject, AdmittedStore
 from kv_rosetta.adapters import ggsq_envelope
@@ -148,6 +149,25 @@ class AdmittedPath:
             "prefix_fingerprint": prefix_fingerprint,
             "runtime_model": model,
         }
+        # What a runtime must provide to restore this. Recorded at admission because it is
+        # a fact about the bytes just written, and checking it at restore turns a silent
+        # uselessness - a hybrid state accepted by an unpatched build that then reuses
+        # nothing - into an explicit refusal.
+        checkpoints = manifest["checkpoint"]["count"]
+        # `hybrid` is set from what the artifact demonstrably carries, not from the model's
+        # architecture, which this adapter has no way to read - `active_state_classes`
+        # describes checkpoint kinds, not attention structure. The consequence is that
+        # for_artifact's "hybrid saved without checkpoints" note never fires from here. That
+        # is the honest outcome: a note claiming the restore will be useless is worth more
+        # than nothing only if it is derived from something, and here it would be a guess.
+        manifest["requirements"] = requirements.for_artifact(
+            hybrid=bool(checkpoints),
+            checkpoints=checkpoints,
+            sequence_state_version=version,
+            kv_type_k=k_dtype, kv_type_v=v_dtype,
+            model_identity=model_ident.weights_sha256,
+            checkpoint_format=protocol.get("format", "sckp/1") or "sckp/1",
+        ).as_dict()
         return self.store.admit(raw, manifest)
 
     # -- restore (on the request path) ------------------------------------------------

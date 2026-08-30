@@ -293,3 +293,38 @@ class AdmittedPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordedRequirementsTest(unittest.TestCase):
+    """Admission records what a runtime will need to restore these bytes.
+
+    Recorded at admission because it is a fact about the bytes just written. Checked at
+    restore, it turns a silent uselessness - a hybrid state accepted by an unpatched build
+    that then reuses nothing - into an explicit refusal.
+    """
+
+    def test_a_checkpointed_artifact_is_marked_as_needing_the_patch(self):
+        from kv_rosetta.requirements import Requirements, check
+        recorded = requirements_for(checkpoints=2, version=3)
+        self.assertTrue(recorded["needs_checkpoint_persistence"])
+        self.assertTrue(check(Requirements(**recorded), {"sequence_state_version": 3}))
+
+    def test_an_artifact_without_checkpoints_needs_no_patch(self):
+        from kv_rosetta.requirements import Requirements, check
+        recorded = requirements_for(checkpoints=0, version=3)
+        self.assertFalse(recorded["needs_checkpoint_persistence"])
+        self.assertEqual(check(Requirements(**recorded), {"sequence_state_version": 3}), [])
+
+    def test_the_recorded_form_round_trips_through_the_checker(self):
+        """The manifest stores a plain dict; it has to reconstruct a Requirements exactly."""
+        from kv_rosetta.requirements import Requirements
+        recorded = requirements_for(checkpoints=1, version=3)
+        self.assertEqual(Requirements(**recorded).as_dict(), recorded)
+
+
+def requirements_for(*, checkpoints, version):
+    from kv_rosetta import requirements
+    return requirements.for_artifact(
+        hybrid=bool(checkpoints), checkpoints=checkpoints,
+        sequence_state_version=version, kv_type_k="f16", kv_type_v="f16",
+        model_identity="a" * 64).as_dict()
