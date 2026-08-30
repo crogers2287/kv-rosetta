@@ -1118,3 +1118,48 @@ refusal, the divergence arithmetic (728 offline tests, CI green). **Untested**: 
 would be a ~1.1 GB artifact; CUDA↔anything, still waiting on a 3090 slot; any model other than
 this qwen2 Q4_K_M. **Inferred, not measured**: that the constant one-token shortfall continues
 to hold above 8K.
+
+## REQ-038 — 32K transfers, and the size law predicts to the byte
+
+The top of the range RA-002 named. Same vacant W6800, same builds at `ca3d5a3e1`, non-hybrid
+qwen2 Q4_K_M. 32,000 rather than 32,768 tokens: this model's training context is 32,768 and
+the slot caps there, so a full-length prompt plus eight generated tokens does not fit. That
+arrived as a bare `HTTP 400` because the runner discarded llama-server's response body, which
+had said so plainly — now fixed, the body is in the exception.
+
+| direction | reused | text | token ids | artifact |
+|---|---|---|---|---|
+| HIP → Vulkan | **31,999 / 32,000** | identical | identical | 1.18 GB |
+| Vulkan → HIP | **31,999 / 32,000** | identical | identical | 1.18 GB |
+
+### The size law, stated before the run and then tested
+
+From the 128- and 8,192-token artifacts: `bytes = 908 + 36,880 x tokens`. Applied to 32,000 —
+**four times outside the range it was fitted on** — that predicts **1,180,160,908** bytes.
+
+Measured: **1,180,160,908 bytes. Exact, zero error.**
+
+The 908-byte constant matters beyond arithmetic. RA-003 argued the hybrid model's large fixed
+term is recurrent/checkpoint state, which is sized per layer rather than per token. This model
+has no recurrent state, and its fixed term is 908 bytes against the hybrid's ~449 MiB — which
+is the cleanest confirmation of that mechanism available without re-measuring the hybrid.
+
+### Divergence at 32K
+
+| comparison | HIP→Vulkan | Vulkan→HIP |
+|---|---|---|
+| own restore vs cold prefill, same backend | 0.067 | 0.202 |
+| foreign cache vs own cache | 1.226 | 1.304 |
+| two cold runs, different backends, no cache | 1.163 | 1.163 |
+
+The pattern holds at every length tested. Restoring a cache the backend wrote itself stays
+tight; using the other backend's cache diverges by about what the two backends already
+diverge by on cold work with no cache at all. Top-1 agreement 1.00 and identical generated
+tokens in every comparison, at 128, 8,192, and 32,000 tokens.
+
+Status: **measured once on this host** — HIP↔Vulkan at 32,000 tokens, both directions.
+**Proven by retained test**: the size arithmetic is not tested (it is a fit over recorded
+evidence, not code); the short-prefix refusal, self-restore refusal and divergence arithmetic
+are (728 offline tests, CI green). **Untested**: CUDA↔anything, still waiting on a 3090 slot;
+the hybrid model at any of these lengths; any second model. **Inferred**: that the size law
+holds above 32K — it has only been tested up to the model's own context limit.

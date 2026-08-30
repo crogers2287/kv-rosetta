@@ -142,13 +142,45 @@ uses the conservative 295,390 rate so nothing can be generated on the strength o
 It also explains why 8K beat cold by 60.7% while 2K managed 14.2%: the fixed cost amortises
 as the prefix grows, which is the same direction the product goal points.
 
+### Evidence added 2026-08-29: the mechanism is confirmed on a model that lacks it
+
+The two points above are from the **hybrid** qwen35. A separate three-point series on the
+**non-hybrid** qwen2 Q4_K_M, taken during REQ-036/037/038, tests the proposed mechanism
+directly — if the fixed component really is recurrent state, a model with no recurrent state
+should have essentially none of it.
+
+| prompt | artifact bytes |
+|---|---:|
+| 128 | 4,721,548 |
+| 8,192 | 302,121,868 |
+| 32,000 | 1,180,160,908 |
+
+Fitting the first two gives `908 + 36,880 x n`. Applied to 32,000 — **four times outside the
+range it was fitted on** — that predicts 1,180,160,908 bytes. The measured value is
+1,180,160,908 bytes. **Exact to the byte, zero error.**
+
+So on a model with no recurrent state the fixed component is **908 bytes**, against ~449 MiB
+on the hybrid. That is the strongest available confirmation that the hybrid's fixed term is
+the recurrent/checkpoint state and not an artifact of fitting two points to two parameters.
+
+It does **not** settle either question below. Those are about the hybrid model's numbers, and
+nothing here re-measures the hybrid. What it does settle is the method: a fit is worth acting
+on once it has predicted a point far outside its own range, and that test is cheap.
+
 **Questions for the steer:**
 
 1. Should the space predictor take a measured rate per prompt length, or an affine fit, or
    stay conservative-linear? The current default silently over-predicts by 2.4x at 8K.
+   *Amended:* an affine fit validated against a held-out far point is now demonstrably
+   trustworthy on a non-hybrid model. Should the hybrid get the same two-measurement
+   treatment before the 32K question is reopened?
 2. Does the 32K refusal still hold given the affine reading? If the intent was "do not
    generate 9.7 GB", the premise may no longer be true. If the intent was "do not scale
    until 8K passes three repetitions", it holds regardless and I will withdraw this entry.
+3. Note that 32K has now been generated and transferred **for the non-hybrid model**, at
+   1.18 GB, entirely in `/dev/shm` (101 GB free) with no NVMe involved. If the refusal was
+   about NVMe space specifically, `/dev/shm` sidesteps it — is that an acceptable route for
+   the hybrid 32K run too?
 
 ---
 
