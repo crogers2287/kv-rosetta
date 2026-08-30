@@ -1,13 +1,12 @@
-# KV Rosetta research steer: close pinned checkpoint sizing and enforce the production transfer gate
+# KV Rosetta research steer: quarantine synthetic T3 plumbing and run the production gate
 
-Status basis: default-branch head 2a326bbb76190cf979cf3d6c07f3f55da3278af9.
+Status basis: default-branch head 580a45646702c5a928f4f957487127e917d1e4de.
 
-This steer supersedes da0e3ea. Two materially different changes landed:
+This steer supersedes 1430005. After that steer explicitly made P0 the sole next track, two more unrelated T3 modules landed: prompt-region metadata and a synthetic array translator. The qwen35 8K HIP↔Vulkan matrix still did not run, and no concrete hardware blocker was retained.
 
-1. The checkpoint appendix was structurally accounted well enough to close byte sizing for the exact pinned qwen35 llama.cpp/patch tuple.
-2. A cross-tokenizer byte-overlap mapper was added before the ordered production qwen35 HIP↔Vulkan gate ran.
+Retain the useful unit-level discoveries, especially the corrected (target layer, source layer) pair direction. Do not treat either module as product progress or an end-to-end transfer. Keep all T3 code inert. The exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix has now been skipped three times and remains the single next break-first experiment.
 
-Retain the checkpoint evidence. Quarantine the alignment prototype. The exact production qwen35 8K HIP↔Vulkan patched/unpatched matrix has now been skipped twice and remains the single next break-first experiment. No new sizing, tokenizer, cross-model, sidecar, vLLM, CUDA, or canonical-format feature work should start until that matrix produces a retained pass or first-causal-failure record.
+No implementation commit outside the P0 runner and its live record is in scope until P0 produces a retained pass, first-causal-failure record, or a concrete hardware/runtime blocker. A blocker must name the unavailable binary, device, model, port, process, or resource and include the failed prerequisite check; “while waiting” is not permission to advance another track.
 
 ## Mission and non-negotiable boundaries
 
@@ -88,6 +87,24 @@ The implementation is currently quadratic and dense: `align()` loops over every 
 
 Do not call this “the last unbuilt piece of T3.” Cross-model transformation still lacks a fitted/derived state mapper, architecture correspondence, recurrent-state treatment, live target encoding, and behavioral admission evidence.
 
+## The new compose/translate modules are not end-to-end evidence
+
+`compose.py` is metadata planning only. It neither reuses a cache nor performs the selective recomputation it prices. `appendable()` also bypasses the validation and continuity checks enforced by `plan()`; it can report true for malformed or misplaced regions if their supplied chain string matches. Keep it out of admission and runtime paths.
+
+`mappers/translate.py` composes synthetic NumPy operations, but the claimed cross-model boundary is currently fail open:
+
+1. It never calls `LinearMapper.require_applicable()`; actual source and target model digests are not accepted or checked.
+2. It checks source width but not the mapper identity's source/target architecture or declared source/target layer counts.
+3. It derives output layer count from the largest supplied pair. Missing target layers are silently omitted or zero-filled, producing a finite plausible tensor instead of refusing incomplete coverage.
+4. It defaults source RoPE theta to 10,000 and target theta to the source value. Mapper identity does not bind theta, rotary dimension, interleaving, scaling, sections, M-RoPE, or other model-specific rotary semantics.
+5. The changed-position “direct reapplication” test asserts only shape, not numeric equality, so it cannot detect a wrong rotation result.
+6. Tests use identity/synthetic arrays. No mapper was fitted from retained real model states, no target-native cache was encoded, no runtime consumed the result, and no held-out logits/output gate ran.
+7. It inherits the dense quadratic tokenizer alignment and therefore is not scalable to the target prefix lengths.
+
+The honest status is “offline candidate plumbing.” It is not a cache format, transfer capability, or end-to-end cross-model path. Do not expose it through capability reporting, `transfer.py`, vLLM, the sidecar, or any artifact identity.
+
+When T3 is eventually reopened, require red tests for every boundary above, sparse alignment, exact model/rotary identity, complete target-layer coverage, a real fitted mapper, a target encoder/importer, and a held-out behavioral gate. None of that is a substitute for P0/P1/P2.
+
 ## P0 — the only next experiment: exact qwen35 8K HIP ↔ Vulkan
 
 First apply only the smallest red-test-first runner corrections needed for an admission-quality record. Freeze the verdict before measurement:
@@ -162,7 +179,7 @@ Keep vLLM inert and sidecar active restoration quarantined. No scheduled or proa
 
 ## Required execution order
 
-1. Stop new work outside P0.
+1. Freeze compose/translate/alignment and all other non-P0 implementation.
 2. Harden only the cross-backend runner provenance and predeclared verdict.
 3. Run the exact qwen35 8K HIP↔Vulkan patched/unpatched matrix.
 4. Close parser/schema trust boundaries and parse the real patched 8K artifact completely.
