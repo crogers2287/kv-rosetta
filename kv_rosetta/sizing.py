@@ -45,21 +45,39 @@ class SizingError(ValueError):
 
 @dataclass(frozen=True)
 class KVGeometry:
-    """What decides a state file's size, and nothing else."""
+    """What decides a state file's size, and nothing else.
+
+    Keys and values are sized independently because the format sizes them independently -
+    `n_embd_k_gqa` and `n_embd_v_gqa` are separate quantities with their own row sizes, and a
+    model may declare different key and value lengths.
+    """
 
     n_layer: int
     n_kv_head: int
     head_dim: int
     architecture: str = ""
+    value_head_dim: int | None = None
 
     @property
-    def n_embd_kv(self) -> int:
+    def value_dim(self) -> int:
+        return self.head_dim if self.value_head_dim is None else self.value_head_dim
+
+    @property
+    def n_embd_k_gqa(self) -> int:
         """Elements in one layer's key row for one token."""
         return self.n_kv_head * self.head_dim
 
+    @property
+    def n_embd_v_gqa(self) -> int:
+        return self.n_kv_head * self.value_dim
+
     def validate(self) -> list[str]:
-        return [f"{name} must be positive" for name in ("n_layer", "n_kv_head", "head_dim")
-                if getattr(self, name) <= 0]
+        problems = [f"{name} must be positive"
+                    for name in ("n_layer", "n_kv_head", "head_dim")
+                    if getattr(self, name) <= 0]
+        if self.value_dim <= 0:
+            problems.append("value_head_dim must be positive")
+        return problems
 
 
 def row_size(type_name: str, n_elements: int) -> int:
@@ -79,7 +97,10 @@ def geometry_of(model: Path | str) -> KVGeometry:
     arch = gguf.architecture(model)
     wanted = (f"{arch}.block_count", f"{arch}.attention.head_count",
               f"{arch}.attention.head_count_kv", f"{arch}.embedding_length")
-    found = gguf.read_metadata(model, wanted)
+    extra = (f"{arch}.attention.key_length", f"{arch}.attention.value_length")
+    read = gguf.read_metadata(model, wanted + extra)
+    found = {key: value for key, value in read.items() if key in wanted}
+    optional = {key: value for key, value in read.items() if key in extra}
     missing = [key for key in wanted if key not in found]
     if missing:
         raise SizingError(f"{model} does not declare {', '.join(missing)}")
@@ -90,9 +111,25 @@ def geometry_of(model: Path | str) -> KVGeometry:
                           f"single row size does not describe this model")
     if not heads:
         raise SizingError(f"{arch} declares head_count {heads}")
+
+    # key_length/value_length are authoritative when present. Deriving instead cost a
+    # confident wrong answer: qwen35 declares key_length 256 while embedding_length divided
+    # by head_count is 5120/24 = 213.33, which floored to 213 and produced a plausible file
+    # size that was wrong by a fifth.
+    explicit = optional.get(f"{arch}.attention.key_length")
+    if explicit:
+        key_dim = int(explicit)
+    else:
+        embd = int(found[f"{arch}.embedding_length"])
+        if embd % int(heads):
+            raise SizingError(
+                f"{arch} declares neither attention.key_length nor an embedding_length "
+                f"({embd}) divisible by head_count ({heads}); there is no head dimension "
+                f"to read and flooring the division would invent one")
+        key_dim = embd // int(heads)
+    value_dim = int(optional.get(f"{arch}.attention.value_length") or key_dim)
     return KVGeometry(n_layer=int(found[f"{arch}.block_count"]), n_kv_head=int(kv_heads),
-                      head_dim=int(found[f"{arch}.embedding_length"]) // int(heads),
-                      architecture=arch)
+                      head_dim=key_dim, value_head_dim=value_dim, architecture=arch)
 
 
 def state_bytes(geometry: KVGeometry, cells: int, *, kv_type: str = "f16",
@@ -114,14 +151,16 @@ def state_bytes(geometry: KVGeometry, cells: int, *, kv_type: str = "f16",
     tokens = cells if header_tokens is None else header_tokens
     if tokens < 0:
         raise SizingError(f"header token count {tokens} is negative")
-    per_row = row_size(kv_type, geometry.n_embd_kv)
+    k_row = row_size(kv_type, geometry.n_embd_k_gqa)
+    v_row = row_size(kv_type, geometry.n_embd_v_gqa)
     body = SECTION_HEADER + BYTES_PER_CELL_META * cells + DATA_HEADER
-    # Keys for every layer, then values, each preceded by its type and row size.
-    body += 2 * geometry.n_layer * (BYTES_PER_TENSOR_HEADER + cells * per_row)
+    # Keys for every layer, then values, each preceded by its own type and row size.
+    body += geometry.n_layer * (2 * BYTES_PER_TENSOR_HEADER + cells * (k_row + v_row))
     return FILE_HEADER + BYTES_PER_HEADER_TOKEN * tokens + body
 
 
 def bytes_per_token(geometry: KVGeometry, *, kv_type: str = "f16") -> int:
     """The marginal cost of one more cached token, header id included."""
     return (BYTES_PER_HEADER_TOKEN + BYTES_PER_CELL_META
-            + 2 * geometry.n_layer * row_size(kv_type, geometry.n_embd_kv))
+            + geometry.n_layer * (row_size(kv_type, geometry.n_embd_k_gqa)
+                                  + row_size(kv_type, geometry.n_embd_v_gqa)))

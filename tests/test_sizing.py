@@ -26,9 +26,11 @@ from kv_rosetta.sizing import (
 
 MODEL = Path("/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf")
 PER_LAYER_KV = Path("/mnt/storage/local-gguf/gemma4-31b/gemma-4-31B-it-MTP-Q8_0.gguf")
+HYBRID = Path("/mnt/storage/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_XL.gguf")
 
 #: qwen2 Q4_K_M as read from its GGUF: 36 layers, 2 KV heads, head_dim 128.
-QWEN2 = KVGeometry(n_layer=36, n_kv_head=2, head_dim=128, architecture="qwen2")
+QWEN2 = KVGeometry(n_layer=36, n_kv_head=2, head_dim=128, architecture="qwen2",
+                   value_head_dim=128)
 
 #: cells -> file size, measured. The saved slots carried four more header token ids than
 #: cache cells, which is worth 16 bytes and is why header_tokens is passed explicitly.
@@ -137,3 +139,63 @@ class RowSizeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeadDimensionTest(unittest.TestCase):
+    """Where the head dimension comes from, and when it must not be derived.
+
+    Deriving it as embedding_length / head_count is only correct when a model does not say
+    otherwise. qwen35 says otherwise: it declares key_length 256, while the derivation gives
+    5120 / 24 = 213.33, which floored to 213 and produced a file-size estimate wrong by a
+    fifth - plausible enough to have been believed.
+    """
+
+    def gguf(self, **declared):
+        base = {"qwen2.block_count": 36, "qwen2.attention.head_count": 16,
+                "qwen2.attention.head_count_kv": 2, "qwen2.embedding_length": 2048}
+        base.update({f"qwen2.{k}": v for k, v in declared.items()})
+        return mock.patch("kv_rosetta.sizing.gguf.read_metadata", return_value=base), \
+            mock.patch("kv_rosetta.sizing.gguf.architecture", return_value="qwen2")
+
+    def test_a_declared_key_length_wins_over_the_derivation(self):
+        meta, arch = self.gguf(**{"attention.key_length": 256})
+        with meta, arch:
+            self.assertEqual(geometry_of("ignored.gguf").head_dim, 256)
+
+    def test_the_derivation_is_used_only_when_nothing_is_declared(self):
+        meta, arch = self.gguf()
+        with meta, arch:
+            self.assertEqual(geometry_of("ignored.gguf").head_dim, 128)
+
+    def test_an_indivisible_embedding_length_is_refused_not_floored(self):
+        """This is the qwen35 shape with its key_length removed - 5120 over 24."""
+        meta, arch = self.gguf(**{"embedding_length": 5120, "attention.head_count": 24})
+        with meta, arch:
+            with self.assertRaises(SizingError) as caught:
+                geometry_of("ignored.gguf")
+        self.assertIn("would invent one", str(caught.exception))
+
+    def test_a_declared_value_length_sizes_values_separately(self):
+        meta, arch = self.gguf(**{"attention.key_length": 128,
+                                  "attention.value_length": 64})
+        with meta, arch:
+            geometry = geometry_of("ignored.gguf")
+        self.assertEqual((geometry.head_dim, geometry.value_dim), (128, 64))
+        self.assertEqual(geometry.n_embd_k_gqa, 256)
+        self.assertEqual(geometry.n_embd_v_gqa, 128)
+
+    def test_asymmetric_keys_and_values_change_the_size(self):
+        symmetric = KVGeometry(n_layer=36, n_kv_head=2, head_dim=128)
+        lopsided = KVGeometry(n_layer=36, n_kv_head=2, head_dim=128, value_head_dim=64)
+        self.assertLess(state_bytes(lopsided, 1024), state_bytes(symmetric, 1024))
+
+    def test_a_nonsense_value_dimension_is_refused(self):
+        with self.assertRaises(SizingError) as caught:
+            state_bytes(KVGeometry(36, 2, 128, value_head_dim=0), 128)
+        self.assertIn("value_head_dim", str(caught.exception))
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_the_live_hybrid_model_reads_its_declared_key_length(self):
+        geometry = geometry_of(HYBRID)
+        self.assertEqual(geometry.head_dim, 256)
+        self.assertNotEqual(geometry.head_dim, 5120 // 24)
