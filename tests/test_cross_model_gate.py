@@ -307,6 +307,21 @@ class TeacherForcedComparison(unittest.TestCase):
         right = [{1: -2.0, 2: -0.1}, {3: -0.3, 4: -1.0}, {5: -0.2, 6: -1.0}]
         self.assertAlmostEqual(compare_forced(left, right)["top1_agreement"], 2 / 3)
 
+    def test_the_mean_delta_is_reported_beside_the_max(self):
+        # One outlier token dominates the max. A sweep needs a quantity that moves
+        # smoothly, or a real trend reads as noise.
+        from cross_model_gate import compare_forced
+        left = [{1: 0.0, 2: 0.0}, {1: 0.0, 2: 0.0}]
+        right = [{1: 0.0, 2: 4.0}, {1: 0.0, 2: 0.0}]
+        result = compare_forced(left, right)
+        self.assertEqual(result["max_abs_logprob_delta"], 4.0)
+        self.assertEqual(result["mean_abs_logprob_delta"], 1.0)   # 4.0 over 4 shared
+
+    def test_the_mean_delta_is_none_when_nothing_is_shared(self):
+        from cross_model_gate import compare_forced
+        result = compare_forced([{1: -0.1}], [{2: -0.1}])
+        self.assertIsNone(result["mean_abs_logprob_delta"])
+
     def test_comparison_stops_at_the_shorter_run(self):
         from cross_model_gate import compare_forced
         result = compare_forced([{1: -0.1}], [{1: -0.1}, {2: -0.1}])

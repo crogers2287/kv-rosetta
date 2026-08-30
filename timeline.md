@@ -3008,3 +3008,43 @@ guess. Untested; next.
 Status: **measured once on this host**, records at `docs/records/kvx-diff/`. **Proven by
 retained test** — both runners' refusals (6/6 and 3/3 guards, 26 tests), including that the
 prompt-level split cannot be turned off and that the do-nothing baseline is always reported.
+
+---
+
+## REQ-074 — Partial-depth reuse tested and closed
+
+Continuation of REQ-073's lead, which I called "the one I'd bet on". It lost.
+
+`scripts/kvx_splice.py` builds hybrid state files byte-for-byte — named layers from the foreign
+cache, the rest from the target's own — after checking span-by-span that the two payloads are
+laid out identically. Both sweep endpoints reproduce a file already measured elsewhere.
+
+| foreign layers | early end Δ | late end Δ | early as % of full | layers as % of stack |
+|---:|---:|---:|---:|---:|
+| 2 | 0.0615 | 0.0704 | 23% | 6% |
+| 16 | 0.1436 | 0.2023 | 55% | 44% |
+| 20 | 0.1445 | 0.2111 | 55% | 56% |
+| 36 | 0.2637 | 0.2637 | 100% | 100% |
+
+Deep layers do cost more than shallow ones, so REQ-073's depth reading was right about
+direction. But the cost tracks layer count almost exactly past the first few layers, and those
+first two cost 23% of the total damage for 6% of the stack — **worse** than proportional. There
+is no knee, so there is nothing to build.
+
+A control ruled out the tidy explanation. Two layers from the middle cost 0.0905 against 0.0615
+from the bottom and 0.0704 from the top, so the entry cost is not a constant "mixing penalty":
+position matters, and the middle is the worst place to swap. Every two-layer choice still lands
+in the same band, which is what closes the idea regardless of mechanism.
+
+Also added `mean_abs_logprob_delta` to `compare_forced`. Top-1 agreement over 64 positions moves
+in steps of 1/64 and the max delta is one worst-case token; the first sweep's top-1 column was
+unreadable noise (0.9531 at 12 layers, 1.0000 at 16) while the mean was cleanly monotonic. A
+sweep needs a smooth quantity or a real trend reads as nothing.
+
+Three attempts now agree: §20 could not translate across geometries, §29 found the optimal
+same-geometry converter is the identity, §30 finds no subset of layers is cheap. The common
+cause is that the difference is the target's own weight drift and the source cache holds no
+information about it.
+
+Status: **measured once on this host**, records at `docs/records/splice/`. **Proven by retained
+test** — the splice's layout precondition and both sweep endpoints (5/5 guards, 17 tests).

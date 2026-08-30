@@ -192,7 +192,7 @@ def compare_forced(left: list[dict], right: list[dict]) -> dict:
     compared = min(len(left), len(right))
     if compared == 0:
         return {"positions": 0, "top1_agreement": None, "max_abs_logprob_delta": None}
-    agreed, worst, shared, only_one = 0, 0.0, 0, 0
+    agreed, worst, shared, only_one, total = 0, 0.0, 0, 0, 0.0
     for a, b in zip(left[:compared], right[:compared]):
         if not a or not b:
             continue
@@ -200,13 +200,20 @@ def compare_forced(left: list[dict], right: list[dict]) -> dict:
             agreed += 1
         for token in set(a) | set(b):
             if token in a and token in b:
-                worst = max(worst, abs(a[token] - b[token]))
+                delta = abs(a[token] - b[token])
+                worst = max(worst, delta)
+                total += delta
                 shared += 1
             else:
                 only_one += 1
+    # The mean alongside the max on purpose. Top-1 agreement over a few dozen positions
+    # moves in steps of 1/positions and reads as noise; the max is one worst-case token and
+    # is nearly as jumpy. The mean over every shared alternative is the smooth quantity, and
+    # a sweep needs one of those to show a trend at all.
     return {"positions": compared, "top1_agreement": agreed / compared,
-            "max_abs_logprob_delta": worst, "shared_tokens": shared,
-            "tokens_only_in_one": only_one}
+            "max_abs_logprob_delta": worst,
+            "mean_abs_logprob_delta": (total / shared) if shared else None,
+            "shared_tokens": shared, "tokens_only_in_one": only_one}
 
 
 def run_completion(reader: Reader, prompt: str, slot: int, predict: int) -> dict:

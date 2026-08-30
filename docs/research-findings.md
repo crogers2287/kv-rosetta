@@ -1215,3 +1215,70 @@ Early layers are nearly identical between fine-tunes and late layers are not. Th
 *partial-depth* reuse — take the foreign cache for the layers where it agrees and recompute
 only the layers where it does not — which would trade a fraction of the prefill for correctness
 rather than trading correctness for all of it. Untested, and it is the next thing worth running.
+
+---
+
+## 30. Partial-depth reuse: the lead §29 opened, and it does not pay
+
+§29 ended by proposing that since early layers agree between fine-tunes and late layers do
+not, a cache need not be used whole — take the foreign layers where they agree and recompute
+the rest. It was the most promising idea on the table. It does not work, and the shape of the
+failure is worth more than the idea was.
+
+`scripts/kvx_splice.py` builds hybrid state files: named layers from the foreign cache, every
+other layer from the target's own, spliced byte-for-byte after checking the two payloads are
+laid out identically field by field. Zero layers reproduces the target's own file and all 36
+reproduces the foreign one, so the sweep is anchored at both ends.
+
+Qwen2.5-3B base into Qwen2.5-3B-Instruct, 128 teacher-forced positions, scored against the
+target reading its own cache:
+
+| foreign layers | early end Δ | late end Δ | early as % of full | layers as % of stack |
+|---:|---:|---:|---:|---:|
+| 0 | 0.0000 | 0.0000 | 0% | 0% |
+| 2 | 0.0615 | 0.0704 | **23%** | **6%** |
+| 8 | 0.0869 | 0.1308 | 33% | 22% |
+| 16 | 0.1436 | 0.2023 | 55% | 44% |
+| 20 | 0.1445 | 0.2111 | 55% | 56% |
+| 28 | 0.2328 | 0.2544 | 88% | 78% |
+| 36 | 0.2637 | 0.2637 | 100% | 100% |
+
+Two readings, and the second is the fatal one.
+
+**Deep layers do cost more than shallow ones.** Taking foreign layers from the top of the stack
+is worse than taking the same number from the bottom, at every count — 0.153 against 0.090 at
+ten layers. So §29's depth reading was right about direction.
+
+**But there is no cheap subset.** Past the first few layers the cost tracks the layer count
+almost exactly (55% of the damage for 56% of the layers), and the first two layers alone cost
+23% of the total damage for 6% of the stack. The curve is *worse* than proportional, not
+better. A knee is what would have made this worth building, and there is no knee.
+
+### The entry cost is not simply "mixing"
+
+Two layers from anywhere cost 0.06–0.09, which looked like a fixed penalty for a cache of mixed
+provenance — something neither model would ever produce. A control says it is not that simple:
+
+| two foreign layers taken from | mean Δ |
+|---|---:|
+| bottom (0, 1) | 0.0615 |
+| **middle (17, 18)** | **0.0905** |
+| top (34, 35) | 0.0704 |
+| scattered (0, 17, 35) — three layers | 0.0925 |
+
+Position matters — the middle is the worst place to swap, not the ends — so it is not a
+constant. But every choice of two layers lands in the same band, and that band is already a
+quarter of the damage of swapping all thirty-six. Whatever the mechanism, the practical
+consequence stands: you cannot buy a small amount of foreign cache cheaply.
+
+### Where this leaves the goal
+
+Reusing a fraction *f* of the layers costs roughly *f* of the full penalty plus a substantial
+entry fee, and requires a runtime that can restore some layers and recompute others — which
+llama.cpp cannot do. A proportional benefit does not justify that, so this line is closed.
+
+Standing back, the three attempts now agree on one thing. §20 could not translate across
+geometries. §29 found the optimal same-geometry converter is the identity. §30 finds no
+subset of layers is cheap. All three fail for the same reason: **the difference between two
+models' caches is the target's own weight drift, and the source cache contains no information
+about it.** No function of the source recovers it, whether linear, per-layer, or partial.
