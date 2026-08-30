@@ -1,0 +1,24 @@
+{
+  "cold": " in late autumn and found their maps disagreed with the terrain by nearly two ki",
+  "rows": [
+    {
+      "variant": "raw 9B file",
+      "loaded": false,
+      "why": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restor"
+    },
+    {
+      "variant": "geometry-converted",
+      "loaded": true,
+      "n_restored": 512,
+      "cache_n": 508,
+      "matches": true,
+      "content": " in the plateau in the plateau in the plateau in the pl"
+    },
+    {
+      "variant": "27B own cache",
+      "loaded": true,
+      "cache_n": 508,
+      "matches": true
+    }
+  ]
+}

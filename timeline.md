@@ -2235,3 +2235,51 @@ conclusion**: the paper's method is correctly implemented now and reaches ~0.64 
 favourable within-family pair, against a gate that wants agreement at essentially every
 position. **Untested**: whether the 9B->tiel median holds up over its remaining six layers -
 only the first four are scored, and those are the ones that score best.
+
+## REQ-060 — The conversion layer works: a 9B cache the 27B will load
+
+The operator's plan: build a converter that reshapes heads and layers on the fly, make a KVX
+per geometry, and work backwards to the conversion layer. `kv_rosetta/geometry.py` is that
+converter, and this is it running against the two models.
+
+**Acceptance and quality are separate questions and this separates them.**
+
+| variant | loads | reused | output |
+|---|---|---:|---|
+| raw 9B file offered to the 27B | **no** — HTTP 400 | — | — |
+| **geometry-converted** | **yes** | **508 / 512** | degenerate |
+| 27B's own cache | yes | 508 / 512 | correct |
+
+**The conversion layer does its job.** REQ-057's rejection - `mismatched layer count (16
+instead of 8)` - is gone. A 9B cache reshaped by depth mapping into 16 layers of 4 heads is
+loaded by the 27B and its prefix reused, 508 of 512 tokens. That is the milestone: the file is
+*readable*, which it was not before, and readability is the precondition for measuring any map
+at all.
+
+**And it is not usable, exactly as expected.** The output:
+
+```
+27B's own       : " in late autumn and found their maps disagreed with the terrain by nea"
+geometry-converted: " in the plateau in the plateau in the plateau in the pl"
+```
+
+Degenerate repetition. A reshape moves values into the right slots without making them mean
+what the target expects, and this is what that looks like from the outside. Notably it is
+*not* the fluent-but-wrong failure of REQ-044 - a pure reshape collapses rather than
+hallucinating, which is at least a louder failure.
+
+### A vacuous comparison I wrote and have to own
+
+The harness reported `matches=True` for the converted run while the content plainly differed.
+The completion request omitted `n_probs`, so `completion_probabilities` was absent, `toks()`
+returned `[]` for both runs, and `[] == []` was compared. **A parity check that passed while
+comparing nothing** - the precise failure this project was built around, in my own test.
+
+The content strings are what the table above rests on. The `matches` field in that run's log
+is worthless and the retained record says so.
+
+Status: **measured once on this host** — one prompt, 512 tokens, depth-mapped conversion with
+no fitted map. **Proven by retained test**: the converter itself, including that every output
+value came from the input (981 offline tests). **What this shows**: geometry conversion is
+solved and the remaining obstacle is entirely representational. **What it does not show**: any
+quality claim - the fitted map on top of this reshape was not run here.
