@@ -2189,8 +2189,8 @@ had fewer training samples than features.
 
 | pair | k=1 keys/values | k=3 | k=6 |
 |---|---|---|---|
-| 9B -> 27B, 16 target layers | 0.536 / 0.469 | 0.580 / 0.496 | **0.585 / 0.502** |
-| 9B -> tiel, first 4 layers | 0.582 / 0.509 | 0.635 / 0.555 | **0.644 / 0.560** |
+| 9B -> 27B, all 16 target layers | 0.536 / 0.469 | 0.580 / 0.496 | **0.585 / 0.502** |
+| 9B -> tiel, all 10 target layers | 0.541 / 0.432 | 0.584 / 0.469 | **0.600 / 0.488** |
 | *paper, Qwen3 14B -> 32B* | *0.56 / 0.32* | — | *0.79 / 0.65* |
 
 **Single-layer reproduces the paper. Multi-layer does not.** Keys go 0.536 to 0.585 where the
@@ -2210,9 +2210,17 @@ That is a real difference from the paper's setting, not a bug.
 **Lineage** turned out to matter, but not enough. The GGUF metadata settles what I had assumed:
 `general.basename` is `ornith-1.5` for the 9B **and** for tiel, but `Qwen3.8-27B` for the 27B.
 So every earlier cross-model number in this project - REQ-044 and REQ-058 included - was
-measured **across lineages**, which is not the paper's setting. The within-family pair is
-9B -> tiel, and it is better by about 0.06 on both keys and values. Better, and nowhere near
-enough.
+measured **across lineages**, which is not the paper's setting.
+
+**And with all layers scored, lineage makes no difference whatsoever.** Within-family reaches
+0.600/0.488 at k=6; crossing lineages reaches 0.585/0.502. They are the same to within noise.
+
+An interim reading of this entry claimed within-family was better by 0.06. That was taken when
+only the first four target layers had been scored, and those are the layers that score best -
+the very depth effect described below. Reporting a median over the easiest third of the data
+was the mistake, and the full result withdraws it. **Two models sharing a lineage transfer no
+better than two that do not**, which makes the obstacle look less like relatedness and more
+like something every independently trained network has.
 
 ### The shape of the failure
 
