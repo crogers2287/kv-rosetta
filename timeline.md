@@ -2761,3 +2761,46 @@ Status: **measured once on this host** — §26's table, the determinism table a
 **Corrected**: REQ-067's "Vulkan is nondeterministic" narrowed to hybrid-on-Vulkan.
 **Refuted**: batch composition and flash attention as mechanisms. **Untested**: whether AMD
 Vulkan shows the same hybrid nondeterminism; whether it appears at other prompt lengths.
+
+---
+
+## REQ-069 — The nondeterminism isolated to one cell, and the vendor/API square completed
+
+Continuation of REQ-068 without stopping to ask.
+
+### Isolation
+
+REQ-068 narrowed the nondeterminism from "Vulkan" to "hybrid on Vulkan" but could not say
+whether it was Vulkan or simply not-CUDA. Two more measurements settle it:
+
+| model | CUDA (NVIDIA) | HIP (AMD) | Vulkan (NVIDIA) | Vulkan (AMD) |
+|---|---:|---:|---:|---:|
+| `qwen35` 27B, hybrid | 1 | 1 | **3** | **3** |
+| `qwen2` 3B, dense | — | — | 1 | 1 |
+
+(distinct outputs across 6 identical cold runs, temp 0, fixed seed, no cache)
+
+HIP with the hybrid model is deterministic, so it is not "everything except CUDA". Vulkan with
+a dense model is deterministic on both vendors, so it is not Vulkan generally. **The single
+nondeterministic cell is Vulkan x hybrid**, and two of AMD Vulkan's three output hashes are
+byte-identical to two of NVIDIA Vulkan's — the same reduction orderings on unrelated hardware,
+which points at the Vulkan recurrent-path kernels rather than a driver or a card.
+
+### Vendor and API separated
+
+| held fixed | varied | foreign-cache divergence | two-cold-runs floor |
+|---|---|---:|---:|
+| card (one RTX 3090) | API (CUDA <-> Vulkan) | 0.353 / 0.456 | 0.976 |
+| API (Vulkan) | vendor (NVIDIA <-> AMD) | 0.974 / 0.965 | 0.960 |
+
+Both at 2047/2048 reused, content and token ids matching in all four directions, top-1
+agreement 1.0 throughout. Crossing vendors costs about exactly what the vendors already differ
+by; crossing APIs on one card costs distinctly less than the APIs differ by.
+
+Every previous cross-backend result changed the card and the API together. These two do not,
+so the matrix is now closed on both axes independently.
+
+Status: **measured once on this host**, all six determinism cells and both gate runs.
+**Untested**: whether the Vulkan hybrid nondeterminism persists at other prompt lengths, and
+whether it affects a *restored* hybrid cache (moot in practice, since hybrid restore reuses
+nothing on an unpatched build).

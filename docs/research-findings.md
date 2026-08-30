@@ -864,15 +864,30 @@ flash attention the next candidate. Neither survived:
 | 4 slots, `kv_unified=true` (original) | 3 |
 | `--parallel 1` | 3 |
 | `--parallel 1 -fa on` | 3 |
-| **dense `qwen2` 3B, 4 slots** | **1** |
 
 The three configurations do not merely all fail — they produce the *same three output hashes*,
 so this is a small set of outcomes from a specific nondeterministic reduction rather than
-general noise. Swapping the model is the only change that removed it.
+general noise. Nothing about how the server is driven changed it.
 
-So the mechanism is the recurrent/hybrid path under the Vulkan backend, not slot scheduling,
-not flash attention, and not Vulkan in general. **§17's HIP <-> Vulkan evidence is not
-threatened**: it used a dense model, which is the case measured deterministic here.
+### Isolated: it is Vulkan x hybrid, and nothing else
+
+Varying the backend and the model instead, all at `ca3d5a3e1`, 6 identical cold runs each:
+
+| model | CUDA (NVIDIA) | HIP (AMD) | Vulkan (NVIDIA) | Vulkan (AMD) |
+|---|---:|---:|---:|---:|
+| `qwen35` 27B, hybrid | 1 | 1 | **3** | **3** |
+| `qwen2` 3B, dense | — | — | 1 | 1 |
+
+Both vendor-native APIs are deterministic with the hybrid model. Vulkan is nondeterministic
+with it **on both vendors**, and deterministic with a dense model **on both vendors**. Two of
+AMD Vulkan's three output hashes are byte-identical to two of NVIDIA Vulkan's, so the same
+small set of reduction orderings appears on unrelated hardware — which points at the Vulkan
+recurrent-path kernels rather than at any driver or card.
+
+So the mechanism is the recurrent/hybrid path under the Vulkan backend specifically: not slot
+scheduling, not flash attention, not Vulkan in general, and not "everything except CUDA".
+**§17's HIP <-> Vulkan evidence is not threatened**: it used a dense model, the case measured
+deterministic here on both vendors.
 
 The methodological point survives the correction intact, and is the durable lesson: text
 identity is only evidence when the configuration producing it has been shown to be
@@ -920,7 +935,7 @@ independent properties, and the first one holds here while the second does not.
 
 ---
 
-## 26. CUDA <-> Vulkan on one NVIDIA card: the vendor/API matrix closes
+## 26. The vendor/API matrix closes: API isolated, vendor isolated
 
 The cell that was missing. §17 proved HIP <-> Vulkan (API varies, vendor fixed to AMD) and
 CUDA <-> ROCm (both vary). Neither isolated the API: no result held the *card* fixed and changed
@@ -957,3 +972,25 @@ comparing them answers a question nobody asked. The retained harness compares th
 against the *source backend's* run and reports the decomposition above, and under that
 reference both directions match exactly. The lesson is not that the manual check was sloppy but
 that "different from what?" is the whole content of a claim like this one.
+
+### Same API, different vendor
+
+The complementary cell, run with the same binary so only the vendor changes:
+
+| direction | reused | content | tokens |
+|---|---|---|---|
+| Vulkan/NVIDIA -> Vulkan/AMD | 2047/2048 (100.0%) | match | match |
+| Vulkan/AMD -> Vulkan/NVIDIA | 2047/2048 (100.0%) | match | match |
+
+| comparison (max abs logprob delta) | NV->AMD | AMD->NV |
+|---|---:|---:|
+| own restore vs own cold prefill | 0.174 | 0.077 |
+| foreign cache vs own cache | 0.974 | 0.965 |
+| two cold runs, different backends, no cache | 0.960 | 0.960 |
+
+Top-1 agreement 1.0 throughout. Together with §26's first table the two variables are now
+separated: **holding the card fixed and changing the API costs 0.353-0.456 against a 0.976
+floor; holding the API fixed and changing the vendor costs 0.965-0.974 against a 0.960 floor.**
+Crossing vendors costs about exactly what the vendors already differ by; crossing APIs on one
+card costs distinctly less than the APIs differ by. Neither degrades top-1 agreement or the
+emitted tokens at 2,048 tokens.
