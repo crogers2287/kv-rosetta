@@ -384,3 +384,81 @@ class StoreLookupTest(SidecarTestCase):
         self.assertTrue(result["restored"])
         self.assertEqual((result["cache_n"], result["prompt_n"]), (3, 1))
         self.assertEqual(result["mode"], "admitted_direct_restore")
+
+
+class RequirementGateTest(unittest.TestCase):
+    """The sidecar asks what the runtime can do before writing to a slot.
+
+    Without this, a hybrid artifact restored into a build lacking the context-checkpoint patch
+    is accepted and reuses nothing, reporting the same n_restored as one that reuses
+    everything. The caller sees a slow response and no error at all.
+    """
+
+    def sidecar_with(self, manifest_extra, props):
+        """A sidecar whose store holds one artifact and whose adapter reports `props`."""
+        import types
+        from kv_rosetta.daemon import server as mod
+
+        found = types.SimpleNamespace(
+            digest="d" * 64,
+            manifest={"prompt_token_ids": [1, 2, 3], "runtime_model": "m", **manifest_extra})
+
+        class Adapter:
+            def __init__(self, *a, **k):
+                pass
+
+            def props(self, refresh=False):
+                if props is None:
+                    raise RuntimeError("server did not answer")
+                return props
+
+        sidecar = mod.Sidecar.__new__(mod.Sidecar)
+        sidecar.upstream_base = lambda model: "http://127.0.0.1:1/upstream/m"
+        sidecar.find_artifact = lambda fp, model: found
+        sidecar.store = lambda: types.SimpleNamespace(root="/nonexistent")
+        return sidecar, mod, Adapter
+
+    def ensure(self, manifest_extra, props):
+        from unittest import mock
+        sidecar, mod, Adapter = self.sidecar_with(manifest_extra, props)
+        with mock.patch("kv_rosetta.adapters.llamacpp_http.LlamaCppHTTPAdapter", Adapter):
+            return sidecar.ensure("a" * 64, "m")
+
+    def test_a_runtime_missing_the_patch_is_refused_before_any_restore(self):
+        from kv_rosetta.daemon.server import Fallback
+        needs = {"sequence_state_version": 3, "needs_checkpoint_persistence": True,
+                 "checkpoint_format": "sckp/1"}
+        with self.assertRaises(Fallback) as caught:
+            self.ensure({"requirements": needs}, {"sequence_state_version": 3})
+        self.assertIn("252 of 256", str(caught.exception))
+
+    def test_a_runtime_that_will_not_answer_props_is_refused_rather_than_trusted(self):
+        from kv_rosetta.daemon.server import Fallback
+        needs = {"sequence_state_version": 3, "needs_checkpoint_persistence": True}
+        with self.assertRaises(Fallback) as caught:
+            self.ensure({"requirements": needs}, None)
+        self.assertIn("restore blind", str(caught.exception))
+
+    def test_an_artifact_with_no_recorded_requirements_does_not_consult_the_runtime(self):
+        """Artifacts written before this field existed must not become unrestorable.
+
+        Asserted by making props() fail if it is reached at all, rather than by inspecting a
+        later error - the restore itself goes on to fail here for unrelated reasons and its
+        message would prove nothing either way.
+        """
+        from unittest import mock
+        called = []
+
+        class Adapter:
+            def __init__(self, *a, **k):
+                pass
+
+            def props(self, refresh=False):
+                called.append(True)
+                raise AssertionError("props must not be consulted with no requirements")
+
+        sidecar, mod, _ = self.sidecar_with({}, {})
+        with mock.patch("kv_rosetta.adapters.llamacpp_http.LlamaCppHTTPAdapter", Adapter):
+            with self.assertRaises(Exception):
+                sidecar.ensure("a" * 64, "m")
+        self.assertEqual(called, [])

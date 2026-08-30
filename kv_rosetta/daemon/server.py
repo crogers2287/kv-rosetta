@@ -188,6 +188,22 @@ class Sidecar:
             raise Fallback(
                 f"artifact {found.digest[:12]} records no token ids, so reuse cannot be "
                 f"verified; prefill natively rather than trusting an unverified restore")
+        # Ask the runtime what it can do before writing anything into a slot. A build
+        # without the context-checkpoint patch accepts a hybrid restore and reuses none of
+        # it, reporting the same n_restored as one that reuses everything - so a silent
+        # uselessness becomes an explicit fallback here instead of a mystery downstream.
+        declared = found.manifest.get("requirements")
+        if declared:
+            from kv_rosetta.requirements import Requirements, check
+            try:
+                props = adapter.props()
+            except Exception as exc:              # a runtime that will not answer /props
+                raise Fallback(f"could not read runtime capabilities from {model!r}: {exc}; "
+                               f"prefill natively rather than restore blind") from exc
+            problems = check(Requirements(**declared), props)
+            if problems:
+                raise Fallback(f"artifact {found.digest[:12]} cannot be restored into "
+                               f"{model!r}: {'; '.join(problems)}")
         report = AdmittedPath(adapter, self.store()).restore(
             found.digest, model=model, token_ids=token_ids, slot=slot)
         if not report.ok:
