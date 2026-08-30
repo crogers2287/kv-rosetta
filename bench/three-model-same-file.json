@@ -1,0 +1,83 @@
+[
+ {
+  "source": "ornith-9b",
+  "target": "ornith-9b",
+  "same_model": true,
+  "source_bytes": 122174928,
+  "restore": "accepted",
+  "n_restored": 512,
+  "cache_n": 508,
+  "matches_target_own_output": true,
+  "content": " in late autumn and found their maps disagreed with the terr"
+ },
+ {
+  "source": "qwen38-27b",
+  "target": "ornith-9b",
+  "same_model": false,
+  "source_bytes": 347357968,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "tiel-35b",
+  "target": "ornith-9b",
+  "same_model": false,
+  "source_bytes": 142229280,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "ornith-9b",
+  "target": "qwen38-27b",
+  "same_model": false,
+  "source_bytes": 122174928,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "qwen38-27b",
+  "target": "qwen38-27b",
+  "same_model": true,
+  "source_bytes": 347357968,
+  "restore": "accepted",
+  "n_restored": 512,
+  "cache_n": 508,
+  "matches_target_own_output": true,
+  "content": " in late autumn and found their maps disagreed with the terr"
+ },
+ {
+  "source": "tiel-35b",
+  "target": "qwen38-27b",
+  "same_model": false,
+  "source_bytes": 142229280,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "ornith-9b",
+  "target": "tiel-35b",
+  "same_model": false,
+  "source_bytes": 122174928,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "qwen38-27b",
+  "target": "tiel-35b",
+  "same_model": false,
+  "source_bytes": 347357968,
+  "restore": "rejected",
+  "error": "POST /slots/0?action=restore -> HTTP 400: {\"error\":{\"code\":400,\"message\":\"Unable to restore slot: No available"
+ },
+ {
+  "source": "tiel-35b",
+  "target": "tiel-35b",
+  "same_model": true,
+  "source_bytes": 142229280,
+  "restore": "accepted",
+  "n_restored": 512,
+  "cache_n": 508,
+  "matches_target_own_output": true,
+  "content": " in late autumn and found their maps disagreed with the terr"
+ }
+]

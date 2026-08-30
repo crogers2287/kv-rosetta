@@ -2059,3 +2059,61 @@ where the numbers are, not somewhere else.
 Status: **measured once on this host** — one prompt, 32,000 tokens, one non-hybrid model, both
 builds at one revision, identity controls exact. **Untested**: CUDA with a hybrid model, and
 Vulkan on NVIDIA, which would close the vendor/API matrix entirely.
+
+## REQ-057 — The same KVX file across Ornith-9B, Qwen3.8-27B and Ornith-35B
+
+The operator's question, answered directly: offer one artifact to three models and see what
+happens. Every pairing, both same and cross, 512 tokens each.
+
+| | attn layers | recurrent | KV heads | head_dim | d_inner |
+|---|---:|---:|---:|---:|---:|
+| Ornith-1.5-9B | 8 | 24 | 4 | 256 | 4096 |
+| Qwen3.8-27B | 16 | 48 | 4 | 256 | 6144 |
+| Ornith-1.5-35B (tiel) | 10 | 30 | 2 | 256 | 4096 |
+
+**All three share a tokenizer** - identical token ids for the same text - and the 9B and 27B
+share attention geometry *exactly*: 4 KV heads of 256, same rope base and rotary width. Their
+per-token attention rows are the same size. Only the layer count differs.
+
+| source \ target | ornith-9b | qwen38-27b | tiel-35b |
+|---|---|---|---|
+| **ornith-9b** | reused 508/512, output matches | **rejected** | **rejected** |
+| **qwen38-27b** | **rejected** | reused 508/512, output matches | **rejected** |
+| **tiel-35b** | **rejected** | **rejected** | reused 508/512, output matches |
+
+**Six of six cross-model restores rejected. Three of three same-model restores exact. No
+dangerous cases** - nothing was accepted, reused, and then produced the wrong model's output.
+
+llama.cpp refuses them itself:
+
+```
+Unable to restore slot: No available space in KV cache or invalid slot save file
+```
+
+The artifact sizes make the reason plain even where the geometry matches: 122 MB, 347 MB and
+142 MB for the same 512 tokens. Identical per-token rows do not help when one model has eight
+attention layers and another sixteen - the body is a different length and the reader will not
+take it.
+
+### What this settles, and what it does not
+
+It settles the literal question. **The same file is not usable across these models, and the
+runtime says so rather than producing a wrong answer.** That is the safe failure, and it is
+better than the alternative this project keeps guarding against.
+
+It does not say translation is impossible - REQ-044 already measured that separately and the
+gate rejected it. What it adds is that no *unmodified* artifact crosses, so any cross-model
+path must go through the mapper and the gate, never through a direct restore.
+
+**An unmeasured hazard, recorded rather than assumed away.** The server log shows
+`restored 1 context checkpoint(s)` from a foreign file *before* rejecting its main body. The
+checkpoint appendix carries no model identity, so it is loaded first and the state restore
+fails after. Whether a rejected restore leaves those foreign checkpoints in the slot was not
+tested here - the harness skipped the completion once the restore returned 400. If they
+persist, a later completion could resume from another model's recurrent state, which is
+exactly the silent-wrong case. **This needs a test before any claim of safety on the rejection
+path.**
+
+Status: **measured once on this host** — 3 models, 9 pairings, 512 tokens, same tokenizer
+throughout, same patched build. **Untested**: whether a failed restore leaves foreign
+checkpoints resident, and every pairing at longer prefixes.
