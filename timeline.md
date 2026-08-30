@@ -1221,7 +1221,7 @@ are wrong for a hybrid twice over — the body continues into recurrent state, a
 layer carries attention KV. Hybrid and recurrent architectures are refused by name now.
 
 Status: **proven by retained test** — the arithmetic, both models' measured sizes as
-constants, and every refusal (10/10 guards mutation-checked; 762 offline tests). **Measured
+constants, and every refusal (10/10 guards mutation-checked; 759 offline tests). **Measured
 once on this host**: the six artifacts above. **Untested**: hybrid sizing, which needs a
 decoded hybrid artifact to learn which layers carry attention KV; quantised KV types, which
 are computed but never compared against a file written with one.
