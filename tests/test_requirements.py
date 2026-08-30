@@ -118,3 +118,42 @@ class RequireTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeIdentityTest(unittest.TestCase):
+    """Model identity comes from the caller, because llama.cpp does not report one.
+
+    Running the pipeline end to end refused a restore that then succeeded with 508 of 512
+    tokens reused: the artifact recorded an identity, /props carries none, and the check read
+    that as "cannot be shown to match". A false refusal costs a prefill rather than a wrong
+    answer, but it is still wrong.
+    """
+
+    PATCHED = {"sequence_state_version": 3, "slot_checkpoint_persistence": True,
+               "slot_checkpoint_format": "sckp/1"}
+
+    def artifact(self):
+        return for_artifact(hybrid=True, checkpoints=1, sequence_state_version=3,
+                            model_identity="a" * 64)
+
+    def test_a_matching_caller_identity_satisfies_the_check(self):
+        self.assertEqual(check(self.artifact(), self.PATCHED, runtime_identity="a" * 64), [])
+
+    def test_a_mismatched_caller_identity_is_still_refused(self):
+        problems = check(self.artifact(), self.PATCHED, runtime_identity="b" * 64)
+        self.assertTrue(any("written from" in p for p in problems))
+
+    def test_no_identity_from_anywhere_is_refused_not_waved_through(self):
+        """Fail closed: an identity that cannot be established is not one that matches."""
+        problems = check(self.artifact(), self.PATCHED)
+        self.assertTrue(any("reports no model identity" in p for p in problems))
+
+    def test_props_are_still_read_when_a_runtime_does_report_one(self):
+        self.assertEqual(
+            check(self.artifact(), {**self.PATCHED, "model_identity": "a" * 64}), [])
+
+    def test_the_caller_identity_wins_over_props(self):
+        """The adapter derives it from the weights file; props is the weaker source."""
+        problems = check(self.artifact(), {**self.PATCHED, "model_identity": "b" * 64},
+                         runtime_identity="a" * 64)
+        self.assertEqual(problems, [])

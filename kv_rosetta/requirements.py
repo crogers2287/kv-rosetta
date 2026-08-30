@@ -94,13 +94,19 @@ def for_artifact(*, hybrid: bool, checkpoints: int, sequence_state_version: int,
 
 
 def check(requirements: Requirements, props: dict[str, Any], *,
-          model_identity: str = "") -> list[str]:
+          model_identity: str = "", runtime_identity: str = "") -> list[str]:
     """Every reason this artifact must not be restored here. Empty means it may be.
 
     `props` is the target server's own `/props`. A property the artifact requires and the
     runtime does not report is a failure: a build that does not advertise the
     checkpoint-persistence capability is exactly the build that restores hybrid state and
     reuses none of it.
+
+    `runtime_identity` is the loaded model's identity as the **caller** derived it, because
+    llama.cpp does not put one in `/props` - it is computed from the weights file. Running
+    this end to end without it refused a restore that then succeeded with 508 of 512 tokens
+    reused, which is a false refusal: costly in the fail-closed direction rather than the
+    dangerous one, but wrong either way.
     """
     problems = []
     if requirements.sequence_state_version is not None:
@@ -130,7 +136,8 @@ def check(requirements: Requirements, props: dict[str, Any], *,
                                 f"{requirements.checkpoint_format}, runtime reads {found!r}")
     wanted = model_identity or requirements.model_identity
     if wanted:
-        found = props.get("model_identity") or props.get("l0_sha256") or ""
+        found = (runtime_identity or props.get("model_identity")
+                 or props.get("l0_sha256") or "")
         if not found:
             problems.append("the runtime reports no model identity, so this cannot be shown "
                             "to be the model the artifact was written from")
@@ -149,8 +156,9 @@ def check(requirements: Requirements, props: dict[str, Any], *,
 
 
 def require(requirements: Requirements, props: dict[str, Any], *,
-            model_identity: str = "") -> None:
+            model_identity: str = "", runtime_identity: str = "") -> None:
     """check(), as a refusal. Nothing is written to a slot before this passes."""
-    problems = check(requirements, props, model_identity=model_identity)
+    problems = check(requirements, props, model_identity=model_identity,
+                     runtime_identity=runtime_identity)
     if problems:
         raise RequirementError("; ".join(problems))

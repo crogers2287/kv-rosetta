@@ -200,7 +200,14 @@ class Sidecar:
             except Exception as exc:              # a runtime that will not answer /props
                 raise Fallback(f"could not read runtime capabilities from {model!r}: {exc}; "
                                f"prefill natively rather than restore blind") from exc
-            problems = check(Requirements(**declared), props)
+            # llama.cpp puts no model identity in /props; the adapter derives it from the
+            # weights file, so it has to be supplied rather than looked up.
+            try:
+                runtime_identity = adapter.model_identity(model).weights_sha256
+            except Exception:                     # identity is checked, not assumed present
+                runtime_identity = ""
+            problems = check(Requirements(**declared), props,
+                             runtime_identity=runtime_identity)
             if problems:
                 raise Fallback(f"artifact {found.digest[:12]} cannot be restored into "
                                f"{model!r}: {'; '.join(problems)}")
