@@ -136,7 +136,7 @@ class Content:
         return cls(tokenizer_id=tokenizer, entries=tuple(Entry.from_dict(e) for e in raw))
 
 
-def expected_reuse(architecture: str, *,
+def expected_reuse(architecture: str, *, sliding_window: bool = False,
                    checkpoint_persistence: bool | None = None) -> tuple[bool | None, str]:
     """Will an attachment for this architecture, on this runtime, actually be reused?
 
@@ -155,11 +155,19 @@ def expected_reuse(architecture: str, *,
     if not architecture:
         return None, "no architecture recorded"
     native, reason = supports_prefix_reuse(architecture)
+    if sliding_window and native:
+        # Not hybrid, and still unable to reuse without checkpoints. Measured on gemma4:
+        # a stock build restored 586 cells then reused 0 of 583 tokens; the same model on a
+        # checkpoint-persisting build reused 578. Treating "not hybrid" as "reuses fine"
+        # was the second version of this prediction to be wrong.
+        native = False
+        reason = (f"{architecture} keeps sliding-window attention state, which a slot save "
+                  f"does not carry unless the runtime persists checkpoints")
     if native:
         return True, reason
     if checkpoint_persistence is True:
-        return True, (f"{architecture} is hybrid, but this runtime persists context "
-                      f"checkpoints across slot save and restore")
+        return True, (f"{architecture} needs context checkpoints, and this runtime "
+                      f"persists them across slot save and restore")
     if checkpoint_persistence is False:
         return False, reason
     return None, (f"{reason} - and whether this runtime persists checkpoints was not "
@@ -305,7 +313,7 @@ class SharedDrive:
 
     def attach(self, content_digest: str, model: ModelIdentity, abi: CacheABIIdentity,
                state: Path | str, *, token_count: int | None = None,
-               architecture: str = "",
+               architecture: str = "", sliding_window: bool = False,
                checkpoint_persistence: bool | None = None) -> Path:
         """Deposit this model's cache for this content.
 
@@ -333,13 +341,14 @@ class SharedDrive:
         # never told a hybrid attachment is worthless on a build where it is a 3.6x win.
         arch = architecture or model.architecture
         expects, reason = expected_reuse(
-            arch, checkpoint_persistence=checkpoint_persistence)
+            arch, sliding_window=sliding_window,
+            checkpoint_persistence=checkpoint_persistence)
         meta = self._meta_path(content_digest, key)
         meta_tmp = meta.with_name(meta.name + ".tmp")
         meta_tmp.write_text(json.dumps(
             {"architecture": arch, "expects_reuse": expects, "reason": reason,
              "checkpoint_persistence": checkpoint_persistence,
-             "tokens": token_count}, indent=1))
+             "sliding_window": sliding_window, "tokens": token_count}, indent=1))
         os.replace(meta_tmp, meta)
         return dest
 

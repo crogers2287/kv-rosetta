@@ -1496,3 +1496,66 @@ the three cases are distinct rather than collapsed into two:
 The last row is the one worth keeping. The same model reused 0 of 676 on one build and 672 of
 676 on another, so without knowing the build neither answer is available, and reporting "no"
 would have told an operator to throw away a 3.7x win.
+
+---
+
+## 34. Gemma and a remote 9B: two different reasons a cache needs checkpoints
+
+Two models the drive had never seen. `Qwythos-9B-Claude-Mythos` came from another host
+(Gary, over Tailscale) and declares `qwen35`, 32 layers, 16 heads, 4 KV heads, head_dim 256 —
+**the same KV geometry as the local Qwen3.5-4B**, despite being a different model. `gemma-4-12b`
+is a different family entirely: 48 layers, a *per-layer array* of KV head counts, head_dim 512,
+and sliding-window attention with its own window of 1024, `key_length_swa` 256 and
+`rope_freq_base_swa` 10000.
+
+Measured with `scripts/drive_payoff.py` at 7,363 tokens, on the same drive code, against a
+stock build and a checkpoint-persisting one:
+
+| model | arch | build | cache_n | prefill ms | speedup |
+|---|---|---|---:|---|---:|
+| gemma-4-12b | `gemma4` (SWA) | stock | **0** | 2046 → 1950 | 1.05x |
+| gemma-4-12b | `gemma4` (SWA) | **patched** | **7363** | 2028 → **669** | **3.03x** |
+| Qwythos-9B | `qwen35` (hybrid) | stock | **0** | 1557 → 1501 | 1.04x |
+| Qwythos-9B | `qwen35` (hybrid) | **patched** | **7362** | 1537 → **80** | **19.3x** |
+
+Both restore cleanly on the stock build — `n_restored` 7,371 and 7,369 — and reuse nothing.
+The same rule as §25, arriving for a third and fourth model, one of them remote.
+
+### The prediction was wrong for a new reason, and the tool caught it
+
+§33 taught the drive that a **hybrid** architecture needs checkpoint persistence. Gemma is not
+hybrid: `supports_prefix_reuse("gemma4")` returns `True`, so the drive predicted it would pay on
+a stock build, and it reused zero of 7,363 tokens.
+
+The cause is sliding-window attention. A window is state a slot save does not carry, and
+nothing in the architecture *name* says so — it is a metadata key,
+`gemma4.attention.sliding_window`. `uses_sliding_window` now reads it, and `expected_reuse`
+takes it alongside the hybrid flag:
+
+| model property | runtime persists checkpoints | verdict |
+|---|---|---|
+| plain dense | anything | pays |
+| hybrid **or** sliding-window | yes | pays |
+| hybrid **or** sliding-window | no | does not pay |
+| hybrid **or** sliding-window | unrecorded | unknown |
+
+This is the second time a prediction built on architecture labels has been wrong, and the second
+time the fix was to name a *runtime* requirement rather than a model category. The pattern is
+worth stating: **"which models can reuse a cache" is not a property of the model.**
+
+### Reuse is not speedup
+
+An earlier run of Gemma at 578 tokens reused all 578 and was **slower** — 383ms cold against
+417ms warm, 0.92x. Restoring a 48-layer, head_dim-512 cache costs more than prefilling 578
+tokens. At 7,363 tokens the same model gains 3.03x. Qwythos, with a quarter of Gemma's per-token
+cache, reaches 19.3x on the same prompt.
+
+So `cache_n > 0` answers "was the cache used", not "was it worth using", and the crossover
+depends on the model's cache width. The tool reports both because one of them alone would have
+recorded the 578-token Gemma run as a success.
+
+### One tool correction
+
+The agreement check first scored an *unknown* prediction against a measured `False` as a
+disagreement, which flagged every stock-build run as a contradiction. Unknown is not wrong. Only
+a prediction that was actually made and then falsified is reported.

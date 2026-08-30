@@ -1,0 +1,20 @@
+{
+ "label": "gemma-patched",
+ "architecture": "gemma4",
+ "binary": "/home/crogers2287/llama.cpp-kvx-patched/build/bin/llama-server",
+ "sliding_window": true,
+ "checkpoint_persistence": true,
+ "sckp_appendix_present": true,
+ "saved_cells": 7371,
+ "saved_bytes": 1127557496,
+ "tokens": 7368,
+ "cold_ms": 2028.181,
+ "warm_ms": 669.001,
+ "cache_n": 7363,
+ "prefilled_after_restore": 5,
+ "speedup": 3.0316561559698716,
+ "predicted_pays": true,
+ "prediction_reason": "gemma4 needs context checkpoints, and this runtime persists them across slot save and restore",
+ "measured_pays": true,
+ "prediction_agrees": true
+}

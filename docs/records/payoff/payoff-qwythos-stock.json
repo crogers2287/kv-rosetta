@@ -1,0 +1,20 @@
+{
+ "label": "qwythos-stock",
+ "architecture": "qwen35",
+ "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
+ "sliding_window": false,
+ "checkpoint_persistence": null,
+ "sckp_appendix_present": false,
+ "saved_cells": 7369,
+ "saved_bytes": 294365500,
+ "tokens": 7366,
+ "cold_ms": 1557.452,
+ "warm_ms": 1500.981,
+ "cache_n": 0,
+ "prefilled_after_restore": 7366,
+ "speedup": 1.037622728069176,
+ "predicted_pays": null,
+ "prediction_reason": "qwen35 is a hybrid attention+recurrent architecture: it resumes from a context checkpoint, and this runtime's slot save does not persist checkpoints, so a restored cache reuses nothing - and whether this runtime persists checkpoints was not recorded, so reuse is unknown rather than absent",
+ "measured_pays": false,
+ "prediction_agrees": false
+}

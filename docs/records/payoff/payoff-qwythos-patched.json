@@ -1,0 +1,20 @@
+{
+ "label": "qwythos-patched",
+ "architecture": "qwen35",
+ "binary": "/home/crogers2287/llama.cpp-kvx-patched/build/bin/llama-server",
+ "sliding_window": false,
+ "checkpoint_persistence": true,
+ "sckp_appendix_present": true,
+ "saved_cells": 7369,
+ "saved_bytes": 399748688,
+ "tokens": 7366,
+ "cold_ms": 1536.826,
+ "warm_ms": 79.642,
+ "cache_n": 7362,
+ "prefilled_after_restore": 4,
+ "speedup": 19.296677632405014,
+ "predicted_pays": true,
+ "prediction_reason": "qwen35 needs context checkpoints, and this runtime persists them across slot save and restore",
+ "measured_pays": true,
+ "prediction_agrees": true
+}

@@ -223,6 +223,23 @@ def architecture_exhaustive(path: Path | str) -> str:
     return read_string_key(path, "general.architecture", exhaustive=True)
 
 
+def uses_sliding_window(path: Path | str) -> bool:
+    """Does this model keep sliding-window attention state?
+
+    Read rather than inferred from the architecture name. A sliding-window model is not
+    "hybrid" by any label in this module, and it still cannot reuse a restored prefix
+    unless the runtime persists checkpoints: measured on gemma4-12b, a stock build restored
+    586 cells and then reused 0 of 583 tokens, while the same model on a
+    checkpoint-persisting build reused 578.
+    """
+    md = read_metadata(path)
+    arch = md.get("general.architecture")
+    if not arch:
+        return False
+    window = md.get(f"{arch}.attention.sliding_window")
+    return bool(window)
+
+
 def supports_prefix_reuse(arch: str) -> tuple[bool, str]:
     """Whether a restored cache of this architecture can be reused for a prompt prefix.
 

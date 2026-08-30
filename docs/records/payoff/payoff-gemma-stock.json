@@ -1,0 +1,20 @@
+{
+ "label": "gemma-stock",
+ "architecture": "gemma4",
+ "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
+ "sliding_window": true,
+ "checkpoint_persistence": null,
+ "sckp_appendix_present": false,
+ "saved_cells": 7371,
+ "saved_bytes": 456442220,
+ "tokens": 7368,
+ "cold_ms": 2046.243,
+ "warm_ms": 1950.412,
+ "cache_n": 0,
+ "prefilled_after_restore": 7368,
+ "speedup": 1.0491337214906389,
+ "predicted_pays": null,
+ "prediction_reason": "gemma4 keeps sliding-window attention state, which a slot save does not carry unless the runtime persists checkpoints - and whether this runtime persists checkpoints was not recorded, so reuse is unknown rather than absent",
+ "measured_pays": false,
+ "prediction_agrees": false
+}

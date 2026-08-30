@@ -355,12 +355,19 @@ class AttachmentsReportWhetherTheyPay(unittest.TestCase):
         self.state = Path(tempfile.mkdtemp()) / "s.state"
         self.state.write_bytes(b"qsgg" + b"\x00" * 64)
 
-    def _attach(self, arch, persistence=None):
+    def _attach(self, arch, persistence=None, sliding_window=False):
         model = ModelIdentity(architecture=arch, weights_sha256=arch.ljust(64, "0"),
                               tokenizer_sha256="b" * 64, chat_template_sha256="c" * 64)
         self.drive.attach(self.digest, model, _abi(), self.state, architecture=arch,
+                          sliding_window=sliding_window,
                           checkpoint_persistence=persistence)
         return model
+
+    def test_a_sliding_window_attachment_is_not_promised_on_a_stock_runtime(self):
+        self._attach("gemma4", persistence=False, sliding_window=True)
+        info = self.drive.describe(self.digest)[0]
+        self.assertFalse(info.pays)
+        self.assertIn("sliding-window", info.reason)
 
     def test_a_dense_architecture_is_recorded_as_paying(self):
         self._attach("qwen2")
@@ -445,3 +452,22 @@ class ReuseExpectation(unittest.TestCase):
 
     def test_no_architecture_yields_unknown(self):
         self.assertIsNone(expected_reuse("")[0])
+
+    def test_a_sliding_window_model_also_needs_checkpoints(self):
+        # gemma4 is not hybrid and supports_prefix_reuse says so, yet on a stock build it
+        # restored 586 cells and reused 0 of 583 tokens. On a checkpoint-persisting build
+        # it reused 578. "Not hybrid" was the second version of this prediction to be wrong.
+        self.assertIsNone(expected_reuse("gemma4", sliding_window=True)[0])
+        self.assertIs(expected_reuse("gemma4", sliding_window=True,
+                                     checkpoint_persistence=False)[0], False)
+        self.assertIs(expected_reuse("gemma4", sliding_window=True,
+                                     checkpoint_persistence=True)[0], True)
+
+    def test_the_sliding_window_reason_names_the_cause(self):
+        _, reason = expected_reuse("gemma4", sliding_window=True,
+                                   checkpoint_persistence=False)
+        self.assertIn("sliding-window", reason)
+
+    def test_a_plain_dense_model_is_unaffected_by_the_new_rule(self):
+        # Without a sliding window the old answer must not change.
+        self.assertTrue(expected_reuse("qwen2", sliding_window=False)[0])
