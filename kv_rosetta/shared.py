@@ -136,6 +136,36 @@ class Content:
         return cls(tokenizer_id=tokenizer, entries=tuple(Entry.from_dict(e) for e in raw))
 
 
+def expected_reuse(architecture: str, *,
+                   checkpoint_persistence: bool | None = None) -> tuple[bool | None, str]:
+    """Will an attachment for this architecture, on this runtime, actually be reused?
+
+    Architecture alone is not enough, and asserting it from the architecture alone was a
+    real bug here: a hybrid model was reported as never paying, while the same model on a
+    build carrying upstream PR #26004 reused 672 of 676 tokens and cut a prefill from 788ms
+    to 218ms. The refusal reason even gave it away - "this runtime's slot save does not
+    persist checkpoints" is a statement about the runtime, made from the model.
+
+    A hybrid model resumes from a context checkpoint. Whether that checkpoint survives a
+    slot save is a property of the *build*, which advertises it as
+    `slot_checkpoint_persistence` in /props. So both facts are required, and when the
+    runtime's answer is unknown the result is unknown rather than optimistic.
+    """
+    from .gguf import supports_prefix_reuse
+    if not architecture:
+        return None, "no architecture recorded"
+    native, reason = supports_prefix_reuse(architecture)
+    if native:
+        return True, reason
+    if checkpoint_persistence is True:
+        return True, (f"{architecture} is hybrid, but this runtime persists context "
+                      f"checkpoints across slot save and restore")
+    if checkpoint_persistence is False:
+        return False, reason
+    return None, (f"{reason} - and whether this runtime persists checkpoints was not "
+                  f"recorded, so reuse is unknown rather than absent")
+
+
 def attachment_key(model: ModelIdentity, abi: CacheABIIdentity) -> str:
     """Which model, and which cache layout, an attachment belongs to.
 
@@ -175,6 +205,7 @@ class AttachmentInfo:
     architecture: str = ""
     expects_reuse: bool | None = None
     reason: str = ""
+    checkpoint_persistence: bool | None = None
 
     @property
     def pays(self) -> bool:
@@ -262,16 +293,20 @@ class SharedDrive:
                 except (OSError, ValueError):
                     meta = {}      # unreadable metadata is unknown, never assumed good
             expects = meta.get("expects_reuse")
+            persistence = meta.get("checkpoint_persistence")
             out.append(AttachmentInfo(
                 key=key, path=self._attachment_path(content_digest, key),
                 architecture=str(meta.get("architecture", "")),
                 expects_reuse=expects if isinstance(expects, bool) else None,
-                reason=str(meta.get("reason", ""))))
+                reason=str(meta.get("reason", "")),
+                checkpoint_persistence=(persistence
+                                        if isinstance(persistence, bool) else None)))
         return tuple(out)
 
     def attach(self, content_digest: str, model: ModelIdentity, abi: CacheABIIdentity,
                state: Path | str, *, token_count: int | None = None,
-               architecture: str = "") -> Path:
+               architecture: str = "",
+               checkpoint_persistence: bool | None = None) -> Path:
         """Deposit this model's cache for this content.
 
         `token_count` is checked against the content when supplied, because a state file
@@ -292,18 +327,19 @@ class SharedDrive:
         shutil.copyfile(source, tmp)
         os.replace(tmp, dest)
 
-        # Record whether this architecture can reuse a restored prefix at all. Known before
-        # the cache is ever built, so a caller never has to discover it by measuring a
-        # cache_n of zero.
+        # Record whether this attachment can be reused at all, from the architecture AND
+        # the runtime's advertised checkpoint persistence. Known before the cache is ever
+        # built, so a caller never has to discover it by measuring a cache_n of zero -- and
+        # never told a hybrid attachment is worthless on a build where it is a 3.6x win.
         arch = architecture or model.architecture
-        expects, reason = None, ""
-        if arch:
-            from .gguf import supports_prefix_reuse
-            expects, reason = supports_prefix_reuse(arch)
+        expects, reason = expected_reuse(
+            arch, checkpoint_persistence=checkpoint_persistence)
         meta = self._meta_path(content_digest, key)
         meta_tmp = meta.with_name(meta.name + ".tmp")
-        meta_tmp.write_text(json.dumps({"architecture": arch, "expects_reuse": expects,
-                                        "reason": reason, "tokens": token_count}, indent=1))
+        meta_tmp.write_text(json.dumps(
+            {"architecture": arch, "expects_reuse": expects, "reason": reason,
+             "checkpoint_persistence": checkpoint_persistence,
+             "tokens": token_count}, indent=1))
         os.replace(meta_tmp, meta)
         return dest
 

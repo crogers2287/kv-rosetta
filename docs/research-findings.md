@@ -1434,3 +1434,65 @@ binary, which is what serves tiel in production.
 There is also no 9B model on this host or in the llama-swap config — Ornith 1.5 is 35B-A3B, and
 it would not fit a context on two 3090s. The dense 3B stands in for it, which is what makes
 this a dense/hybrid/MoE comparison rather than a size comparison.
+
+---
+
+## 33. The hybrid attachment pays after all, and the drive was calling it worthless
+
+§32 recorded that hybrid attachments store and restore perfectly and reuse nothing, and had the
+drive report that in advance. Both halves of that were half-right, and the half that was wrong
+mattered more.
+
+### The proposed test was impossible, and checking cost nothing
+
+The plan was to test tiel on a W6800 with the fleet's fork binary, which needed the fleet
+unloaded. Checking the binary first: the fork is commit `8663224` and carries **no** checkpoint
+persistence. Nor do any of the three `ca3d5a3` builds. Unloading a live service would have
+bought a measurement that could not have worked.
+
+The first sweep for that was also wrong in method — `strings` was run against `llama-server`,
+which is a 17,920-byte launcher stub whose real code lives in shared libraries. Scanning the
+`.so` files instead confirmed the same conclusion for these five builds, but the method would
+have missed a patched build had one existed.
+
+The patch itself was never lost: `patches/llama.cpp/0001-persist-slot-prompt-checkpoints.patch`
+is upstream PR #26004, sha256-pinned, with a build script that refuses an unexpected base. It
+rebuilt cleanly by three-way merge onto `ca3d5a3e1`, and it builds CUDA — so this ran on the
+free 3090s and the fleet was never touched.
+
+### The measurement
+
+Qwen3.8-27B (`qwen35`, hybrid), 673 tokens of system + tools + memory, through the drive:
+
+| | n_restored | cache_n | prefilled | prompt ms |
+|---|---:|---:|---:|---:|
+| visit 1, cold, no attachment | — | 0 | 676 | 780 |
+| **visit 2, via the drive attachment** | 679 | **672** | **4** | **211** |
+
+The saved state carries an `SCKP` appendix, and the runtime advertises
+`slot_checkpoint_persistence: true, slot_checkpoint_format: sckp/1`. **672 of 676 tokens
+reused on a hybrid model, 3.7x off the prefill.**
+
+For contrast, the identical drive code against the identical model on a stock build reused
+**0 of 676** (§32). Same artifact shape, same content, same request — the entire difference is
+one runtime capability.
+
+### The bug this exposed in the drive
+
+§32's payoff reporting predicted from the **architecture alone** and therefore called this
+attachment worthless. Its own refusal text gave the error away: *"this runtime's slot save does
+not persist checkpoints"* is a claim about the runtime, asserted from the model.
+
+Reuse is a property of the architecture **and** the build. `expected_reuse` now takes both, and
+the three cases are distinct rather than collapsed into two:
+
+| architecture | runtime persists checkpoints | verdict |
+|---|---|---|
+| dense (`qwen2`) | anything | pays |
+| hybrid (`qwen35`, `qwen35moe`) | yes | **pays** |
+| hybrid | no | does not pay |
+| hybrid | **unrecorded** | **unknown, not "no"** |
+
+The last row is the one worth keeping. The same model reused 0 of 676 on one build and 672 of
+676 on another, so without knowing the build neither answer is available, and reporting "no"
+would have told an operator to throw away a 3.7x win.

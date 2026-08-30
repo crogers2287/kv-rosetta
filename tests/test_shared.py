@@ -11,7 +11,8 @@ import unittest
 from pathlib import Path
 
 from kv_rosetta.identity import CacheABIIdentity, IdentityError, ModelIdentity
-from kv_rosetta.shared import Content, Entry, SharedDrive, SharedError, attachment_key
+from kv_rosetta.shared import (Content, Entry, SharedDrive, SharedError,
+                               attachment_key, expected_reuse)
 
 
 def _model(weights="a" * 64):
@@ -354,10 +355,11 @@ class AttachmentsReportWhetherTheyPay(unittest.TestCase):
         self.state = Path(tempfile.mkdtemp()) / "s.state"
         self.state.write_bytes(b"qsgg" + b"\x00" * 64)
 
-    def _attach(self, arch):
+    def _attach(self, arch, persistence=None):
         model = ModelIdentity(architecture=arch, weights_sha256=arch.ljust(64, "0"),
                               tokenizer_sha256="b" * 64, chat_template_sha256="c" * 64)
-        self.drive.attach(self.digest, model, _abi(), self.state, architecture=arch)
+        self.drive.attach(self.digest, model, _abi(), self.state, architecture=arch,
+                          checkpoint_persistence=persistence)
         return model
 
     def test_a_dense_architecture_is_recorded_as_paying(self):
@@ -367,17 +369,30 @@ class AttachmentsReportWhetherTheyPay(unittest.TestCase):
         self.assertTrue(info.expects_reuse)
         self.assertTrue(info.pays)
 
-    def test_a_hybrid_architecture_is_recorded_as_not_paying(self):
+    def test_a_hybrid_on_an_unknown_runtime_is_unknown_not_refused(self):
+        # Asserting "never pays" from the architecture alone was a real bug: the same
+        # hybrid model on a checkpoint-persisting build reused 672 of 676 tokens.
         self._attach("qwen35")
         info = self.drive.describe(self.digest)[0]
-        self.assertFalse(info.expects_reuse)
+        self.assertIsNone(info.expects_reuse)
         self.assertFalse(info.pays)
+        self.assertIn("unknown rather than absent", info.reason)
+
+    def test_a_hybrid_on_a_persisting_runtime_is_recorded_as_paying(self):
+        self._attach("qwen35", persistence=True)
+        info = self.drive.describe(self.digest)[0]
+        self.assertTrue(info.pays)
+        self.assertTrue(info.checkpoint_persistence)
+
+    def test_a_hybrid_on_a_non_persisting_runtime_is_recorded_as_not_paying(self):
+        self._attach("qwen35", persistence=False)
+        info = self.drive.describe(self.digest)[0]
+        self.assertFalse(info.expects_reuse)
         self.assertIn("hybrid", info.reason)
 
-    def test_a_hybrid_moe_is_recorded_as_not_paying(self):
-        self._attach("qwen35moe")
-        info = self.drive.describe(self.digest)[0]
-        self.assertFalse(info.pays)
+    def test_a_hybrid_moe_follows_the_same_rule(self):
+        self._attach("qwen35moe", persistence=True)
+        self.assertTrue(self.drive.describe(self.digest)[0].pays)
 
     def test_the_attachment_is_still_stored_and_served(self):
         # Not refused: the bytes are correct and a patched runtime can use them. Only the
@@ -408,3 +423,25 @@ class AttachmentsReportWhetherTheyPay(unittest.TestCase):
         described = self.drive.describe(self.digest)
         self.assertEqual(len(described), 3)
         self.assertEqual(sum(1 for i in described if i.pays), 1)
+
+
+class ReuseExpectation(unittest.TestCase):
+    """Reuse is a property of the architecture AND the runtime, never of one alone."""
+
+    def test_a_dense_architecture_pays_regardless_of_the_runtime(self):
+        for persistence in (None, True, False):
+            self.assertTrue(expected_reuse("qwen2", checkpoint_persistence=persistence)[0])
+
+    def test_a_hybrid_pays_only_where_checkpoints_persist(self):
+        self.assertIs(expected_reuse("qwen35", checkpoint_persistence=True)[0], True)
+        self.assertIs(expected_reuse("qwen35", checkpoint_persistence=False)[0], False)
+
+    def test_an_unknown_runtime_yields_unknown_not_false(self):
+        # Measured: the same hybrid model reused 0 of 676 on a stock build and 672 of 676
+        # on a patched one. Without knowing the build, neither answer is available.
+        verdict, reason = expected_reuse("qwen35")
+        self.assertIsNone(verdict)
+        self.assertIn("unknown rather than absent", reason)
+
+    def test_no_architecture_yields_unknown(self):
+        self.assertIsNone(expected_reuse("")[0])
