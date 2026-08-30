@@ -2396,3 +2396,58 @@ correcting it helps measurably. **What it does not**: admissibility, which remai
 **The obvious next step**: fit the map *under* a norm constraint rather than fitting freely and
 rescaling afterwards - a projection onto the sphere the keys actually live on, rather than a
 correction applied to a fit that was aiming somewhere else.
+
+## REQ-063 — jlens assessed, and fitting on the sphere: a marginal gain
+
+The operator asked whether `~/agentstuff/jlens` helps.
+
+### What jlens offers, honestly
+
+**No reusable code.** The repository imports an external `jlens` package
+(`from jlens.fitting import fit`) that is **not installed in any venv on this host**, so the
+lens-fitting implementation is unavailable. Its only in-repo gradient code is a smoke test -
+`(out.hidden_states[-1] * probe).sum().backward()` in `m37j_phase0.py`, checking that
+activation gradients are finite. Its findings concern router logits and domain signal on
+Qwen MoE models, not KV representation. Its GPU program is blocked pending a dual-3090 window.
+
+**One transferable idea, and it is the one that already worked.** A *Jacobian lens* fits in the
+metric the model is sensitive to rather than in plain squared error. REQ-062's norm correction
+is a crude instance: it took the gate from 0.000 to 0.208 precisely by matching what attention
+consumes instead of what MSE measures. jlens names the principle; it does not supply machinery
+for applying it here.
+
+### Fitting on the sphere
+
+Keys are RMS-normalised, so their metric is angular. REQ-062 fitted freely in the raw space and
+dragged the result onto the sphere afterwards; this fits between unit directions and restores
+magnitude at the end - aiming at the right thing from the start rather than correcting later.
+
+| | median cosine |
+|---|---:|
+| raw fit | 0.8066 |
+| **fit on unit directions** | **0.8161** |
+
+**About one point of cosine.** Real, reproduced at every layer tested, and nowhere near enough
+to matter. Per layer: 0.898 to 0.900 at layer 0 keys, 0.799 to 0.813 at layer 0 values, 0.595
+to 0.609 at layer 8 values.
+
+**A column in my own table that measured nothing.** "raw + rescale" reports the *same* cosine as
+"raw" at every row, necessarily - rescaling a vector does not change its direction. The rescale
+benefit is entirely in magnitude and shows up in the gate, not here. The column is a tautology
+and is called one rather than left to look like a result.
+
+### Where this leaves the map
+
+Magnitude is now handled, and it was worth 0.208 of gate agreement. **Direction is the binding
+constraint and ridge has hit its ceiling on it** - cosine sits at 0.78-0.90 for keys and
+0.59-0.81 for values whichever way the fit is posed, and fitting on the correct manifold moves
+it by a hundredth. Every remaining lever inside the linear family has now been tried:
+single-layer, top-k concatenation, per-head, whole-vector, raw-space, unit-sphere, four
+calibration sizes, three model pairs, two lineage relationships.
+
+The next thing that could plausibly move direction is a more expressive map, which is the C2C
+direction and a training problem rather than a closed-form one.
+
+Status: **measured on this host** — 12 layer/kind combinations, 8,192 held-out tokens, six
+ridge values per fit. **What jlens contributed**: the principle, already applied. **What it did
+not**: any code, since its lens package is absent from this machine.
