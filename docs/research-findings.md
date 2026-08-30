@@ -820,11 +820,14 @@ describing the format as model-agnostic today would be claiming the half that fa
 
 ---
 
-## 24. Vulkan is not run-to-run deterministic here, and that undermines a check we rely on
+## 24. Nondeterminism is a hybrid-on-Vulkan interaction, not a Vulkan property
 
-Measured while closing two untested matrix cells. The headline is methodological rather than
-architectural: **on this host the Vulkan backend produces different text for identical work,
-with no cache involved at all.**
+**Corrected.** This section first claimed that "the Vulkan backend produces different text for
+identical work". That was too broad, and the follow-up measurement that would have supported it
+refuted it instead. The nondeterminism is specific to the **hybrid `qwen35` model on Vulkan**;
+Vulkan running a dense `qwen2` model on the same card is perfectly deterministic. The original
+table is kept below because it is correct as far as it goes — it just does not license the
+general claim that was drawn from it.
 
 Same model, same flags, same two cards, same source revision (`ca3d5a3e1`), temperature 0,
 fixed seed, slot erased and displaced between every run:
@@ -851,10 +854,30 @@ computation came from cache rather than being recomputed. But it does open a que
 section cannot answer from its own data: whether AMD Vulkan is deterministic under the flags
 used there. Untested.
 
-Not tested here either: whether `--parallel 1` or flash attention changes it. With four slots
-and `kv_unified=true`, batch composition is a plausible cause, and if that is the mechanism
-then the finding is about slot scheduling rather than about Vulkan. Stated as a hypothesis, not
-a result.
+### Both hypotheses were tested, and both were wrong
+
+Batch composition under four slots and `kv_unified=true` looked like the obvious mechanism, and
+flash attention the next candidate. Neither survived:
+
+| Vulkan configuration, `qwen35` 27B | distinct outputs across 6 cold runs |
+|---|---:|
+| 4 slots, `kv_unified=true` (original) | 3 |
+| `--parallel 1` | 3 |
+| `--parallel 1 -fa on` | 3 |
+| **dense `qwen2` 3B, 4 slots** | **1** |
+
+The three configurations do not merely all fail — they produce the *same three output hashes*,
+so this is a small set of outcomes from a specific nondeterministic reduction rather than
+general noise. Swapping the model is the only change that removed it.
+
+So the mechanism is the recurrent/hybrid path under the Vulkan backend, not slot scheduling,
+not flash attention, and not Vulkan in general. **§17's HIP <-> Vulkan evidence is not
+threatened**: it used a dense model, which is the case measured deterministic here.
+
+The methodological point survives the correction intact, and is the durable lesson: text
+identity is only evidence when the configuration producing it has been shown to be
+reproducible. That had never been checked. It now has been, and it is true for every dense
+configuration tested and false for one hybrid one.
 
 ### How the finding was nearly missed, and then nearly reported backwards
 
@@ -894,3 +917,43 @@ The 186 MB file written by the CUDA build was handed to the Vulkan build and **a
 `n_restored=453`, `n_read` equal to the full file. Reuse was still 0, for the architectural
 reason above. So format portability across backends and *usefulness* of the restored state are
 independent properties, and the first one holds here while the second does not.
+
+---
+
+## 26. CUDA <-> Vulkan on one NVIDIA card: the vendor/API matrix closes
+
+The cell that was missing. §17 proved HIP <-> Vulkan (API varies, vendor fixed to AMD) and
+CUDA <-> ROCm (both vary). Neither isolated the API: no result held the *card* fixed and changed
+only the compute API. This does, on a single RTX 3090, both binaries at `ca3d5a3e1`:
+
+| direction | reused | content | tokens | artifact |
+|---|---|---|---|---:|
+| CUDA -> Vulkan | 2047/2048 (100.0%) | match | match | 75.5 MB |
+| Vulkan -> CUDA | 2047/2048 (100.0%) | match | match | 75.5 MB |
+
+Qwen2.5-3B-Instruct Q4_K_M (`qwen2`), 2,048-token prompt, one slot. The one-token shortfall is
+the constant llama.cpp behaviour of reprocessing the final token, not a loss.
+
+The three-way logprob decomposition, which is the only framing in which these numbers mean
+anything:
+
+| comparison (max abs logprob delta) | CUDA->Vulkan | Vulkan->CUDA |
+|---|---:|---:|
+| own restore vs own cold prefill | 0.077 | 0.350 |
+| **foreign cache vs own cache** | **0.353** | **0.456** |
+| two cold runs, different backends, no cache | 0.976 | 0.976 |
+
+Top-1 agreement is 1.0 in every comparison. **Moving the cache between APIs costs less than the
+two APIs already differ by doing identical work with no cache involved** — 0.353 and 0.456
+against a 0.976 floor. That is the same pattern §17 found across vendors, now with the hardware
+held constant so the API is the only variable.
+
+### A wrong reference nearly turned this into a failure
+
+Measured by hand first, a Vulkan-captured cache restored on CUDA produced text differing from
+CUDA's own cold prefill, which reads as a failed transfer. It is not: reusing 3,087
+Vulkan-computed KV rows and prefilling 3,088 tokens on CUDA are different computations, and
+comparing them answers a question nobody asked. The retained harness compares the restored run
+against the *source backend's* run and reports the decomposition above, and under that
+reference both directions match exactly. The lesson is not that the manual check was sloppy but
+that "different from what?" is the whole content of a claim like this one.

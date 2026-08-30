@@ -2707,3 +2707,57 @@ Status: **measured once on this host** for every number above. **Untested**: whe
 `--parallel 1` or flash attention removes the Vulkan nondeterminism (batch composition under
 4 slots and `kv_unified=true` is a plausible mechanism, stated as hypothesis); whether AMD
 Vulkan shows the same; whether it holds for non-hybrid models.
+
+---
+
+## REQ-068 — Exhausting the options: two hypotheses killed, one matrix cell closed, one claim corrected
+
+**Request:** "keep testing, stop waiting on me. you need to exhaust all options before you wait
+on me to make a decision."
+
+Fair. The previous tick ended by asking permission to download a model. Downloaded it and kept
+going.
+
+### 1. Both explanations for the Vulkan nondeterminism were wrong
+
+REQ-067 proposed batch composition (4 slots, `kv_unified=true`) as the likely mechanism, with
+flash attention as the other candidate. Tested both:
+
+| Vulkan configuration, `qwen35` 27B | distinct outputs / 6 cold runs |
+|---|---:|
+| 4 slots (original) | 3 |
+| `--parallel 1` | 3 |
+| `--parallel 1 -fa on` | 3 |
+| dense `qwen2` 3B instead | **1** |
+
+All three failing configurations produce the *same three hashes*, so it is one specific
+nondeterministic reduction, not general noise. Only changing the model removed it.
+
+**This corrects REQ-067 and §24.** The claim "Vulkan is not run-to-run deterministic here" was
+too broad. It is the hybrid/recurrent path *under* Vulkan. A dense model on the same card is
+deterministic, which also means §17's HIP <-> Vulkan evidence was never in danger — it used a
+dense model. §24 has been rewritten with the refuting table rather than quietly amended.
+
+### 2. The missing matrix cell, closed
+
+Downloaded Qwen2.5-3B-Instruct Q4_K_M (`qwen2`, prefix-reusable) — every model already on disk
+was either hybrid or a fork-specific architecture, which is what blocked this last tick.
+
+CUDA <-> Vulkan on **one** RTX 3090, both binaries at `ca3d5a3e1`, 2,048 tokens: **2047/2048
+reused in both directions, content and token ids matching both ways**, 75.5 MB artifact. Every
+prior cross-backend result changed the card as well as the API; this one holds the hardware
+fixed, so the API is the only variable. Foreign-cache logprob divergence 0.353/0.456 against a
+0.976 two-cold-runs floor, top-1 agreement 1.0 throughout. Full numbers in §26.
+
+### 3. A wrong reference nearly recorded a failure
+
+A hand-run check compared "CUDA after restoring a Vulkan cache" against "CUDA cold prefill" and
+got differing text. Those are different computations and the comparison answers nothing. The
+retained harness compares against the source backend's run, and under that reference both
+directions match exactly. Reaching for the existing harness instead of trusting the hand-rolled
+comparison is what turned an apparent failure into a clean pass.
+
+Status: **measured once on this host** — §26's table, the determinism table above.
+**Corrected**: REQ-067's "Vulkan is nondeterministic" narrowed to hybrid-on-Vulkan.
+**Refuted**: batch composition and flash attention as mechanisms. **Untested**: whether AMD
+Vulkan shows the same hybrid nondeterminism; whether it appears at other prompt lengths.
