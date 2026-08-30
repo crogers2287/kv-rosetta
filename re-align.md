@@ -111,7 +111,7 @@ speaks to the actual use case, and where should the 32K artifact live given the 
 
 ---
 
-## RA-003 — Artifact size is affine in tokens, not linear; the 32K refusal may be wrong · **open** · 2026-08-29
+## RA-003 — Artifact size is affine in tokens, not linear; the 32K refusal may be wrong · **withdrawn** · 2026-08-30
 
 RA-002 was answered with "do not generate a 32K artifact on the current NVMe", accepting my
 estimate of ~9.7 GiB. **That estimate assumed the artifact scales linearly with tokens. Two
@@ -248,3 +248,70 @@ a persistent claim.
 
 Both entries closed. The mechanism worked: two entries raised at 13:30, both answered in the
 steer at 13:31, and the project roadmap changed as a result.
+
+
+---
+
+## RA-003 addendum — withdrawn 2026-08-30, answered by measurement
+
+This entry asked the steer to reconsider a space guard built on a fitted rate. It is
+withdrawn because the question no longer needs answering: the size is now **derived** rather
+than fitted, and exact.
+
+`kv_rosetta/sizing.py` computes an artifact's size from the GGUF and the state-file layout,
+with every term read off `llama-kv-cache.cpp` and `save_slot_checkpoints`. Checked against
+seven artifacts written on this host across three architectures - qwen2 dense, qwen35 hybrid,
+qwen35moe hybrid-MoE - it is exact to the byte on all of them, including a 32,000-token file
+predicted from a law fitted only up to 8,192, and RA-003's own 2,048-token hybrid artifact
+which this project did not produce.
+
+The space guard now derives instead of scaling a rate. On the non-hybrid model the old flat
+rate over-predicted by **8x**; on the hybrid it varied from 2.1x to 4.2x with prefix length.
+Nothing is left for the steer to decide here.
+
+---
+
+## RA-005 — The headline goal is not supported by evidence, and the steer should say so · **open** · 2026-08-30
+
+**The goal I am measuring against.** One KVX file usable by any model regardless of
+architecture or backend - stated as "we should be able to use the same kvx file regardless of
+cuda/vulkan nvidia/amd moe/dense" and "we have to build the translator, that's the whole goal
+of the sidecar".
+
+**What the evidence now says.** The goal splits cleanly in two, and the halves have opposite
+verdicts.
+
+**Proven.** One file across compute backends, for one model: written on ROCm/HIP and restored
+on Vulkan and back, 32,000 tokens, 99.99% reuse, byte-identical output. Hybrid models made
+cacheable at all - 252 of 256 tokens reused on a patched build against **0 of 256** on the
+fleet's own binary, both reporting the same `n_restored`. Artifact sizing derived and exact on
+three architectures. The format reads dense, MoE and hybrid state byte-for-byte.
+
+**Not supported.** One file across *different models*. Measured on the most favourable pair
+available - qwen35 and qwen35moe, identical head_dim 256, identical d_state 128, identical
+tokenizer, so no alignment error is even possible - a per-layer linear map fitted on 15,981
+tokens reaches median held-out R² **0.55**, and the gate rejects it: teacher-forced agreement
+**0.733** and **0.903** against 1.000 for every blend, and the translated cache diverges from
+the target's own output within **6 tokens** while producing fluent, on-topic English.
+
+**Why this matters for the steer.** The two halves need different words. The first is a
+shipping claim: it is measured, it has controls, and it solves the operational problem that
+started this work - kvwarm re-reading 51 prefixes into 2 slots every 15 minutes, 13 of the
+last 20 cycles complete re-prefills. The second is a research bet that a linear map has now
+lost, on the best pair available, with a gate whose soundness took eight iterations to
+establish and which corrected itself three times on the way.
+
+**Questions for the steer:**
+
+1. Should the sidecar ship on the proven half - durable, cross-backend, hybrid-capable caching
+   for one model at a time - while translation continues as research? I believe yes, and that
+   describing the project as model-agnostic today would be claiming the unproven half.
+2. Is a non-linear map worth funding? The honest case for it: the linear map recovers 55% of
+   variance on a pair with every semantic axis matched, and published work (C2C-style learned
+   projectors) is the next rung. The honest case against: no cheap offline metric predicts
+   admission, so each candidate costs a GPU evaluation, and the gate needs top-1 correct at
+   essentially every position.
+3. The recurrent half of a hybrid cache is **not addressed at all** by the current map, and it
+   is 90% of a short artifact and 7-9% of a 32K one. Should a recurrent map be attempted, or
+   should translation be scoped to attention-only and long prefixes where that is most of the
+   file?
