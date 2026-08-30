@@ -611,3 +611,209 @@ memory. Re-run at three repetitions per rung, both media, q4_0 KV, CPU inference
 
 Both caveats are written into `bench/*.json` alongside the numbers, so a later reader does
 not have to reconstruct them.
+
+---
+
+## 17. Cross-backend, proven: one file across ROCm, Vulkan and a restart
+
+The project's central hardware claim, tested rather than argued. Three llama.cpp builds at
+**one source revision** (`ca3d5a3e1`): HIP for gfx1030, Vulkan (RADV), and CUDA.
+
+Pinning the revision is not bureaucracy. A first attempt restored a v3 state file into a
+binary compiled months earlier, which rejected it for the *state-file version* - and that
+rejection is indistinguishable from "cross-backend does not work" until you read the server
+log. The guard that prevents it reads the commit from `--version`, because an earlier
+implementation scraped `strings` and reported two builds of one commit as a mismatch.
+
+| prompt | HIP -> Vulkan | Vulkan -> HIP | artifact |
+|---:|---|---|---:|
+| 128 | 127/128 | 127/128 | 4.7 MB |
+| 8,192 | 8,191/8,192 | 8,191/8,192 | 288 MB |
+| 32,000 | 31,999/32,000 | 31,999/32,000 | 1.18 GB |
+
+Text and token ids identical in every case. The one-token shortfall is constant - llama.cpp
+always reprocesses the final token - so reuse *improves* with prefix length, from 99.2% to
+99.997%.
+
+**Logprobs are not identical, and a bare "they differ" would say nothing.** The record
+decomposes it into three comparisons measured on the same run:
+
+| comparison | 128 | 8K | 32K |
+|---|---:|---:|---:|
+| own restore vs own cold prefill | 0.05-0.14 | 0.17-0.75 | 0.07-0.20 |
+| foreign cache vs own cache | 0.37-0.40 | 0.44-0.49 | 1.23-1.30 |
+| two cold runs, different backends, no cache | 0.375 | 0.783 | 1.163 |
+
+The second row tracks the third at every length. **Moving a cache across backends costs about
+what the two backends already differ by doing identical work with no cache involved**, which
+is the only comparison that means anything - and neither number means anything alone.
+
+## 18. Artifact size, derived rather than fitted
+
+A fitted law reproduces its own points by construction. This one is computed from the writer:
+
+```
+12                    magic, version, n_token_count
++ 4  x header_tokens  the prompt's token ids, four bytes each
++ 8                   n_stream, cell_count
++ 12 x cells          pos, n_seq_id, one seq_id   (+12 more when cell_ext is written)
++ 8                   v_trans, n_layer
++ n_layer x (24 + cells x (k_row + v_row))
+```
+
+Exact to the byte on seven artifacts across three architectures, including a 32,000-token file
+predicted from terms checked only to 8,192, and a 2,048-token hybrid artifact this project did
+not produce.
+
+**The term that had been missing is four bytes per token for the prompt's token ids in the
+header.** Arithmetic over the documented per-cell fields came out exactly 4 bytes/token short
+of the measured slope. Rather than absorb that into a constant, a real artifact was decoded
+and the term found. Invisible at 128 tokens; 128 KB adrift at 32,000.
+
+Two silent-wrong bugs surfaced doing this. Deriving `head_dim` as `embedding_length /
+head_count` gives 5120/24 = 213.33 on qwen35, floored to **213** against a declared
+`key_length` of **256** - an estimate wrong by a fifth and entirely plausible. And
+`state_bytes` claimed in its docstring to refuse hybrid models while checking nothing, so a
+caller would have taken an attention-only figure for a whole file.
+
+## 19. The hybrid state file, decoded
+
+A 256-token Qwen3.8-27B artifact closes to **zero leftover bytes**: 16,783,760 for attention
+(16 layers), 156,894,356 for recurrent (48 layers of 64 declared), 1,040 of header. Both
+recurrent row sizes fall out of the GGUF's SSM metadata - conv state
+`(d_conv-1) x (d_inner + 2 x n_group x d_state) x 4`, SSM state `d_inner x d_state x 4`.
+
+The attention section holds **16** layers where the recurrence rule implies 17: the NextN/MTP
+block is marked non-recurrent but is not in the KV cache at all.
+
+**The recurrent section does not begin with `n_stream`.** `llama_memory_recurrent::state_write`
+writes `cell_count` first, unlike the attention writer. The layout inventory said otherwise,
+the decoder matched the inventory, and the fixture matched the decoder - three artefacts
+agreeing with each other and none with llama.cpp. Eight tests failed once the parser was
+corrected, which is the informative part: they had been green against a body no writer
+produces. Same shape as the 12-versus-16-byte checkpoint record, found the same way.
+
+The recurrent tail is **byte-identical** between a 256- and a 257-token file. It is 90.3% of a
+short artifact and 6.8% of a 32K one, which is why a per-token rate taken from a hybrid
+artifact over-predicts so badly.
+
+## 20. Cross-model translation, attempted and rejected
+
+Tried on the most favourable pair the host offers: `qwen35` (16 attention layers, 4 KV heads)
+to `qwen35moe` (10 layers, 2 KV heads). Every semantic axis matches - head_dim 256, d_state
+128, d_conv 4, n_group 16 - and they share a tokenizer exactly, so no alignment error is even
+possible.
+
+The fit: 15,981 tokens from 8 varied passages, held out **by whole prompt**. Median held-out
+R² **0.55**, none above 0.9. The chosen source layers came out near-monotonic (1, 3, 5, 6, 7,
+10, 8, 11, 12, 15) without being asked to, which is real structure.
+
+**An earlier split by token rather than by prompt reported 0.98.** Adjacent tokens share
+context; that number was leaked and it flattered the result by nearly a factor of two on the
+early layers.
+
+The gate, with translated attention spliced into the target's own artifact so its recurrent
+state stayed exactly as the model wrote it:
+
+| | reused | top-1 | max delta |
+|---|---:|---:|---:|
+| identity control | 764/768 | 1.00 | 0.000 |
+| **translated** | 764/768 | **0.00** | 2.42 |
+| noise control | 764/768 | 0.00 | 7.99 |
+
+```
+cold/identity : " had unknowingly assembled the longest continuous record of coastal fo"
+translated    : ", having spent his life reading the sea, had learned to"
+```
+
+Fluent, grammatical, on topic, and disagreeing on **every** generated token. Nobody reading
+that sentence would suspect the cache.
+
+**Two runs before this one were invalid**, and the noise control is the only reason it was
+caught. The first had `--ctx-checkpoints 0` set - disabling the feature the patched build
+exists to provide - so on a hybrid model nothing was restored and all three variants were cold
+prefills producing identical output. Three identical outputs *including noise* is impossible
+if anything was restored. The identity control is now a hard precondition.
+
+## 21. Eight iterations to a gate that could be trusted
+
+Establishing that the gate itself was sound took longer than building it, and corrected itself
+three times.
+
+| stage | belief | what broke it |
+|---|---|---|
+| first result | translation fails | - |
+| threshold | needs R² ~0.85 | measured on 12 generated tokens |
+| sharpened | ~0.96, R² understates it | 48 tokens is a strictly harder test |
+| predictor | mean\|Δ\| should grade maps offline | ranges **overlap**: 0.667 passing, 0.171 failing |
+| chaos | the gate is near-random at the boundary | survey passed at 0.9, failed at 0.8, **passed at 0.65** |
+| explanation | each prompt has one fragile token | first-divergence index is fixed per prompt |
+| mechanism | that token is the least confident one | 4/4, three of them the minimum of 48 |
+| settled | teacher-forced scoring | free generation cannot be scored past divergence |
+
+The mechanism is the useful part. **The first-divergence position is a property of the prompt,
+not of the perturbation** - survey diverges at token 22 for every blend ratio from 0.85 down to
+0.3 - and that token is where the model is least sure, at margins 0.18-0.51 against medians of
+5.3-7.9. So "did the generation match?" was really asking "did you survive this prompt's
+coin-flip token?", which is a fact about the prompt.
+
+**One claim from that sequence did not survive re-testing.** Skipping near-tied positions was
+said to turn a wobbling number into an ordered one; sweeping the margin bar offline over a
+second grid showed every bar monotonic *including no skipping at all*, and skipping nothing
+gave the fewest prompt disagreements. Only one or two positions of thirty-two fall below the
+bar, so the effect is the same size as the differences being compared. The reporting is kept
+because the principle is sound; no claim rests on it.
+
+What does hold: **teacher forcing is necessary**, and the gate separates the translation from
+every blend at 0.733 and 0.903 against 1.000.
+
+## 22. The pipeline end to end, and what restoring is worth
+
+On `Tiel-Coder-35B-A3B`, the model the operator actually runs:
+
+```
+admitted   e1dbb7a52cd9   needs patch: True   kv f16/f16   state v3
+RESTORE    cache_n=508 of 512, reuse verified
+patched runtime : no objection
+STOCK runtime   : 2 objections -> refused
+```
+
+The stock runtime is the fleet's own binary. Offered the same artifact it is refused, because
+on that build the restore would be *accepted* and reuse nothing while reporting the same
+`n_restored` as the patched one - measured at **252/256 against 0/256**.
+
+Latency, three repetitions, medians, total counted as the restore call plus whatever the
+runtime still prefills:
+
+| tokens | artifact | cold | restore total | speedup |
+|---:|---:|---:|---:|---:|
+| 512 | 135.6 MB | 443.8 ms | 246.9 ms | 1.80x |
+| 2,048 | 228.5 MB | 1,643.7 ms | 385.4 ms | 4.26x |
+| 8,192 | 348.7 MB | 6,029.9 ms | 410.9 ms | **14.68x** |
+
+**Cold prefill grows linearly; total restore stays nearly flat.** The advantage widens with
+prefix length, which is the direction an agentic harness pushes. Artifacts here live in RAM,
+so read time is a floor; charging a notional NVMe read at 2 GB/s still leaves 1.40x, 3.25x and
+10.16x, and that is arithmetic rather than a measurement.
+
+**Two defects only the live run found.** The store must *be* the slot-save-path, since restore
+hands the server a filename with no copy on the request path. And model identity must be
+supplied by the caller, because llama.cpp puts none in `/props` - the check refused a restore
+that then succeeded with 508 of 512 reused. That one survived every offline test because the
+fixtures supplied an identity real props do not have.
+
+## 23. Where the goal stands
+
+Two halves, opposite verdicts.
+
+**Proven.** One artifact across ROCm, Vulkan and a full process restart, for one model, at up
+to 32,000 tokens with identical output. Hybrid models cacheable at all. Sizing derived and
+exact on three architectures. Restore 1.8x to 14.7x cheaper than recomputing.
+
+**Not supported.** One artifact across *different models*. On the best pair available, with an
+identical tokenizer, a linear map reaches R² 0.55 and the gate rejects it - and the translated
+cache diverges from the target's own output within six tokens while writing fluent English.
+
+A linear map is the floor rather than the ceiling, and the harness to evaluate a better one now
+exists and is trustworthy. But nothing measured here supports admitting a translated cache, and
+describing the format as model-agnostic today would be claiming the half that failed.

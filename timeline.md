@@ -1981,9 +1981,9 @@ taking for a benchmark. Charging a notional NVMe read at 2 GB/s:
 
 | tokens | +read | total | vs cold | speedup |
 |---:|---:|---:|---:|---:|
-| 512 | +68 ms | 315 ms | 444 ms | 1.41x |
-| 2,048 | +114 ms | 500 ms | 1,644 ms | 3.29x |
-| 8,192 | +174 ms | 585 ms | 6,030 ms | 10.30x |
+| 512 | +71.1 ms | 318.0 ms | 443.8 ms | 1.40x |
+| 2,048 | +119.8 ms | 505.2 ms | 1,643.7 ms | 3.25x |
+| 8,192 | +182.8 ms | 593.7 ms | 6,029.9 ms | 10.16x |
 
 Still decisive at the sizes that matter, and this is arithmetic rather than a measurement.
 
