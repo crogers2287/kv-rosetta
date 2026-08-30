@@ -889,6 +889,38 @@ scheduling, not flash attention, not Vulkan in general, and not "everything exce
 **§17's HIP <-> Vulkan evidence is not threatened**: it used a dense model, the case measured
 deterministic here on both vendors.
 
+### Re-measured with retained records, and the text was under-reporting it
+
+The table above counts distinct output *hashes*. A summary count is not admission-quality
+evidence, so `scripts/reader_determinism.py` re-ran all six configurations retaining every
+run's raw token ids, text, per-position probability vectors, slot routing, launch record,
+binary and library digests, and model/prompt digests. Records in
+`docs/records/reader-determinism/`, all at build `b151-ca3d5a3e1` on one prompt digest:
+
+| configuration | distinct texts | distinct token seqs | **distinct probability vectors** | reproducible |
+|---|---:|---:|---:|:--:|
+| cuda-nvidia-hybrid | 1 | 1 | 1 | yes |
+| hip-amd-hybrid | 1 | 1 | 1 | yes |
+| vulkan-nvidia-hybrid | 3 | 3 | **6** | no |
+| vulkan-amd-hybrid | 3 | 3 | **6** | no |
+| vulkan-nvidia-dense | 1 | 1 | 1 | yes |
+| vulkan-amd-dense | 1 | 1 | 1 | yes |
+
+**Every one of the six Vulkan hybrid runs has a different distribution.** The text collapses
+them into three groups, so counting outputs under-reported the instability by half — on both
+vendors, identically. The reproducible configurations are reproducible all the way down: one
+text, one token sequence, one set of vectors.
+
+That is the concrete argument for retaining vectors rather than a count. Had the gate been
+built on text agreement, a Vulkan hybrid reader could have produced the "right" text from a
+visibly different distribution, and the gate would have passed it.
+
+The runner fails closed on its own inputs: a run that reused cache is not a cold sample, a run
+with empty probability vectors compares equal to any other such run, and a set spread across
+slots is not six repetitions of one configuration. Any of these refuses the whole set rather
+than dropping a run from it. 7/7 of its guards are defended by a test, and 13 tests cover the
+refusals without needing a GPU.
+
 The methodological point survives the correction intact, and is the durable lesson: text
 identity is only evidence when the configuration producing it has been shown to be
 reproducible. That had never been checked. It now has been, and it is true for every dense

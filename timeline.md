@@ -2804,3 +2804,63 @@ Status: **measured once on this host**, all six determinism cells and both gate 
 **Untested**: whether the Vulkan hybrid nondeterminism persists at other prompt lengths, and
 whether it affects a *restored* hybrid cache (moot in practice, since hybrid restore reuses
 nothing on an unpatched build).
+
+---
+
+## REQ-070 — Turning the determinism measurement into admission-quality evidence
+
+The steer at `8915aff` (written against `45fcb3b`) added a P0 preflight requiring each
+production reader to be shown reproducible against itself before any restored-versus-cold
+verdict is taken, and judged the existing work insufficient: *"The commit retains the summary
+but not an admission-quality runner or raw per-run record, so it does not allowlist any tuple."*
+
+That is a fair reading. REQ-067–069 measured the right thing and kept hashes and counts, which
+is research evidence, not an admission record. Built the runner rather than arguing the point.
+
+### `scripts/reader_determinism.py`
+
+Six or more cold completions on an explicitly emptied slot, retaining per run: raw token ids,
+text, per-position probability vectors, slot routing, cache_n, timing — plus the launch argv,
+process identity, binary and loaded-library digests, model and prompt digests, and the server's
+own build attestation. Verdict is exact parity, declared in the source before measuring: one
+text, one token sequence, one set of vectors, or the configuration is not allowlisted.
+
+Fails closed on its own inputs. A run that reused cache is not a cold sample; a run with empty
+probability vectors compares equal to any other such run; a set spread across slots is not six
+repetitions of one configuration. Each refuses the whole set rather than dropping a run.
+7/7 guards defended, 13 tests, none needing a GPU.
+
+### What the raw records showed that the counts did not
+
+| configuration | texts | token seqs | **prob vectors** | reproducible |
+|---|---:|---:|---:|:--:|
+| cuda-nvidia-hybrid | 1 | 1 | 1 | yes |
+| hip-amd-hybrid | 1 | 1 | 1 | yes |
+| vulkan-nvidia-hybrid | 3 | 3 | **6** | no |
+| vulkan-amd-hybrid | 3 | 3 | **6** | no |
+| vulkan-nvidia-dense | 1 | 1 | 1 | yes |
+| vulkan-amd-dense | 1 | 1 | 1 | yes |
+
+**All six Vulkan hybrid runs differ at the distribution level**, on both vendors. The text
+collapses them into three, so REQ-067's "3 distinct outputs" understated the instability by
+half. The steer's insistence on vectors over a summary count was not bureaucratic — it changed
+the number.
+
+Records retained at `docs/records/reader-determinism/`, all at build `b151-ca3d5a3e1` against
+one prompt digest.
+
+### Two bugs the runner found in itself
+
+The first preflight attempt failed all three configurations with HTTP 501 on
+`/slots/0?action=erase`: llama.cpp refuses every slot action unless `--slot-save-path` is set,
+and the runner did not pass it although the manual servers had. Nothing is saved by this
+runner, so the flag looked unnecessary. There is now a test asserting argv carries it.
+
+The mutation audit also flagged `if __name__ == "__main__": raise SystemExit(main())` as an
+undefended guard. It is an entrypoint, not a refusal, and no test can legitimately kill it —
+a false positive in `scripts/mutation_check.py`, now skipped rather than reported forever.
+
+Status: **proven by retained test** — the runner's refusals. **Measured once on this host** —
+all six configurations, with raw records committed. **Not claimed**: this preflight allowlists
+the four reproducible configurations for exact-parity comparison; it does not by itself
+allowlist any restore tuple, which is the steer's next step.

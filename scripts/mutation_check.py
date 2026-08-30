@@ -37,8 +37,16 @@ def guard_lines(source: str) -> list[tuple[int, str]]:
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.If):
             continue
-        if any(isinstance(inner, ast.Raise) for inner in node.body):
-            found[node.lineno - 1] = lines[node.lineno - 1].strip()
+        if not any(isinstance(inner, ast.Raise) for inner in node.body):
+            continue
+        # `if __name__ == "__main__": raise SystemExit(main())` is an entrypoint, not a
+        # refusal. Counting it produces a permanently undefended "guard" that no test can
+        # legitimately kill, which is noise in every report.
+        test = node.test
+        if (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
+                and test.left.id == "__name__"):
+            continue
+        found[node.lineno - 1] = lines[node.lineno - 1].strip()
     return sorted(found.items())
 
 
