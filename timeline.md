@@ -3100,3 +3100,56 @@ places the attachment where the runtime looks, hard-linking when the filesystems
 Status: **proven by retained test** — 11/11 guards, 42 tests, including that a foreign model is
 never offered an attachment by either lookup. **Measured once on this host** — the three-model
 drive and the memory-growth timings.
+
+---
+
+## REQ-076 — One drive across dense, hybrid and MoE
+
+**Request:** try it across dense and MoE models — does the same KVX share work with 9b, 27b and
+tiel on the W6800?
+
+Two corrections to the premise first, both stated rather than worked around. **There is no 9B
+model** on this host or in the llama-swap config; Ornith 1.5 is 35B-A3B, and it fails context
+creation on two 3090s. A dense Qwen2.5-3B stands in, which makes this a dense/hybrid/MoE
+comparison rather than a size one. And **both W6800s were fully occupied** by the fleet's two
+tiel instances (33.5 GB and 33.0 GB, ports 5818/5819), so this ran on the free 3090s rather
+than unloading a live service.
+
+### The tensor half, answered without a GPU
+
+| model | arch | layers | kv heads | head_dim |
+|---|---|---:|---:|---:|
+| Qwen2.5-3B-Instruct | `qwen2` dense | 36 | 2 | 128 |
+| Qwen3.8-27B | `qwen35` hybrid | 65 | 4 | 256 |
+| Tiel-Coder-35B-A3B | `qwen35moe` hybrid MoE | 41 | 2 | 256 |
+
+No pair shares a geometry, so no attachment can move between them. That is REQ-063's territory
+and already measured at 0.00 top-1; running it again would have re-asked an answered question.
+
+### The drive half, measured
+
+| visit | model | attachment | cache_n | prefilled | ms |
+|---|---|---|---:|---:|---:|
+| 2 | dense 3B | hit | **675** | **1** | **18** (from 84) |
+| 2 | hybrid 27B | hit | **0** | 676 | 761 (from 760) |
+| 2 | MoE tiel | hit | **0** | 676 | 439 (from 453) |
+
+Three content documents, each resolving only to its owner, three distinct attachment keys, no
+collisions. **The drive is architecture-agnostic; the payoff is not.** Both hybrid families
+store and restore perfectly and reuse nothing.
+
+MoE turns out not to be the distinguishing property — `qwen35` is not a mixture of experts and
+fails identically. **Hybrid is.** All three also tokenized the same text to 673 tokens, so these
+Qwen families share a tokenizer even where they share nothing else.
+
+### What that exposed, and the fix
+
+The drive reported the same "hit" for an attachment saving 97% of a prefill and one that can
+never be reused. `supports_prefix_reuse` predicted all three outcomes before any cache existed,
+so `attach` now records the architecture's verdict beside the attachment and `describe` reports
+it. Recorded rather than refused — the bytes are correct and a patched runtime can use them;
+what would be wrong is letting a caller assume a hit saved something. Unknown reads as unknown.
+
+Status: **measured once on this host** — the six-row table. **Proven by retained test** — the
+payoff reporting and that unknown never reads as paying (11/11 guards, 49 tests). **Not
+covered** — the fleet's fork binary, which is what serves tiel in production.
