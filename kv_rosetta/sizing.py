@@ -22,6 +22,7 @@ from pathlib import Path
 
 from kv_rosetta import gguf
 from kv_rosetta.adapters.llamacpp_ggsq import GGML_TYPES
+from kv_rosetta.gguf import HYBRID_ARCHITECTURES, RECURRENT_ARCHITECTURES
 
 #: magic, version, n_token_count.
 FILE_HEADER = 12
@@ -140,9 +141,20 @@ def state_bytes(geometry: KVGeometry, cells: int, *, kv_type: str = "f16",
     token ids than cache cells, which is worth four bytes each and is why the parameter is
     exposed rather than assumed equal.
 
-    Hybrid models are refused rather than approximated: their body continues into recurrent
-    state sized per layer, which none of these terms describe.
+    Hybrid and recurrent models are refused. Their body continues past the attention section
+    into recurrent state sized per layer, and not every layer carries attention KV at all, so
+    every term here is wrong for them in two directions at once. An earlier version said this
+    in prose and did not check it, which is worse than not saying it: a caller reading the
+    docstring would have taken an attention-only number for a whole file.
     """
+    if geometry.architecture in HYBRID_ARCHITECTURES:
+        raise SizingError(
+            f"{geometry.architecture} is hybrid: its state continues past the attention "
+            f"section into recurrent state, and not every layer carries attention KV. These "
+            f"terms describe neither, and the result would be wrong in both directions")
+    if geometry.architecture in RECURRENT_ARCHITECTURES:
+        raise SizingError(f"{geometry.architecture} is recurrent and has no attention KV "
+                          f"cells for these terms to size")
     problems = geometry.validate()
     if problems:
         raise SizingError("; ".join(problems))
@@ -160,7 +172,10 @@ def state_bytes(geometry: KVGeometry, cells: int, *, kv_type: str = "f16",
 
 
 def bytes_per_token(geometry: KVGeometry, *, kv_type: str = "f16") -> int:
-    """The marginal cost of one more cached token, header id included."""
-    return (BYTES_PER_HEADER_TOKEN + BYTES_PER_CELL_META
-            + geometry.n_layer * (row_size(kv_type, geometry.n_embd_k_gqa)
-                                  + row_size(kv_type, geometry.n_embd_v_gqa)))
+    """The marginal cost of one more cached token, header id included.
+
+    Derived as the difference between two adjacent totals so it cannot drift from
+    state_bytes, and so it inherits the same refusals.
+    """
+    return (state_bytes(geometry, 1, kv_type=kv_type)
+            - state_bytes(geometry, 0, kv_type=kv_type))

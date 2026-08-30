@@ -199,3 +199,54 @@ class HeadDimensionTest(unittest.TestCase):
         geometry = geometry_of(HYBRID)
         self.assertEqual(geometry.head_dim, 256)
         self.assertNotEqual(geometry.head_dim, 5120 // 24)
+
+
+class MarginalCostTest(unittest.TestCase):
+    def test_the_marginal_cost_follows_the_kv_type(self):
+        """It is derived from state_bytes, and the type has to reach both calls.
+
+        A first version passed neither and silently returned the f16 figure for every
+        quantised type - the same number, plausible, and wrong by nearly half.
+        """
+        self.assertLess(bytes_per_token(QWEN2, kv_type="q8_0"),
+                        bytes_per_token(QWEN2, kv_type="f16"))
+        self.assertEqual(bytes_per_token(QWEN2, kv_type="q8_0"),
+                         state_bytes(QWEN2, 1, kv_type="q8_0")
+                         - state_bytes(QWEN2, 0, kv_type="q8_0"))
+
+    def test_it_inherits_the_refusals(self):
+        with self.assertRaises(SizingError):
+            bytes_per_token(KVGeometry(0, 2, 128))
+        with self.assertRaises(SizingError):
+            bytes_per_token(KVGeometry(36, 2, 128, architecture="qwen35"))
+
+
+class HybridRefusalTest(unittest.TestCase):
+    """Hybrid and recurrent models are refused, and now actually checked.
+
+    The first version said so in the docstring and did not check, which is worse than
+    silence: a caller reading it would have taken an attention-only figure for a whole file.
+    Applying it to qwen35 left a NEGATIVE remainder against a measured artifact, which is
+    how the gap surfaced.
+    """
+
+    def test_a_hybrid_architecture_is_refused(self):
+        for arch in ("qwen35", "qwen35moe", "jamba", "falcon-h1"):
+            with self.subTest(arch=arch):
+                with self.assertRaises(SizingError) as caught:
+                    state_bytes(KVGeometry(65, 4, 256, architecture=arch), 2048)
+                self.assertIn("hybrid", str(caught.exception))
+
+    def test_a_recurrent_architecture_is_refused(self):
+        with self.assertRaises(SizingError) as caught:
+            state_bytes(KVGeometry(24, 4, 128, architecture="mamba2"), 2048)
+        self.assertIn("no attention KV", str(caught.exception))
+
+    def test_an_ordinary_architecture_still_passes(self):
+        self.assertGreater(state_bytes(QWEN2, 128), 0)
+        self.assertGreater(state_bytes(KVGeometry(28, 8, 64, architecture="qwen3"), 128), 0)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_the_live_hybrid_model_is_refused_end_to_end(self):
+        with self.assertRaises(SizingError):
+            state_bytes(geometry_of(HYBRID), 2048)
