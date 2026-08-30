@@ -1,0 +1,114 @@
+{
+ "alpha1": {
+  "alpha": 1.0,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 0.0,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 0,
+   "shared_tokens": 60,
+   "identical": true
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.99": {
+  "alpha": 0.99,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 1.4336514472961426,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 14,
+   "shared_tokens": 53,
+   "identical": false
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.95": {
+  "alpha": 0.95,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 1.6136422157287598,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 16,
+   "shared_tokens": 52,
+   "identical": false
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.9": {
+  "alpha": 0.9,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 2.453914165496826,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 28,
+   "shared_tokens": 46,
+   "identical": false
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.8": {
+  "alpha": 0.8,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 5.1897807121276855,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 34,
+   "shared_tokens": 43,
+   "identical": false
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.6": {
+  "alpha": 0.6,
+  "cache_n": 764,
+  "tokens_match": true,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 1.6800355911254883,
+   "top1_agreement": 1.0,
+   "tokens_only_in_one": 42,
+   "shared_tokens": 39,
+   "identical": false
+  },
+  "content": " had unknowingly assembled the longest continuous record of "
+ },
+ "alpha0.3": {
+  "alpha": 0.3,
+  "cache_n": 764,
+  "tokens_match": false,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 7.833828628063202,
+   "top1_agreement": 0.3333333333333333,
+   "tokens_only_in_one": 100,
+   "shared_tokens": 10,
+   "identical": false
+  },
+  "content": " had unknowingly recorded the exact moment the storm arrived"
+ },
+ "alpha0": {
+  "alpha": 0.0,
+  "cache_n": 764,
+  "tokens_match": false,
+  "divergence": {
+   "positions": 12,
+   "max_abs_logprob_delta": 2.4170990606071427,
+   "top1_agreement": 0.0,
+   "tokens_only_in_one": 118,
+   "shared_tokens": 1,
+   "identical": false
+  },
+  "content": ", having spent his life reading the sea, had learned to"
+ }
+}

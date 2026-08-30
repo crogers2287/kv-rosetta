@@ -1506,3 +1506,52 @@ Status: **measured once on this host** — one prompt, 768 tokens, one fitted ma
 tokens does not produce an admissible cache for this pair, and the gate says so. A linear map
 is the floor, not the ceiling — C2C-style learned projectors are the next rung — but nothing
 here supports admitting a translated cache today.
+
+## REQ-045 — How close is close enough? The gate's tolerance, measured
+
+REQ-044 established that a linear map at R² 0.55 fails. That says nothing about whether a
+*better* map would pass, and building one is expensive. This measures the target first.
+
+The method needs no new fitting: blend tiel's true cache with the translated one at a
+sequence of ratios, splice each into tiel's own artifact, and find where the gate flips.
+`alpha` is the fraction of the true cache; alpha 1.0 is the identity control and alpha 0.0 is
+the pure translation from REQ-044.
+
+| alpha | tokens match | top-1 |
+|---:|---|---:|
+| 1.00 | yes | 1.00 |
+| 0.99 | yes | 1.00 |
+| 0.95 | yes | 1.00 |
+| 0.90 | yes | 1.00 |
+| 0.80 | yes | 1.00 |
+| **0.60** | **yes** | **1.00** |
+| 0.30 | no | 0.33 |
+| 0.00 | no | 0.00 |
+
+**The flip is between 0.6 and 0.3** — far more tolerant than expected. A cache does not have
+to be nearly exact; roughly 60% of the way there suffices on this prompt.
+
+Converting a blend ratio to a fit quality: an alpha-blend has residual error
+`(1-alpha)` times the map's, so `effective R² = 1 - (1-alpha)²(1-R²)`. At R² 0.55:
+
+| alpha | effective R² |
+|---:|---:|
+| 0.80 | 0.982 |
+| 0.60 | **0.928** |
+| 0.30 | **0.780** |
+
+**So the target is an R² somewhere between 0.78 and 0.93, and the linear map delivers 0.55.**
+That is a real gap and a real number to aim at, rather than "it failed".
+
+Two caveats that keep this from being a measurement of the threshold itself. The logprob delta
+is **non-monotonic** across alpha — 5.19 at 0.8 against 1.68 at 0.6 — because on 12 generated
+positions the top-k membership churns; top-1 agreement and token equality are the stable
+signals here and delta is not. And this is one prompt with twelve generated tokens, so the
+0.3-to-0.6 bracket is coarse.
+
+Status: **measured once on this host** — one prompt, eight blend ratios, identity control
+exact at alpha 1.0. **The useful conclusion**: cross-model translation for this pair needs
+roughly R² 0.85, not 0.999. A per-layer linear map on 16k tokens reaches 0.55, so the approach
+is short by a wide but finite margin - which is an argument for a better map rather than
+against the idea. **Untested**: whether any map reaches 0.85 on this pair; whether the bracket
+holds on other prompts or longer generations.
