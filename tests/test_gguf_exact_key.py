@@ -131,6 +131,21 @@ class ExactKeyLookupTest(unittest.TestCase):
         with self.assertRaises(gguf.GGUFError):
             gguf.architecture(path)
 
+    def test_a_file_too_short_to_hold_a_header_fails_closed(self):
+        """Found undefended by a mutation audit while adding the sliding-window reader.
+
+        Without this check a 23-byte file is mmapped anyway, and mmap of a region shorter
+        than the fixed header reads past it - so the refusal has to happen before the map,
+        and it needs its own case because every other short-file test has enough bytes for
+        the magic and counts.
+        """
+        path = self.dir / "tiny.gguf"
+        path.write_bytes(MAGIC + struct.pack("<IQ", 3, 0) + b"\x00" * 7)
+        self.assertEqual(path.stat().st_size, 23)
+        with self.assertRaises(gguf.GGUFError) as caught:
+            gguf.architecture(path)
+        self.assertIn("too short", str(caught.exception))
+
     def test_a_header_promising_more_keys_than_it_has_fails_closed(self):
         path = write_gguf(self.dir / "short.gguf",
                           [kv_string("general.architecture", "qwen35")], n_kv=5)

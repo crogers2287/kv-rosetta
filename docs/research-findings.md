@@ -1609,3 +1609,108 @@ never passed it.
 Worth recording because of how it presented: a missing argument produced a corruption message
 about a healthy file. The gate refused rather than proceeding without a noise floor, which is
 the behaviour that made this cheap to find.
+
+---
+
+## 36. Sliding-window models: three scalars that were never scalars, and the file that proves it
+
+§34 measured `gemma-4-12b` and reported it as one more architecture needing checkpoints. What
+it did not say is that the model does not fit the shape this repo uses to describe a cache.
+Read off its GGUF with `kv_rosetta.gguf.read_metadata`:
+
+| key | value |
+|---|---|
+| `gemma4.block_count` | 48 |
+| `gemma4.attention.head_count_kv` | **array of 48**: `8` forty times, `1` eight times |
+| `gemma4.attention.sliding_window_pattern` | **array of 48**: five `true` then one `false`, repeating |
+| `gemma4.attention.key_length` / `..._swa` | 512 / **256** |
+| `gemma4.attention.sliding_window` | 1024 |
+| `gemma4.rope.freq_base` / `..._swa` | 1000000.0 / **10000.0** |
+
+So forty layers hold 8 KV heads of 256 and eight hold 1 head of 512. **No scalar head count,
+head dimension or rope base describes this model**, and every one of the three is a scalar
+here.
+
+### The reader was collapsing the arrays before anything could use them
+
+`read_metadata()` summarised an array of more than eight elements as the string
+`"[48 items]"` — and that string is the same for every 48-element array in every model.
+`scripts/cross_model_gate.py` `geometry_of()` put it in the dict that `require_same_geometry()`
+compares field by field, so **two different gemma4 models compared equal on the field that
+most distinguishes them** and the gate admitted a pair it exists to refuse. Reproduced on two
+synthetic 48-layer models differing only in their per-layer head counts.
+
+The same collapse hid it from the sizer for the opposite reason. `sizing.geometry_of()` has a
+guard that refuses a per-layer `head_count_kv` — and it tests `isinstance(kv_heads, (list,
+tuple))`, which a *string* is not. It caught the four-layer gemma4-31b (four elements survive
+the summary) and missed the forty-eight-layer one, which fell through to `int("[48 items]")`
+and raised a bare `ValueError` about string parsing. A refusal by accident, of the wrong type,
+saying nothing about geometry.
+
+Fixed at the reader: a summarised array is now a `TruncatedArray` that **raises when
+compared**. There is no true answer available from a value that was discarded, and `False`
+would be as wrong as `True` — it would report two identical models as differing. Callers that
+need the elements ask for them: `read_metadata(path, full_arrays=(...))`.
+
+### The state file has two attention sections, not one
+
+`llama_kv_cache_iswa` holds two caches — one for the full-attention layers, one for the
+sliding ones — and `state_write` emits **the base section then the SWA section, back to
+back**, each declaring only its own filtered layer count (`src/llama-kv-cache-iswa.cpp:259`,
+`src/llama-kv-cache.cpp:2277`). Row sizes come from `hparams.n_embd_k_gqa(il)`, which is
+per-layer on both factors. And the SWA section holds fewer cells than the sequence: a cell is
+skipped when `is_masked_swa(n_swa, STANDARD, pos, pos_max)`, which is `pos_max - pos >= n_swa`,
+so exactly the last `n_swa` survive.
+
+### Byte-exact, on two real artifacts, with nothing fitted
+
+`docs/records/payoff/payoff-gemma-{stock,patched}.json` recorded the saved slot sizes of two
+gemma4-12b state files written on this host over the same 7,371-cell sequence. Every term
+below comes from the writer:
+
+| | base section | SWA section | SCKP appendix | predicted | recorded |
+|---|---:|---:|---:|---:|---:|
+| stock build | 120,855,124 | 335,557,584 | — | **456,442,220** | 456,442,220 |
+| patched build | 120,855,124 | 335,557,584 | 671,115,276 | **1,127,557,496** | 1,127,557,496 |
+
+Both exact, residual zero. The base section is 8 layers × 1 head × 512 over 7,371 cells; the
+SWA section is 40 layers × 8 heads × 256 over `min(7371, 1024) = 1024`. Read as one 48-layer
+section — the shape this repo had — the same file predicts **2.3x too large**.
+
+The appendix confirms the checkpoint structure a second time. Checkpoints are written with
+`PARTIAL_ONLY`, which `llama_kv_cache_iswa::state_write` honours by skipping the base cache,
+so a gemma4 checkpoint payload is a sliding section and nothing else. Two of them, plus the
+appendix header and per-record framing already derived for the hybrid case, account for the
+671,115,276-byte difference to the byte — 108 bytes of which are framing that was derived
+elsewhere and not adjusted here.
+
+**The sliding section stops growing at the window.** Past 1,024 cells only the base section
+grows, at 16,400 bytes per cell against 344,092 below it — a **21x** step at the window. A
+per-token rate taken from a short gemma4 artifact over-predicts a long one by that factor,
+which is the same class of error as §18's missing 4-byte header token and very much larger.
+
+### What the layer numbers mean, and the silent version of getting them wrong
+
+The writer walks its **filtered** layer list and records only how many there were. gemma4-12b's
+SWA section covers model layers 0,1,2,3,4,6,7,… Read as 0..39 — which is what
+`read_attention_section` did, because a span's position was its layer — every tensor after the
+fifth is attributed to a layer that also exists, so nothing downstream notices.
+
+`materialise()` has the same shape of problem one level down: it takes one head count and one
+head dimension for every layer. gemma4's `8x256` and `1x2048` are **both 2048 wide**, so its
+width check passes and the reshape succeeds — it just splits one head into eight. Demonstrated
+in the retained test rather than argued: with a uniform layout the wrong shape comes back with
+no error raised at all.
+
+Both now take the model's own layer numbering, and a layer the caller does not describe is
+refused rather than defaulted.
+
+Status: **proven by retained test** — 51 tests, and 100% of the guards in `sizing.py` (43/43),
+`llamacpp_ggsq.py` (47/47), `gguf.py` (7/7) and `cross_model_gate.py` (8/8) defended under
+`scripts/mutation_check.py`. **Derived from the writer** — the two-section layout, the
+per-layer row sizes and the window's cell count. **Confirmed against artifacts** — the two
+recorded gemma4-12b file sizes, exactly, and the four qwen2 artifacts from §18 through the
+same code path. **Not covered** — a chunked or symmetric window, whose shape is assigned in
+C++ rather than declared in the GGUF and is refused rather than assumed; and the checkpoint
+payload of a sliding-window-free model, where `PARTIAL_ONLY` writes a whole attention section
+that has never been measured.

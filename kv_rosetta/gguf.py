@@ -41,8 +41,53 @@ class GGUFError(ValueError):
     pass
 
 
-def read_metadata(path: Path | str, keys: tuple[str, ...] = ()) -> dict[str, Any]:
-    """Read the GGUF key/value header. `keys` filters by substring; empty reads all."""
+class TruncatedArray:
+    """An array read_metadata declined to materialise. It refuses to be compared.
+
+    The summary used to be the plain string ``"[48 items]"``, and that string is the same
+    for every 48-element array in every model. gemma4 declares its KV head count as one
+    value per layer, so two different gemma4 models - different head counts, different
+    layer roles - compared **equal** on that field, and scripts/cross_model_gate.py's
+    same-geometry check passed a pair it exists to refuse. A summary that compares equal to
+    a different model's summary is worse than no summary.
+
+    So equality raises. There is no true answer available from a value that was discarded,
+    and returning False would be as wrong as returning True: it would report two identical
+    models as differing. The caller is told which key to re-read in full instead.
+    """
+
+    __slots__ = ("length", "element_type")
+
+    def __init__(self, length: int, element_type: int) -> None:
+        self.length, self.element_type = length, element_type
+
+    def __repr__(self) -> str:
+        return f"[{self.length} items]"
+
+    __str__ = __repr__
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __eq__(self, other: object) -> bool:
+        raise GGUFError(
+            f"this array of {self.length} elements was summarised rather than read, so it "
+            f"cannot be compared; read the key with read_metadata(..., "
+            f"full_arrays=(<key>,)) if its elements are the answer")
+
+    __hash__ = None                      # type: ignore[assignment]
+
+
+def read_metadata(path: Path | str, keys: tuple[str, ...] = (), *,
+                  full_arrays: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Read the GGUF key/value header. `keys` filters by substring; empty reads all.
+
+    An array of more than eight elements is summarised as a TruncatedArray, because a
+    tokenizer vocabulary is 150k Python strings and almost no caller wants it. `full_arrays`
+    names - by the same substring match as `keys` - the arrays whose **elements are the
+    answer**: a per-layer head count or sliding-window pattern is unusable as a summary, and
+    was silently unusable before this existed.
+    """
     path = Path(path)
     try:
         handle = open(path, "rb")
@@ -59,7 +104,7 @@ def read_metadata(path: Path | str, keys: tuple[str, ...] = ()) -> dict[str, Any
             n = struct.unpack("<Q", handle.read(8))[0]
             return handle.read(n).decode("utf-8", "replace")
 
-        def read_value(kind: int) -> Any:
+        def read_value(kind: int, *, keep: bool = False) -> Any:
             if kind in _SCALARS:
                 fmt = _SCALARS[kind]
                 return struct.unpack(fmt, handle.read(struct.calcsize(fmt)))[0]
@@ -71,14 +116,16 @@ def read_metadata(path: Path | str, keys: tuple[str, ...] = ()) -> dict[str, Any
                 # Every element must be consumed even when discarded, or the reader
                 # desynchronises and every later key is garbage.
                 values = [read_value(element) for _ in range(length)]
-                return values if length <= 8 else f"[{length} items]"
+                if keep or length <= 8:
+                    return values
+                return TruncatedArray(length, element)
             raise GGUFError(f"unknown GGUF value type {kind}")
 
         out: dict[str, Any] = {}
         for _ in range(n_kv):
             key = read_string()
             kind = struct.unpack("<I", handle.read(4))[0]
-            value = read_value(kind)
+            value = read_value(kind, keep=any(k in key for k in full_arrays))
             if not keys or any(k in key for k in keys):
                 out[key] = value
         return out

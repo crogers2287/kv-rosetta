@@ -136,12 +136,22 @@ class AttentionSection:
 
 
 def read_attention_section(handle: BinaryIO, start: int, end: int, *,
-                           has_cell_ext: bool, cell_ext_size: int = 0) -> AttentionSection:
+                           has_cell_ext: bool, cell_ext_size: int = 0,
+                           layer_indices: tuple[int, ...] | None = None) -> AttentionSection:
     """Parse one attention KV section and locate every tensor payload.
 
     `has_cell_ext` is not discoverable from the file - it is an architecture property, and
     guessing it desynchronises the whole parse - so the caller must supply it from the
     resolved source geometry.
+
+    `layer_indices` names the model layer each position in this section belongs to. The
+    writer walks its **filtered** layer list and records only how many there were, so for a
+    sliding-window model - whose file holds a base section and an SWA section, each covering
+    a different subset - a span's position is not its layer. gemma4-12b's SWA section holds
+    forty layers numbered 0,1,2,3,4,6,...; read as 0..39 every tensor after the fifth is
+    attributed to the wrong layer, and each of those layers has a real geometry, so nothing
+    downstream notices. Left None the position IS the layer, which is true only for a model
+    with a single unfiltered cache.
     """
     reader = Reader(handle, start, end)
     n_stream = reader.u32()
@@ -170,9 +180,20 @@ def read_attention_section(handle: BinaryIO, start: int, end: int, *,
     n_layer = reader.u32()
     if not 1 <= n_layer <= 512:
         raise GGSQError(f"implausible n_layer {n_layer}")
+    if layer_indices is None:
+        layers = tuple(range(n_layer))
+    else:
+        layers = tuple(layer_indices)
+        if len(layers) != n_layer:
+            raise GGSQError(f"the caller named {len(layers)} model layers but this section "
+                            f"declares {n_layer}; one of the two is about a different cache")
+        if len(set(layers)) != len(layers):
+            raise GGSQError(f"the layer map {list(layers)} names a model layer twice")
+        if any(index < 0 for index in layers):
+            raise GGSQError(f"the layer map {list(layers)} names a negative model layer")
 
     spans: list[TensorSpan] = []
-    for layer in range(n_layer):
+    for layer in layers:
         type_id = reader.i32()
         stride = reader.u64()
         nbytes = cell_count * stride
@@ -183,7 +204,7 @@ def read_attention_section(handle: BinaryIO, start: int, end: int, *,
             n_elements=elements_from_row_size(type_id, stride),
             offset=offset, nbytes=nbytes))
 
-    for layer in range(n_layer):
+    for layer in layers:
         type_id = reader.i32()
         if not v_trans:
             stride = reader.u64()
@@ -469,6 +490,48 @@ def materialise(handle: BinaryIO, span: TensorSpan, *, n_head: int, head_dim: in
                         f"says {width}")
     values = dequantise(raw, span.type_id, width * cell_count)
     return values.reshape(width, cell_count).T.reshape(cell_count, n_head, head_dim)
+
+
+@dataclass(frozen=True)
+class LayerHeads:
+    """One layer's head geometry. Keys and values are sized separately because a model may
+    declare different key and value lengths, and a sliding-window model declares two of
+    each."""
+
+    n_kv_head: int
+    head_dim: int
+    value_head_dim: int
+
+
+def materialise_section(handle: BinaryIO, section: AttentionSection,
+                        layout: dict[int, LayerHeads]) -> dict[tuple[int, str], "np.ndarray"]:
+    """Every span in one section as canonical (token, head, dim), per-layer geometry.
+
+    `materialise` takes one head count and one head dimension, which describes a model whose
+    layers agree. gemma4-12b's do not: its sliding layers are 8 heads of 256 and its
+    full-attention layers 1 head of 512. Feeding either shape to all forty-eight is not
+    caught by the width check in `materialise` - 8x256 and 1x2048 are both 2048 wide - so a
+    reshape would succeed and return heads that were never heads.
+
+    `layout` is keyed by **model** layer index, the one `read_attention_section` records
+    from its `layer_indices`. A layer the layout does not describe is refused: there is no
+    geometry to fall back on, and any fallback would be a shape this decoder invented.
+    """
+    out: dict[tuple[int, str], "np.ndarray"] = {}
+    for span in section.spans:
+        if span.layer_index not in layout:
+            raise GGSQError(
+                f"the layout describes layers {sorted(layout)} and this section carries "
+                f"layer {span.layer_index}; refusing to pick a geometry for it")
+        heads = layout[span.layer_index]
+        if span.kind not in ("k", "v"):
+            raise GGSQError(f"layer {span.layer_index} carries a {span.kind!r} span, which "
+                            f"is not attention K or V and has no head geometry")
+        dim = heads.head_dim if span.kind == "k" else heads.value_head_dim
+        out[(span.layer_index, span.kind)] = materialise(
+            handle, span, n_head=heads.n_kv_head, head_dim=dim,
+            cell_count=section.cell_count)
+    return out
 
 
 def quantise(values: "np.ndarray", type_id: int) -> bytes:

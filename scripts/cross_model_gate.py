@@ -53,13 +53,29 @@ class GateError(RuntimeError):
 
 
 def geometry_of(path: str) -> dict:
-    """The fields that decide whether two caches are the same shape."""
-    md = gguf.read_metadata(path)
+    """The fields that decide whether two caches are the same shape.
+
+    The per-layer arrays are read in full, and that is the point of the `full_arrays`
+    argument. Summarised, gemma4's forty-eight-entry `head_count_kv` came back as the
+    string "[48 items]" - the same string for every gemma4 of forty-eight layers, whatever
+    those layers actually declare - so two different models compared **equal** on the field
+    that most distinguishes them, and require_same_geometry admitted a pair it exists to
+    refuse. The same collapse hid the sliding-window pattern, which decides which layers
+    share a cache at all.
+    """
+    per_layer = ("attention.head_count_kv", "attention.sliding_window_pattern")
+    md = gguf.read_metadata(path, full_arrays=tuple(f".{key}" for key in per_layer))
     arch = md.get("general.architecture")
     if not arch:
         raise GateError(f"{path} declares no architecture")
     def g(key):
-        return md.get(f"{arch}.{key}")
+        value = md.get(f"{arch}.{key}")
+        if isinstance(value, gguf.TruncatedArray):
+            raise GateError(
+                f"{path}: {arch}.{key} is an array of {len(value)} elements that was "
+                f"summarised rather than read, and a summary compares equal to a different "
+                f"model's summary; add it to the arrays this reads in full")
+        return tuple(value) if isinstance(value, list) else value
 
     # Many architectures omit attention.key_length and derive head_dim from
     # embedding_length / head_count instead. Left as None those fields compare None to
@@ -86,6 +102,14 @@ def geometry_of(path: str) -> dict:
         "value_length": value_length,
         "head_dim_derived": derived,
         "rope_freq_base": g("rope.freq_base"),
+        # A sliding-window model carries a second cache with its own head dimension, its
+        # own window and its own rope base. Two models agreeing on everything above and
+        # differing here do not share a KV geometry - one of them has two caches.
+        "sliding_window": g("attention.sliding_window"),
+        "sliding_window_pattern": g("attention.sliding_window_pattern"),
+        "key_length_swa": g("attention.key_length_swa"),
+        "value_length_swa": g("attention.value_length_swa"),
+        "rope_freq_base_swa": g("rope.freq_base_swa"),
     }
 
 

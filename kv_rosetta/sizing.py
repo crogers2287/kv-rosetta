@@ -117,6 +117,19 @@ class KVGeometry:
             problems.append("value_head_dim must be positive")
         return problems
 
+    def layered(self) -> "LayeredGeometry":
+        """The same model as a per-layer geometry: every layer identical, none sliding.
+
+        Exists so the uniform and per-layer size laws are one law rather than two that
+        happen to agree. A second implementation of the same arithmetic is a place for the
+        two to drift apart, and only the artifacts of one of them would notice.
+        """
+        return LayeredGeometry(
+            layers=tuple(LayerKV(index=index, n_kv_head=self.n_kv_head,
+                                 head_dim=self.head_dim, value_head_dim=self.value_dim)
+                         for index in range(self.n_layer)),
+            architecture=self.architecture)
+
 
 def row_size(type_name: str, n_elements: int) -> int:
     """ggml_row_size: whole blocks only, so a row must be a multiple of the block size."""
@@ -144,9 +157,15 @@ def geometry_of(model: Path | str) -> KVGeometry:
         raise SizingError(f"{model} does not declare {', '.join(missing)}")
     heads = found[f"{arch}.attention.head_count"]
     kv_heads = found[f"{arch}.attention.head_count_kv"]
-    if isinstance(kv_heads, (list, tuple)):
-        raise SizingError(f"{arch} declares per-layer head_count_kv {list(kv_heads)}; a "
-                          f"single row size does not describe this model")
+    # A model with more than eight layers arrives here as a TruncatedArray, not a list: the
+    # reader summarises long arrays. The isinstance check below caught the four-layer case
+    # and missed gemma4's forty-eight-layer one, which then reached int() and raised a bare
+    # ValueError reading "invalid literal for int() with base 10: '[48 items]'" - a refusal
+    # by accident, from the wrong exception type, saying nothing about geometry.
+    if isinstance(kv_heads, (list, tuple, gguf.TruncatedArray)):
+        raise SizingError(f"{arch} declares per-layer head_count_kv {kv_heads}; a single "
+                          f"row size does not describe this model - use "
+                          f"layered_geometry_of")
     if not heads:
         raise SizingError(f"{arch} declares head_count {heads}")
 
@@ -365,3 +384,301 @@ def hybrid_state_bytes(geometry: HybridGeometry, cells: int, *, checkpoints: int
             BYTES_PER_CHECKPOINT_RECORD + 3 * BYTES_PER_CHECKPOINT_BUFFER_LENGTH + payload)
     return (FILE_HEADER + BYTES_PER_HEADER_TOKEN * tokens + attn_bytes + rec_bytes
             + appendix)
+
+
+#: Architectures whose loader in the pinned tree sets `swa_type = LLAMA_SWA_TYPE_STANDARD`,
+#: which is the only window shape whose retained-cell count these terms can derive. The
+#: window type is NOT a GGUF key - it is assigned in C++ - so it cannot be read off a model
+#: file, and an architecture not listed here is refused rather than assumed standard. A
+#: chunked window keeps whole chunks and a symmetric one keeps half a window either side;
+#: taking one for the other silently misestimates the sliding section, which is 74% of the
+#: gemma4 artifact below.
+STANDARD_SWA_ARCHITECTURES = frozenset({"gemma4", "gemma4-assistant"})
+
+
+@dataclass(frozen=True)
+class LayerKV:
+    """One layer's KV row geometry, and whether it lives in the sliding-window cache.
+
+    `index` is the model's own layer number, not a position in a list. A sliding-window
+    model's state file holds two sections, each covering a filtered subset of layers, so a
+    span's position within its section is not the layer it came from - and attributing a
+    tensor to the wrong layer is the failure this field exists to prevent.
+    """
+
+    index: int
+    n_kv_head: int
+    head_dim: int
+    value_head_dim: int
+    sliding: bool = False
+
+    @property
+    def n_embd_k_gqa(self) -> int:
+        return self.n_kv_head * self.head_dim
+
+    @property
+    def n_embd_v_gqa(self) -> int:
+        return self.n_kv_head * self.value_head_dim
+
+    def validate(self) -> list[str]:
+        return [f"layer {self.index}: {name} must be positive"
+                for name in ("n_kv_head", "head_dim", "value_head_dim")
+                if getattr(self, name) <= 0]
+
+
+@dataclass(frozen=True)
+class LayeredGeometry:
+    """A model whose layers need not agree, which is the only kind gemma4 has.
+
+    KVGeometry carries one head count and one head dimension for the whole model. gemma4-12b
+    declares forty-eight of each: its sliding layers hold 8 KV heads of 256, its
+    full-attention layers 1 head of 512. No scalar describes that, and any scalar chosen
+    from it is wrong for forty of the forty-eight layers or for the other eight.
+    """
+
+    layers: tuple[LayerKV, ...]
+    architecture: str = ""
+    sliding_window: int = 0
+
+    @property
+    def n_layer(self) -> int:
+        return len(self.layers)
+
+    @property
+    def base_layers(self) -> tuple[LayerKV, ...]:
+        """Layers in the non-SWA cache, in the order the writer walks them."""
+        return tuple(layer for layer in self.layers if not layer.sliding)
+
+    @property
+    def sliding_layers(self) -> tuple[LayerKV, ...]:
+        return tuple(layer for layer in self.layers if layer.sliding)
+
+    @property
+    def is_uniform(self) -> bool:
+        """Whether one row size would have described every layer after all."""
+        shapes = {(layer.n_kv_head, layer.head_dim, layer.value_head_dim, layer.sliding)
+                  for layer in self.layers}
+        return len(shapes) <= 1
+
+    def validate(self) -> list[str]:
+        problems: list[str] = []
+        if not self.layers:
+            problems.append("a geometry with no layers describes no cache")
+        seen = [layer.index for layer in self.layers]
+        if len(set(seen)) != len(seen):
+            problems.append(f"layer indices {seen} repeat")
+        for layer in self.layers:
+            problems.extend(layer.validate())
+        if self.sliding_layers and self.sliding_window <= 0:
+            problems.append("sliding layers need a positive sliding_window")
+        if self.sliding_window and not self.sliding_layers:
+            problems.append(f"sliding_window {self.sliding_window} is declared but no "
+                            f"layer is a sliding-window layer")
+        return problems
+
+    def head_layout(self) -> dict[int, tuple[int, int, int]]:
+        """layer index -> (kv heads, key head dim, value head dim), for a tensor decoder."""
+        return {layer.index: (layer.n_kv_head, layer.head_dim, layer.value_head_dim)
+                for layer in self.layers}
+
+
+def _per_layer(value, n_layer: int, key: str, arch: str) -> tuple[int, ...]:
+    """One declared value broadcast, or one per layer. Never a truncated summary."""
+    if isinstance(value, gguf.TruncatedArray):
+        raise SizingError(
+            f"{arch} declares {key} as an array of {len(value)} elements that was "
+            f"summarised rather than read; re-read it with full_arrays")
+    if isinstance(value, (list, tuple)):
+        if len(value) != n_layer:
+            raise SizingError(f"{arch} declares {len(value)} values for {key} against "
+                              f"{n_layer} layers; the two cannot be matched up")
+        return tuple(int(item) for item in value)
+    return tuple(int(value) for _ in range(n_layer))
+
+
+def layered_geometry_of(model: Path | str) -> LayeredGeometry:
+    """Per-layer KV geometry from the GGUF, including the sliding-window split.
+
+    Reads what llama.cpp reads: `attention.head_count_kv` (scalar or one per layer),
+    `attention.sliding_window_pattern` (true where the layer is a sliding-window layer),
+    and the two pairs of head dimensions - `key_length`/`value_length` for full-attention
+    layers, `key_length_swa`/`value_length_swa` for sliding ones. Mirrors
+    `llama_hparams::n_embd_k_gqa(il)`, which is `n_embd_head_k(il) * n_head_kv(il)` with
+    both terms selected by `is_swa(il)`.
+    """
+    arch = gguf.architecture(model)
+    layer_key = f"{arch}.block_count"
+    kv_key = f"{arch}.attention.head_count_kv"
+    pattern_key = f"{arch}.attention.sliding_window_pattern"
+    window_key = f"{arch}.attention.sliding_window"
+    dims = (f"{arch}.attention.key_length", f"{arch}.attention.value_length",
+            f"{arch}.attention.key_length_swa", f"{arch}.attention.value_length_swa")
+    read = gguf.read_metadata(model, (layer_key, kv_key, pattern_key, window_key) + dims,
+                              full_arrays=(kv_key, pattern_key))
+    for required in (layer_key, kv_key):
+        if required not in read:
+            raise SizingError(f"{model} does not declare {required}")
+    n_layer = int(read[layer_key])
+    if n_layer <= 0:
+        raise SizingError(f"{arch} declares {n_layer} blocks")
+
+    pattern = read.get(pattern_key)
+    if pattern is None:
+        sliding = (False,) * n_layer
+    elif isinstance(pattern, (list, tuple)):
+        if len(pattern) != n_layer:
+            raise SizingError(f"{arch} declares {len(pattern)} sliding_window_pattern "
+                              f"entries against {n_layer} layers")
+        sliding = tuple(bool(item) for item in pattern)
+    else:
+        # gemma3 wrote this key as a period ("every n-th layer is full attention") and
+        # gemma4 writes one flag per layer. llama.cpp's get_key_or_arr broadcasts a scalar
+        # to every layer, which under the period reading would make every layer sliding.
+        # The two meanings disagree about forty of gemma4-12b's forty-eight layers, so a
+        # scalar is refused rather than read under either.
+        raise SizingError(
+            f"{arch} declares a scalar {pattern_key} ({pattern}); that key has meant both "
+            f"a per-layer flag and a repeat period, and this cannot tell which")
+
+    key_dim = read.get(dims[0])
+    if key_dim is None:
+        raise SizingError(f"{model} does not declare {dims[0]}; a per-layer geometry has "
+                          f"no single embedding_length to divide")
+    value_dim = int(read.get(dims[1]) or key_dim)
+    if any(sliding):
+        if read.get(dims[2]) is None:
+            raise SizingError(
+                f"{arch} marks {sum(sliding)} layers as sliding-window but declares no "
+                f"{dims[2]}; those layers use a different head dimension and assuming the "
+                f"full-attention one would misstate every one of them")
+        swa_key_dim = int(read[dims[2]])
+        swa_value_dim = int(read.get(dims[3]) or swa_key_dim)
+    else:
+        swa_key_dim = swa_value_dim = 0
+
+    heads = _per_layer(read[kv_key], n_layer, kv_key, arch)
+    layers = tuple(
+        LayerKV(index=index, n_kv_head=heads[index],
+                head_dim=swa_key_dim if sliding[index] else int(key_dim),
+                value_head_dim=swa_value_dim if sliding[index] else value_dim,
+                sliding=sliding[index])
+        for index in range(n_layer))
+    window = int(read.get(window_key) or 0)
+    geometry = LayeredGeometry(layers=layers, architecture=arch, sliding_window=window)
+    problems = geometry.validate()
+    if problems:
+        raise SizingError("; ".join(problems))
+    return geometry
+
+
+def sliding_cells(geometry: LayeredGeometry, cells: int) -> int:
+    """How many cells the sliding-window section holds for a `cells`-cell sequence.
+
+    From the writer, not from a fit: `llama_kv_cache::state_write` skips a cell when
+    `is_masked_swa(n_swa, swa_type, pos, pos_max)` is true, and for LLAMA_SWA_TYPE_STANDARD
+    that is `pos_max - pos >= n_swa`. Over contiguous positions exactly the last `n_swa`
+    survive, so the section holds `min(cells, n_swa)` - a constant beyond the window, which
+    is why a per-token rate taken from a long gemma4 artifact over-predicts a longer one.
+    """
+    if not geometry.sliding_layers:
+        raise SizingError(f"{geometry.architecture} has no sliding-window layers, so it "
+                          f"has no sliding section to count cells for")
+    if geometry.architecture not in STANDARD_SWA_ARCHITECTURES:
+        raise SizingError(
+            f"the window shape of {geometry.architecture} is set in llama.cpp rather than "
+            f"declared in the GGUF, and it is not one of the architectures verified to use "
+            f"the standard window; state the sliding cell count rather than deriving it")
+    if cells < 0:
+        raise SizingError(f"cell count {cells} is negative")
+    return min(cells, geometry.sliding_window)
+
+
+def _attention_section_bytes(layers: tuple[LayerKV, ...], cells: int, *, kv_type: str,
+                             per_cell: int) -> int:
+    """One `llama_kv_cache::state_write` section, single stream.
+
+    A zero-cell section is the writer's early `continue`: it emits n_stream and cell_count
+    and nothing else - no meta, no v_trans/n_layer, no per-layer headers.
+    """
+    total = SECTION_HEADER
+    if cells == 0:
+        return total
+    total += per_cell * cells + DATA_HEADER
+    for layer in layers:
+        total += 2 * BYTES_PER_TENSOR_HEADER + cells * (
+            row_size(kv_type, layer.n_embd_k_gqa) + row_size(kv_type, layer.n_embd_v_gqa))
+    return total
+
+
+def layered_state_bytes(geometry: LayeredGeometry, cells: int, *,
+                        checkpoint_cells: tuple[int, ...], sliding_cell_count: int | None = None,
+                        kv_type: str = "f16", header_tokens: int | None = None) -> int:
+    """Exact size of a sequence state file whose layers need not share a geometry.
+
+    A sliding-window model does not write one attention section. `llama_kv_cache_iswa`
+    holds two caches - one for the full-attention layers, one for the sliding ones - and
+    `state_write` emits **the base section then the SWA section, back to back**, each
+    declaring only its own filtered layer count. Treating the file as a single section with
+    forty-eight layers is wrong twice over: wrong layer counts and wrong row sizes.
+
+    `checkpoint_cells` has no default and must be stated, one entry per SCKP record giving
+    that checkpoint's sliding cell count. Checkpoints are written with PARTIAL_ONLY, which
+    `llama_kv_cache_iswa::state_write` honours by skipping the base cache, so a checkpoint
+    payload is a sliding section and nothing else. Defaulting it to none would under-predict
+    the checkpoint-persisting build's gemma4 artifact by 60% - a space guard failing open.
+    """
+    if geometry.architecture in HYBRID_ARCHITECTURES:
+        raise SizingError(f"{geometry.architecture} is hybrid: its state continues past "
+                          f"the attention sections into recurrent state; use "
+                          f"hybrid_state_bytes")
+    if geometry.architecture in RECURRENT_ARCHITECTURES:
+        raise SizingError(f"{geometry.architecture} is recurrent and has no attention KV "
+                          f"cells for these terms to size")
+    problems = geometry.validate()
+    if problems:
+        raise SizingError("; ".join(problems))
+    if cells < 0:
+        raise SizingError(f"cell count {cells} is negative")
+    tokens = cells if header_tokens is None else header_tokens
+    if tokens < 0:
+        raise SizingError(f"header token count {tokens} is negative")
+
+    base, sliding = geometry.base_layers, geometry.sliding_layers
+    if sliding and sliding_cell_count is None:
+        raise SizingError(
+            f"{geometry.architecture} has {len(sliding)} sliding-window layers whose "
+            f"section holds fewer cells than the sequence; state that count, or take it "
+            f"from sliding_cells()")
+    if sliding_cell_count is not None and not sliding:
+        raise SizingError(f"{geometry.architecture} has no sliding-window layers, so a "
+                          f"sliding cell count of {sliding_cell_count} describes nothing")
+    swa_cells = 0 if sliding_cell_count is None else sliding_cell_count
+    if swa_cells < 0:
+        raise SizingError(f"sliding cell count {swa_cells} is negative")
+    if swa_cells > cells:
+        raise SizingError(f"the sliding section cannot hold {swa_cells} cells out of a "
+                          f"{cells}-cell sequence")
+    if checkpoint_cells and not sliding:
+        raise SizingError(
+            f"a checkpoint of {geometry.architecture} is not a sliding section - with no "
+            f"SWA cache, PARTIAL_ONLY writes the whole attention section instead, and that "
+            f"payload has never been checked against a real artifact")
+    if any(count < 0 or count > swa_cells for count in checkpoint_cells):
+        raise SizingError(f"checkpoint cell counts {list(checkpoint_cells)} do not all lie "
+                          f"between 0 and the sliding section's {swa_cells}")
+
+    per_cell = BYTES_PER_CELL_META
+    if writes_cell_ext(geometry.architecture):
+        per_cell += BYTES_PER_CELL_EXT
+    body = _attention_section_bytes(base, cells, kv_type=kv_type, per_cell=per_cell)
+    if sliding:
+        body += _attention_section_bytes(sliding, swa_cells, kv_type=kv_type,
+                                         per_cell=per_cell)
+    appendix = 0
+    if checkpoint_cells:
+        appendix = CHECKPOINT_APPENDIX_HEADER + sum(
+            BYTES_PER_CHECKPOINT_RECORD + 3 * BYTES_PER_CHECKPOINT_BUFFER_LENGTH
+            + CHECKPOINT_PAYLOAD_PREAMBLE
+            + _attention_section_bytes(sliding, count, kv_type=kv_type, per_cell=per_cell)
+            for count in checkpoint_cells)
+    return FILE_HEADER + BYTES_PER_HEADER_TOKEN * tokens + body + appendix

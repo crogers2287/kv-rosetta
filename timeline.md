@@ -3254,3 +3254,72 @@ Status: **measured once on this host** — the four rows. **Proven by retained t
 sliding-window rule and that unknown never reads as paying (11/11 guards, 59 tests). **Not
 covered** — running on Gary itself; the model was copied here because Gary has no patched build
 and building one there was not worth the disruption.
+
+---
+
+## REQ-080 — Sliding-window attention converts clean: per-layer geometry, two sections, byte-exact
+
+**Request:** make sliding-window models decode and convert cleanly. The codebase assumes one
+uniform KV geometry per model — a scalar `n_head_kv`, one `key_length`, one rope base — and
+`gemma-4-12b-qat` violates all three. Find and fix the latent comparison bug in
+`scripts/cross_model_gate.py`, make the GGSQ decoder produce correct tensors for a model whose
+layers differ, and size a gemma4 state file exactly. No GPU: both 3090s and the W6800 fleet
+were in use for another experiment.
+
+Verified the model's metadata first rather than taking the brief's word for it: 48 layers,
+`head_count_kv` an array of 48 (`8` on forty layers, `1` on eight), `sliding_window_pattern` an
+array of 48, `key_length` 512 against `key_length_swa` 256, `rope.freq_base` 1000000 against
+`rope.freq_base_swa` 10000. All confirmed.
+
+### Two bugs, both from the same collapsed array
+
+`gguf.read_metadata()` summarised an array of more than eight elements as the string
+`"[48 items]"`. That string is identical for every 48-element array in every model, so:
+
+* `cross_model_gate.geometry_of()` put it in the dict `require_same_geometry()` compares, and
+  **two different gemma4 models compared equal** on their per-layer head counts. Reproduced on
+  two synthetic 48-layer models differing only in that field; the gate admitted the pair.
+* `sizing.geometry_of()`'s guard against a per-layer `head_count_kv` tests
+  `isinstance(x, (list, tuple))`, which a string is not. It caught the four-layer gemma4-31b
+  and missed the forty-eight-layer one, which reached `int("[48 items]")` and raised a bare
+  `ValueError` about string parsing.
+
+Fixed at the reader: a summary is now a `TruncatedArray` that raises when compared. `False`
+would be as wrong as `True` — it reports two identical models as differing — so neither is
+returned. `read_metadata(..., full_arrays=(...))` gets the elements for callers that need them.
+
+### The file is two attention sections
+
+`llama_kv_cache_iswa::state_write` emits the base cache then the SWA cache back to back, each
+declaring only its own filtered layers, and the SWA section keeps only the last `n_swa` cells.
+Read from the writer in the pinned tree, not inferred from bytes.
+
+### Byte-exact, offline, on two recorded artifacts
+
+| build | predicted | recorded | delta |
+|---|---:|---:|---:|
+| stock | **456,442,220** | 456,442,220 | **0** |
+| checkpoint-persisting | **1,127,557,496** | 1,127,557,496 | **0** |
+
+Both file sizes came from `docs/records/payoff/payoff-gemma-*.json` (REQ-078), so **no live
+state file was needed and no server was started**. The same code path also reproduces all four
+qwen2 artifacts from REQ-036/037/038, because `KVGeometry.layered()` routes the uniform case
+through the same law rather than a second copy of the arithmetic.
+
+Read as one 48-layer section — the shape this repo had — the same file predicts 2.3x too large.
+
+### The silent failure the tensor decoder had
+
+gemma4's `8x256` and `1x2048` are both 2048 wide, so `materialise()`'s width check passes for
+either and the reshape succeeds; it just splits one head into eight. The retained test
+demonstrates that rather than asserting it: with a uniform layout the wrong shape comes back
+and nothing raises. Spans now carry the model's own layer number and each layer is read at its
+own width; an undescribed layer is refused rather than defaulted.
+
+Status: **proven by retained test** — 51 new tests, plus one for a pre-existing undefended
+guard in `gguf.read_string_key` that the audit surfaced. Mutation audit 100% on every file
+touched: `sizing.py` 43/43, `llamacpp_ggsq.py` 47/47, `gguf.py` 7/7, `cross_model_gate.py` 8/8.
+Full suite green at 1,253 tests. **Not covered** — chunked and symmetric windows, whose shape
+is assigned in C++ rather than declared in the GGUF and are refused rather than assumed; and
+the checkpoint payload of a model with no SWA cache, where `PARTIAL_ONLY` writes a whole
+attention section that has never been measured. Detail in research-findings §36.
