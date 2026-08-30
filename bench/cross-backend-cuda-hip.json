@@ -1,0 +1,196 @@
+{
+  "all_outputs_match": true,
+  "architecture": "qwen2",
+  "both_directions_reuse": true,
+  "directions": [
+    {
+      "artifact_bytes": 302121868,
+      "artifact_sha256": "c1e39b0184bfcca336eb7dab7ac0fc1f4bdda955f7eeab8b8a670e946992f8a3",
+      "backend_vs_backend_cold": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.7183141708374023,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "cache_n": 8191,
+      "content_matches": true,
+      "control_cache_n": 0,
+      "direction": "cuda_to_hip",
+      "foreign_cache_vs_own_cache": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.31060028076171875,
+        "positions": 8,
+        "shared_tokens": 39,
+        "tokens_only_in_one": 2,
+        "top1_agreement": 1.0
+      },
+      "logprobs_match": false,
+      "own_restore_cache_n": 8191,
+      "own_restore_tokens_match": true,
+      "own_restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.7496471405029297,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "prompt_n": 1,
+      "prompt_tokens": 8192,
+      "reader": {
+        "backend": "hip",
+        "binary": "/home/crogers2287/llama.cpp/build-hip-ca3d5a3/bin/llama-server",
+        "build_info": "b151-ca3d5a3e1",
+        "digests": {
+          "launcher_sha256": "119b7b42814aea9f288957d3d2c6ac62269854b8bbfe310ad8a712778ee9e536",
+          "libggml-base.so_sha256": "0a0cc97d6aa54e21152fcdf4fbb5c368d9961696a17277fc11f9e3e3d860814c",
+          "libllama-server-impl.so_sha256": "9bde4549412f1a714944070ab92350f961a38c0246404f6840517a2d896df44d",
+          "libllama.so_sha256": "88070244e13ed6a59e51274ee5c7a15da3445bcbd679c162ac7f0664920c6d71",
+          "patch_markers": {
+            "context checkpoint appendix": 0,
+            "sckp/1": 0,
+            "slot_checkpoint_persistence": 0
+          }
+        }
+      },
+      "restore_response": {
+        "filename": "xb-cuda_to_hip.bin",
+        "id_slot": 0,
+        "n_read": 302121868,
+        "n_restored": 8192
+      },
+      "restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.6557750701904297,
+        "positions": 8,
+        "shared_tokens": 39,
+        "tokens_only_in_one": 2,
+        "top1_agreement": 1.0
+      },
+      "reused_fraction": 0.9998779296875,
+      "save_response": {
+        "filename": "xb-cuda_to_hip.bin",
+        "id_slot": 0,
+        "n_saved": 8192,
+        "n_written": 302121868
+      },
+      "tokens_match": true,
+      "writer": {
+        "backend": "cuda",
+        "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
+        "build_info": "b151-ca3d5a3e1",
+        "digests": {
+          "launcher_sha256": "06941ef6cec01e26751864b5439c2b865fccd6fe11b5e982b911cab5427f8849",
+          "libggml-base.so_sha256": "258329d71c2a5ff0e105790bca4c77953528c9067a2904693b38a8c716fa4c4c",
+          "libllama-server-impl.so_sha256": "4b036b5259fc5edeb16cad77f64660a785e63569dffa815289072fefed6c6292",
+          "libllama.so_sha256": "75f36bda0c495d7b4b1ae5661b11416bf7b9a0febc507492fa218eb975e885b1",
+          "patch_markers": {
+            "context checkpoint appendix": 0,
+            "sckp/1": 0,
+            "slot_checkpoint_persistence": 0
+          }
+        }
+      }
+    },
+    {
+      "artifact_bytes": 302121868,
+      "artifact_sha256": "5c3d2693618d52e28d1b54089df91d6593c123211cd57b127d6699317b51e027",
+      "backend_vs_backend_cold": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.7183141708374023,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "cache_n": 8191,
+      "content_matches": true,
+      "control_cache_n": 0,
+      "direction": "hip_to_cuda",
+      "foreign_cache_vs_own_cache": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.21895217895507812,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "logprobs_match": false,
+      "own_restore_cache_n": 8191,
+      "own_restore_tokens_match": true,
+      "own_restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.2292184829711914,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "prompt_n": 1,
+      "prompt_tokens": 8192,
+      "reader": {
+        "backend": "cuda",
+        "binary": "/home/crogers2287/llama.cpp/build-ca3d5a3-control/bin/llama-server",
+        "build_info": "b151-ca3d5a3e1",
+        "digests": {
+          "launcher_sha256": "06941ef6cec01e26751864b5439c2b865fccd6fe11b5e982b911cab5427f8849",
+          "libggml-base.so_sha256": "258329d71c2a5ff0e105790bca4c77953528c9067a2904693b38a8c716fa4c4c",
+          "libllama-server-impl.so_sha256": "4b036b5259fc5edeb16cad77f64660a785e63569dffa815289072fefed6c6292",
+          "libllama.so_sha256": "75f36bda0c495d7b4b1ae5661b11416bf7b9a0febc507492fa218eb975e885b1",
+          "patch_markers": {
+            "context checkpoint appendix": 0,
+            "sckp/1": 0,
+            "slot_checkpoint_persistence": 0
+          }
+        }
+      },
+      "restore_response": {
+        "filename": "xb-hip_to_cuda.bin",
+        "id_slot": 0,
+        "n_read": 302121868,
+        "n_restored": 8192
+      },
+      "restore_vs_cold_same_backend": {
+        "identical": false,
+        "max_abs_logprob_delta": 0.32512378692626953,
+        "positions": 8,
+        "shared_tokens": 40,
+        "tokens_only_in_one": 0,
+        "top1_agreement": 1.0
+      },
+      "reused_fraction": 0.9998779296875,
+      "save_response": {
+        "filename": "xb-hip_to_cuda.bin",
+        "id_slot": 0,
+        "n_saved": 8192,
+        "n_written": 302121868
+      },
+      "tokens_match": true,
+      "writer": {
+        "backend": "hip",
+        "binary": "/home/crogers2287/llama.cpp/build-hip-ca3d5a3/bin/llama-server",
+        "build_info": "b151-ca3d5a3e1",
+        "digests": {
+          "launcher_sha256": "119b7b42814aea9f288957d3d2c6ac62269854b8bbfe310ad8a712778ee9e536",
+          "libggml-base.so_sha256": "0a0cc97d6aa54e21152fcdf4fbb5c368d9961696a17277fc11f9e3e3d860814c",
+          "libllama-server-impl.so_sha256": "9bde4549412f1a714944070ab92350f961a38c0246404f6840517a2d896df44d",
+          "libllama.so_sha256": "88070244e13ed6a59e51274ee5c7a15da3445bcbd679c162ac7f0664920c6d71",
+          "patch_markers": {
+            "context checkpoint appendix": 0,
+            "sckp/1": 0,
+            "slot_checkpoint_persistence": 0
+          }
+        }
+      }
+    }
+  ],
+  "kind": "cross-backend-cache-transfer",
+  "llama_source_revision": "ca3d5a3",
+  "model_path": "/mnt/storage/pre1940_finetune/library_of_alexandria_Q4_K_M.gguf",
+  "prompt_tokens": 8192,
+  "repo_commit": "bc05bc2df1eb6f521835ed1443ac2404f1620c4e",
+  "runner_sha256": "5cf164e3592c711a983fd51390bb211e87a52ed61b0a0ed0f68bbaa9db6e4fb9",
+  "warning": "RESEARCH ONLY. Same model, same cache dtype, different compute backend."
+}

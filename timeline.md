@@ -1990,3 +1990,46 @@ Still decisive at the sizes that matter, and this is arithmetic rather than a me
 Status: **measured once on this host** — 3 rungs, 3 repetitions, medians, RAM-backed storage,
 one model. **Not measured**: NVMe-backed reads, quantised KV, prefixes above 8,192, and
 concurrent load - every figure here is from an otherwise idle GPU.
+
+## REQ-055 — CUDA to ROCm: the last leg of the hardware claim
+
+The one direction blocked all session, because vLLM held both 3090s. With one 3090 and one
+W6800 free, the same artifact moves between **NVIDIA and AMD**.
+
+Both binaries at `ca3d5a3e1` - the revision guard passes rather than being waived, which
+matters here more than anywhere: a version mismatch is rejected for the state-file format and
+is indistinguishable from "cross-vendor does not work".
+
+| direction | reused | text | token ids | artifact |
+|---|---:|---|---|---:|
+| CUDA -> ROCm/HIP | **8,191 / 8,192** | identical | identical | 288.1 MB |
+| ROCm/HIP -> CUDA | **8,191 / 8,192** | identical | identical | 288.1 MB |
+
+The decomposition, which is the only reading that means anything:
+
+| comparison | CUDA->HIP | HIP->CUDA |
+|---|---:|---:|
+| own restore vs own cold prefill | 0.750 | 0.229 |
+| **foreign cache vs own cache** | **0.311** | **0.219** |
+| two cold runs, different vendors, no cache | 0.718 | 0.718 |
+
+**Using the other vendor's cache diverges by less than the two vendors already differ by**
+doing identical cold work with no cache involved - 0.311 and 0.219 against a floor of 0.718.
+On this run, moving a cache from an NVIDIA card to an AMD one costs *less* than the arithmetic
+difference between the cards. Top-1 agreement is 1.000 in every comparison.
+
+### The hardware claim, complete
+
+| pair | status |
+|---|---|
+| ROCm/HIP <-> Vulkan, same AMD card | proven at 128, 8,192 and 32,000 tokens |
+| **CUDA <-> ROCm/HIP, across vendors** | **proven at 8,192 tokens** |
+| same backend, across a full process restart | proven, 252/263 after a cold stop |
+
+One file, written on an NVIDIA GPU with CUDA, restored on an AMD GPU with ROCm, and back,
+with identical output. That is the claim the project was named for.
+
+Status: **measured once on this host** — one prompt, 8,192 tokens, one non-hybrid model
+(qwen2 Q4_K_M), both builds at one revision, identity controls exact. **Untested**: CUDA at
+32,000 tokens, CUDA with a hybrid model, and Vulkan-on-NVIDIA, which would close the matrix
+entirely.
