@@ -15,7 +15,12 @@ from kv_rosetta.adapters.llamacpp_ggsq import (
     GGSQError,
     Reader,
     elements_from_row_size,
+    dequantise,
+    materialise,
+    quantise,
     read_attention_section,
+    read_checkpoint_appendix,
+    read_recurrent_section,
     row_size,
 )
 
@@ -24,7 +29,7 @@ F16, Q8_0 = 1, 8
 
 def build_attention(cell_count=4, n_layer=2, k_type=F16, k_elems=256, v_trans=False,
                     n_seq_id=1, cell_ext=b"", trailing=b"", declared_k_type=None,
-                    declared_size_el=None):
+                    declared_size_el=None, declared_v_type=None):
     """Corrupt cases are constructed, not byte-patched.
 
     Searching a built body for a pattern to overwrite is unreliable - the same bytes occur
@@ -46,7 +51,7 @@ def build_attention(cell_count=4, n_layer=2, k_type=F16, k_elems=256, v_trans=Fa
         body += struct.pack("<Q", k_stride)
         body += bytes(cell_count * k_stride)
     for _ in range(n_layer):
-        body += struct.pack("<i", k_type)
+        body += struct.pack("<i", k_type if declared_v_type is None else declared_v_type)
         if not v_trans:
             body += struct.pack("<Q", k_stride) + bytes(cell_count * k_stride)
         else:
@@ -250,8 +255,13 @@ def build_recurrent(cell_count=3, n_layer=4, layers=(0, 2), r_type=F16, r_elems=
     return body + trailing
 
 
-def build_sckp(checkpoints=1, layers=(0, 2), draft=b"", spec=b""):
-    target = build_recurrent(layers=layers)
+def build_sckp(checkpoints=1, layers=(0, 2), draft=b"", spec=b"", preamble=b"\0" * 8):
+    """data_tgt opens with eight bytes ahead of its recurrent section.
+
+    Their meaning has not been identified; their size is confirmed on two independently
+    produced artifacts. This fixture emits them because the real writer does.
+    """
+    target = preamble + build_recurrent(layers=layers)
     body = b"SCKP" + struct.pack("<II", 1, checkpoints)
     for index in range(checkpoints):
         body += struct.pack("<qii", 252, 0, 251)
@@ -611,3 +621,166 @@ class RealHybridArtifactTest(unittest.TestCase):
         byte-identical."""
         marginal = 4 + 24 + 16 * 2 * self.KV_ROW
         self.assertEqual(marginal, 65_564)
+
+
+class UndefendedGuardTest(unittest.TestCase):
+    """Guards a mutation run found nothing was exercising.
+
+    Thirteen of the decoder's refusals could be disabled without a single test noticing. Each
+    one below constructs an input that reaches exactly the guard it names - which for several
+    of them means stepping around an earlier check that was shadowing it.
+    """
+
+    def reader(self, payload=b"\0" * 32):
+        return Reader(io.BytesIO(payload), 0, len(payload))
+
+    # -- Reader --------------------------------------------------------------------
+
+    def test_a_negative_read_is_refused(self):
+        """A negative count would slice backwards and return bytes from before the cursor."""
+        with self.assertRaises(GGSQError) as caught:
+            self.reader().take(-1)
+        self.assertIn("negative read", str(caught.exception))
+
+    def test_a_negative_skip_is_refused(self):
+        with self.assertRaises(GGSQError):
+            self.reader().skip(-8)
+
+    # -- attention section ---------------------------------------------------------
+
+    def test_an_implausible_stream_count_is_refused_before_it_is_called_unsupported(self):
+        """0 and 65 are not "unsupported", they are not stream counts at all."""
+        for n_stream in (0, 65, 2**31):
+            with self.subTest(n_stream=n_stream):
+                body = struct.pack("<I", n_stream) + struct.pack("<I", 1)
+                with self.assertRaises(GGSQError) as caught:
+                    section(body)
+                self.assertIn("implausible n_stream", str(caught.exception))
+
+    def test_a_cell_claiming_too_many_sequence_ids_is_refused(self):
+        """65 is past the guard but small enough that the read would still succeed on a
+        large enough body - so the count itself has to be checked, not just the read."""
+        body = struct.pack("<I", 1) + struct.pack("<I", 1)
+        body += struct.pack("<i", 0) + struct.pack("<I", 65) + bytes(65 * 4)
+        body += bytes(64)
+        with self.assertRaises(GGSQError) as caught:
+            section(body)
+        self.assertIn("claims 65 sequence ids", str(caught.exception))
+
+    def test_a_transposed_value_span_of_unknown_type_is_refused(self):
+        """The transposed branch reads its own type id and must check it separately.
+
+        The wrong value is written by the builder rather than patched in afterwards. A first
+        attempt searched the body for the type id's bytes and took the last match, which
+        landed unaligned inside the payload - the hazard build_attention's own docstring
+        warns about.
+        """
+        with self.assertRaises(GGSQError) as caught:
+            section(build_attention(v_trans=True, n_layer=1, cell_count=2,
+                                    declared_v_type=99))
+        self.assertIn("unsupported ggml type id 99", str(caught.exception))
+
+    # -- recurrent section ---------------------------------------------------------
+
+    def test_a_recurrent_cell_claiming_too_many_sequence_ids_is_refused(self):
+        """single_sequence=True shadows this, so it can only be reached with it off."""
+        body = struct.pack("<I", 1)
+        body += struct.pack("<i", 0) + struct.pack("<I", 65) + bytes(65 * 4)
+        body += bytes(64)
+        with self.assertRaises(GGSQError) as caught:
+            read_recurrent_section(io.BytesIO(body), 0, len(body),
+                                   recurrent_layers=(0,), single_sequence=False)
+        self.assertIn("claims 65 sequence ids", str(caught.exception))
+
+    def test_an_implausible_recurrent_layer_count_is_refused(self):
+        """0 and 513 must be caught before the layer map is checked against them."""
+        for n_layer in (0, 513):
+            with self.subTest(n_layer=n_layer):
+                body = struct.pack("<I", 1) + struct.pack("<i", 0) + struct.pack("<I", 0)
+                body += struct.pack("<I", 0) + struct.pack("<I", n_layer) + bytes(64)
+                with self.assertRaises(GGSQError) as caught:
+                    read_recurrent_section(io.BytesIO(body), 0, len(body),
+                                           recurrent_layers=(0,))
+                self.assertIn("implausible recurrent n_layer", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class QuantiseAndMaterialiseGuardTest(unittest.TestCase):
+    """The remaining refusals a mutation run found nothing exercising.
+
+    These sit on the numeric path, where a disabled guard does not raise - it returns an
+    array of the wrong shape or bytes of the wrong length, which is the failure mode that
+    reaches a restored cache instead of a stack trace.
+    """
+
+    def setUp(self):
+        try:
+            import numpy as np
+        except ImportError:                        # pragma: no cover - declared dependency
+            self.skipTest("numpy is required")
+        self.np = np
+
+    def test_dequantising_an_unknown_type_is_refused(self):
+        with self.assertRaises(GGSQError) as caught:
+            dequantise(b"\0" * 64, 99, 32)
+        self.assertIn("unsupported ggml type id 99", str(caught.exception))
+
+    def test_quantising_to_an_unknown_type_is_refused(self):
+        with self.assertRaises(GGSQError) as caught:
+            quantise(self.np.zeros(32, dtype="float32"), 99)
+        self.assertIn("unsupported ggml type id 99", str(caught.exception))
+
+    def test_quantising_a_partial_block_is_refused(self):
+        """31 values into 32-element blocks would silently pad or drop the remainder."""
+        with self.assertRaises(GGSQError) as caught:
+            quantise(self.np.zeros(31, dtype="float32"), Q8_0)
+        self.assertIn("not a multiple of the 32-element block", str(caught.exception))
+
+    def test_an_unblocked_type_with_no_encoder_is_refused(self):
+        """Adding a 1-element-block type to the table without an encoder here must fail
+        loudly rather than fall through and return nothing."""
+        original = dict(GGML_TYPES)
+        GGML_TYPES[123] = ("f8_pretend", 1, 1)
+        try:
+            with self.assertRaises(GGSQError) as caught:
+                quantise(self.np.zeros(8, dtype="float32"), 123)
+            self.assertIn("unhandled unblocked type", str(caught.exception))
+        finally:
+            GGML_TYPES.clear()
+            GGML_TYPES.update(original)
+
+    def test_a_transposed_span_that_disagrees_with_the_geometry_is_refused(self):
+        """The transposed branch reshapes by the declared width; a mismatch would reinterpret
+        the payload rather than fail."""
+        body = build_attention(v_trans=True, n_layer=1, cell_count=2, k_elems=256)
+        parsed = section(body)
+        span = [s for s in parsed.spans if s.kind == "v"][0]
+        handle = io.BytesIO(body)
+        with self.assertRaises(GGSQError) as caught:
+            materialise(handle, span, n_head=2, head_dim=8, cell_count=2)
+        self.assertIn("transposed span embeds", str(caught.exception))
+
+    def test_a_checkpoint_buffer_of_absurd_length_is_refused(self):
+        """17 GB is not a checkpoint; the read would otherwise fail far from the cause."""
+        body = b"SCKP" + struct.pack("<II", 1, 1)
+        body += struct.pack("<qii", 4, 0, 3)
+        body += struct.pack("<Q", 1 << 35)
+        with self.assertRaises(GGSQError) as caught:
+            read_checkpoint_appendix(io.BytesIO(body), 0, len(body), recurrent_layers=(0,))
+        self.assertIn("claims 34359738368 bytes", str(caught.exception))
+
+    def test_a_target_payload_too_short_for_its_preamble_is_refused(self):
+        """Anything at or under the 8-byte preamble leaves no recurrent section at all."""
+        for length in (1, 8):
+            with self.subTest(length=length):
+                body = b"SCKP" + struct.pack("<II", 1, 1)
+                body += struct.pack("<qii", 4, 0, 3)
+                body += struct.pack("<Q", length) + bytes(length)
+                body += struct.pack("<Q", 0) + struct.pack("<Q", 0)
+                with self.assertRaises(GGSQError) as caught:
+                    read_checkpoint_appendix(io.BytesIO(body), 0, len(body),
+                                             recurrent_layers=(0,))
+                self.assertIn("too short to hold its preamble", str(caught.exception))

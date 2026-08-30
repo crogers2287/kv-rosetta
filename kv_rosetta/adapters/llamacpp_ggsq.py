@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 #: ggml type id -> (name, block size, bytes per block). Only types this decoder can account
 #: for are listed; an unlisted id is refused rather than guessed at, because a wrong element
 #: width silently desynchronises every later field.
+#: data_tgt's unidentified opening bytes. See read_checkpoint_appendix.
+CHECKPOINT_PAYLOAD_PREAMBLE = 8
+
 GGML_TYPES: dict[int, tuple[str, int, int]] = {
     0: ("f32", 1, 4),
     1: ("f16", 1, 2),
@@ -317,7 +320,11 @@ def read_checkpoint_appendix(handle: BinaryIO, start: int, end: int, *,
                              recurrent_layers: tuple[int, ...]) -> list[CheckpointBlob]:
     """Parse the SCKP appendix, decoding each target payload rather than forwarding it.
 
-    `data_tgt` is another native recurrent-state serialization, written with PARTIAL_ONLY.
+    `data_tgt` opens with an eight-byte preamble whose meaning has not been identified, then
+    another native recurrent-state serialization, written with PARTIAL_ONLY. The preamble's
+    size is confirmed on two independently produced artifacts and the end-offset check closes
+    each payload exactly, so a different or variable preamble fails the parse rather than
+    shifting every field.
     Carrying it forward as an opaque blob would put an unparsed native payload inside a
     canonical artifact - a portability claim the format cannot honour - so it is parsed
     recursively here. Nonempty draft and speculative payloads are refused outright: their
@@ -356,7 +363,15 @@ def read_checkpoint_appendix(handle: BinaryIO, start: int, end: int, *,
         _, tgt_offset, tgt_length = payloads[0]
         if tgt_length == 0:
             raise GGSQError(f"checkpoint {index} has no target state")
-        target = read_recurrent_section(handle, tgt_offset, tgt_offset + tgt_length,
+        # data_tgt opens with eight bytes ahead of its recurrent section whose meaning has
+        # not been identified. They are not skipped on faith: the end-offset check below
+        # closes the payload exactly, so a preamble of any other length - or a variable one -
+        # makes the parse fail rather than shift every field silently.
+        if tgt_length <= CHECKPOINT_PAYLOAD_PREAMBLE:
+            raise GGSQError(f"checkpoint {index} target state is {tgt_length} bytes, too "
+                            f"short to hold its preamble and a recurrent section")
+        target = read_recurrent_section(handle, tgt_offset + CHECKPOINT_PAYLOAD_PREAMBLE,
+                                        tgt_offset + tgt_length,
                                         recurrent_layers=recurrent_layers)
         if target.end_offset != tgt_offset + tgt_length:
             raise GGSQError(

@@ -459,42 +459,67 @@ class HybridGeometryRefusalTest(unittest.TestCase):
 
 
 class CheckpointAppendixSizingTest(unittest.TestCase):
-    """The appendix a patched build appends, and why it is not modelled.
+    """The SCKP appendix a patched build appends, now derived rather than inferred.
 
-    The 2,048-token artifact behind RA-003 is 604,958,676 bytes. These terms give
-    291,169,840. The difference is 2.0000 times the recurrent section plus 124 bytes, which
-    is consistent with two recurrent-only context checkpoints - but that is arithmetic on one
-    file, not a decoded appendix.
+    Its terms are read off save_slot_checkpoints in the patched server: magic, version and
+    count, then per checkpoint an int64 n_tokens and two int32 positions, then data_tgt,
+    data_dft and data_spec each written length-prefixed and interleaved with its payload, so
+    an empty buffer still costs its uint64 length.
+
+    Confirmed on two independently produced files: a 256-token one-checkpoint artifact
+    written here on CPU, and the 2,048-token two-checkpoint artifact behind RA-003, made
+    weeks earlier by a different build. Both come out exact.
     """
 
-    RA003_MEASURED = 604_958_676
-    BASE_2048 = 291_169_840
-    RECURRENT = 156_894_356
+    G = HybridSizingTest.QWEN35
+    NO_APPENDIX_256 = 173_679_168
+    ONE_CHECKPOINT_256 = 330_573_584
+    TWO_CHECKPOINTS_2048 = 604_958_676
 
-    def test_the_difference_is_two_recurrent_sections_and_a_little_framing(self):
-        difference = self.RA003_MEASURED - self.BASE_2048
-        self.assertEqual(difference - 2 * self.RECURRENT, 124)
+    def test_it_predicts_the_file_written_here(self):
+        self.assertEqual(
+            hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=1),
+            self.ONE_CHECKPOINT_256)
+
+    def test_it_predicts_the_ra003_artifact_it_never_saw(self):
+        """A different build, a different prefix length, twice the checkpoints, weeks apart.
+
+        This is the one that makes the terms worth anything: the appendix arithmetic was
+        settled on a one-checkpoint file and this file has two.
+        """
+        self.assertEqual(
+            hybrid_state_bytes(self.G, 2048, header_tokens=2052, checkpoints=2),
+            self.TWO_CHECKPOINTS_2048)
+
+    def test_one_checkpoint_roughly_doubles_a_short_artifact(self):
+        """Each checkpoint carries a recurrent-only state, so the fixed tail is paid again.
+
+        Defaulting checkpoints to zero would have under-predicted such a file by half - a
+        space guard failing open, which is the direction that runs a disk out mid-admission.
+        """
+        without = hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=0)
+        self.assertEqual(without, self.NO_APPENDIX_256)
+        self.assertGreater(self.ONE_CHECKPOINT_256 / without, 1.9)
+
+    def test_each_further_checkpoint_costs_the_same(self):
+        step = [hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=n)
+                for n in range(4)]
+        # 16-byte record, three uint64 buffer lengths, an 8-byte preamble, the recurrent tail.
+        per_checkpoint = 16 + 24 + 8 + 156_894_356
+        self.assertEqual({step[i + 1] - step[i] for i in (1, 2)}, {per_checkpoint})
+
+    def test_the_appendix_header_is_paid_once_not_per_checkpoint(self):
+        """magic, version and count are written before the first record, not with each."""
+        none = hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=0)
+        one = hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=1)
+        two = hybrid_state_bytes(self.G, 256, header_tokens=260, checkpoints=2)
+        self.assertEqual((one - none) - (two - one), 12)
 
     def test_checkpoints_must_be_stated_and_has_no_default(self):
-        """Defaulting to zero would under-predict that file by half - a guard failing open,
-        which is the direction that runs a disk out mid-admission."""
         with self.assertRaises(TypeError):
-            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048)
+            hybrid_state_bytes(self.G, 2048)
 
-    def test_a_nonzero_checkpoint_count_is_refused_rather_than_estimated(self):
+    def test_a_negative_checkpoint_count_is_refused(self):
         with self.assertRaises(SizingError) as caught:
-            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, checkpoints=2)
-        self.assertIn("dress a guess as a derivation", str(caught.exception))
-
-    def test_a_negative_checkpoint_count_is_refused_as_negative(self):
-        """The message matters: -1 is truthy, so the not-yet-modelled check would catch it
-        too and the negative check would never fire. Mutation found exactly that."""
-        with self.assertRaises(SizingError) as caught:
-            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, checkpoints=-1)
+            hybrid_state_bytes(self.G, 2048, checkpoints=-1)
         self.assertIn("is negative", str(caught.exception))
-
-    def test_the_base_prediction_still_matches_a_build_without_the_patch(self):
-        """The two artifacts this project saved came from an unpatched HIP build."""
-        self.assertEqual(
-            hybrid_state_bytes(HybridSizingTest.QWEN35, 2048, header_tokens=2048,
-                               checkpoints=0), self.BASE_2048)

@@ -353,8 +353,8 @@ class DerivedSpacePredictionTest(unittest.TestCase):
         found = self.predict(8192, model=self.QWEN2)
         self.assertEqual(found["basis"], "derived-from-gguf")
         self.assertEqual(found["bytes_per_token"], 36880)
-        # The saved file carried four extra header token ids, worth 16 bytes.
-        self.assertEqual(found["predicted_object_bytes"], 302_121_868 - 16)
+        # The named header-token allowance covers the four extra ids a saved slot carries.
+        self.assertEqual(found["predicted_object_bytes"], 302_121_868)
 
     @unittest.skipUnless(QWEN2.is_file(), "the qwen2 test model is not on this host")
     def test_the_flat_rate_over_predicts_this_model_eightfold(self):
@@ -423,10 +423,17 @@ class HybridSpacePredictionTest(unittest.TestCase):
     def test_stating_zero_checkpoints_derives_the_size(self):
         found = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=0)
         self.assertEqual(found["basis"], "derived-from-gguf")
-        self.assertEqual(found["predicted_object_bytes"], 291_169_840)
+        self.assertEqual(found["predicted_object_bytes"], 291_169_856)
 
     @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
-    def test_a_nonzero_count_falls_back_because_the_appendix_is_not_modelled(self):
+    def test_a_nonzero_count_is_derived_now_that_the_appendix_is_decoded(self):
+        """604,958,676 is the measured 2,048-token two-checkpoint artifact behind RA-003."""
         found = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=2)
-        self.assertEqual(found["basis"], "declared-rate")
-        self.assertIn("dress a guess", found["basis_note"])
+        self.assertEqual(found["basis"], "derived-from-gguf")
+        self.assertEqual(found["predicted_object_bytes"], 604_958_676)
+
+    @unittest.skipUnless(HYBRID.is_file(), "the qwen35 model is not on this host")
+    def test_checkpoints_dominate_the_prediction_at_a_short_prefix(self):
+        none = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=0)
+        two = self.predict(2048, model=self.HYBRID, hybrid_checkpoints=2)
+        self.assertGreater(two["predicted_object_bytes"] / none["predicted_object_bytes"], 2)

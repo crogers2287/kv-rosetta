@@ -1325,3 +1325,60 @@ split, the cell_ext rule, and all the refusals (22/22 guards mutation-checked; 8
 tests). **Measured once on this host**: the two artifacts. **Inferred, not measured**: that
 the RA-003 excess is two checkpoints — the arithmetic fits to 124 bytes but no appendix has
 been decoded. **Untested**: any hybrid other than this one; quantised KV on a hybrid.
+
+## REQ-042 — The checkpoint appendix decoded, and the last inference removed
+
+REQ-041 left one thing inferred: that RA-003's 2,048-token artifact is a base plus two
+context checkpoints. The arithmetic fit to 124 bytes, no appendix had been decoded, and
+`hybrid_state_bytes` refused any nonzero checkpoint count rather than predict from it.
+
+The patched build (`/mnt/storage/llama-kvx-patched`, same commit `ca3d5a3e1`) was run on
+**CPU** with `-ngl 0`, so the 3090s were never touched. It wrote a 256-token artifact with one
+checkpoint: 330,573,584 bytes, of which the derived base accounts for exactly 173,679,168.
+
+The appendix terms come from `save_slot_checkpoints` in that tree: magic, version and count,
+then per checkpoint an int64 `n_tokens` and two int32 positions, then `data_tgt`, `data_dft`
+and `data_spec` each **length-prefixed and interleaved with its payload**, so an empty buffer
+still costs its uint64 length. My first probe read the three lengths consecutively and got a
+2.9 GB draft buffer and a 1 TB speculative one — the decoder already had it right.
+
+`data_tgt` opens with **eight bytes whose meaning is not identified**, then a full recurrent
+section. Their size is confirmed twice and the constant is named for what it is rather than
+given a plausible label.
+
+| file | checkpoints | predicted | measured |
+|---|---:|---:|---:|
+| 256-token, this host | 1 | 330,573,584 | 330,573,584 |
+| 2,048-token, RA-003 | 2 | 604,958,676 | 604,958,676 |
+
+**The second row is the one that counts.** It was produced weeks earlier by a different build
+at a different prefix length with twice the checkpoints, and the appendix arithmetic was
+settled on the first file alone. RA-003's excess is no longer an inference.
+
+`predict_space` now derives hybrid sizes at any checkpoint count. One further honesty: a
+saved slot's header has carried **four more token ids than cache cells** in every artifact
+measured here, worth 16 bytes. That is an observation, not a derivation, so it is applied as a
+named `HEADER_TOKEN_ALLOWANCE` that errs high — the direction that refuses work rather than
+running a disk out mid-admission.
+
+An aside worth recording: the flat rate predicts 604,958,720 at 2,048 tokens, 44 bytes from
+the measurement. It was obtained by dividing that very artifact by its token count, so it is
+near-exact at 2,048 and wrong everywhere else — 8x at 8K on the non-hybrid model. A constant
+that reproduces its own origin is not evidence that it generalises.
+
+### Decoder guard coverage closed
+
+`scripts/mutation_check.py` reported **29 of 42** guards defended in the GGSQ decoder — the
+module every other claim rests on. Thirteen refusals could be disabled without a test
+noticing. All thirteen now have an input that reaches exactly the guard it names, which for
+several meant stepping around an earlier check that shadowed it, and for the transposed-value
+type id meant adding a `declared_v_type` to the builder: the first attempt searched the body
+for the type id's bytes and took the last match, which landed unaligned inside the payload —
+the hazard that builder's own docstring warns about.
+
+**42/42 guards defended.** 810 offline tests, CI green.
+
+Status: **proven by retained test** — the appendix terms, both measured artifacts, the
+preamble length, every decoder refusal. **Measured once on this host**: the 256-token
+one-checkpoint file. **Unknown**: what the eight preamble bytes hold. **Untested**: any
+hybrid other than this one; checkpoint restoration, which is a separate claim from sizing.

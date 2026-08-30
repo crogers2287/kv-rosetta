@@ -203,6 +203,13 @@ def check_coverage(cache_n: int, prompt_n: int, prompt_tokens: int,
     return problems
 
 
+#: A saved slot's header has carried four more token ids than cache cells in every artifact
+#: measured here, worth four bytes each. It is an observation, not a derivation, so it is
+#: applied as a named allowance and it errs high - the direction that refuses work rather
+#: than running a disk out mid-admission.
+HEADER_TOKEN_ALLOWANCE = 4
+
+
 def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
                   margin: float = 0.20, *, model: str | Path | None = None,
                   kv_type: str = "f16", hybrid_checkpoints: int | None = None) -> dict:
@@ -240,9 +247,10 @@ def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
                         "build appends, and each is about the size of its whole recurrent "
                         "state; say how many with hybrid_checkpoints rather than assume none")
                 geometry = sizing.hybrid_geometry_of(model)
-                predicted = sizing.hybrid_state_bytes(geometry, prompt_tokens,
-                                                      kv_type=kv_type,
-                                                      checkpoints=hybrid_checkpoints)
+                predicted = sizing.hybrid_state_bytes(
+                    geometry, prompt_tokens, kv_type=kv_type,
+                    checkpoints=hybrid_checkpoints,
+                    header_tokens=prompt_tokens + HEADER_TOKEN_ALLOWANCE)
                 # A hybrid's tail does not grow with tokens, so dividing the whole object by
                 # the prompt length - which is how the flat default was obtained - is not a
                 # rate at all. This is the marginal cost, which is.
@@ -253,7 +261,9 @@ def predict_space(prompt_tokens: int, bytes_per_token: float, free_bytes: int,
                                                 checkpoints=hybrid_checkpoints))
             else:
                 geometry = sizing.geometry_of(model)
-                predicted = sizing.state_bytes(geometry, prompt_tokens, kv_type=kv_type)
+                predicted = sizing.state_bytes(
+                    geometry, prompt_tokens, kv_type=kv_type,
+                    header_tokens=prompt_tokens + HEADER_TOKEN_ALLOWANCE)
                 bytes_per_token = sizing.bytes_per_token(geometry, kv_type=kv_type)
             basis, note = "derived-from-gguf", f"{geometry.architecture} geometry {geometry}"
         except sizing.SizingError as exc:

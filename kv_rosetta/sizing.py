@@ -49,6 +49,20 @@ BYTES_PER_RECURRENT_CELL_META = 8
 #: s_trans, n_layer.
 RECURRENT_DATA_HEADER = 8
 
+#: SCKP appendix: magic, version, count.
+CHECKPOINT_APPENDIX_HEADER = 12
+#: Per checkpoint: int64 n_tokens, int32 pos_min, int32 pos_max.
+BYTES_PER_CHECKPOINT_RECORD = 16
+#: Each of data_tgt, data_dft, data_spec is written length-prefixed and interleaved with its
+#: payload, so an empty buffer still costs its uint64 length.
+BYTES_PER_CHECKPOINT_BUFFER_LENGTH = 8
+#: data_tgt opens with eight bytes ahead of its recurrent section whose meaning has not been
+#: identified. Their SIZE is confirmed on two independently produced artifacts - a 256-token
+#: one-checkpoint file written here and the 2,048-token two-checkpoint file behind RA-003 -
+#: and both totals come out exact. What they hold is still unknown, and this constant says so
+#: rather than naming them something plausible.
+CHECKPOINT_PAYLOAD_PREAMBLE = 8
+
 #: has_cell_ext() is true when n_pos_per_embd() > 1, and n_pos_per_embd is decided by a
 #: hardcoded switch on the architecture in llama_model_rope_type - not by any GGUF key. These
 #: return M-RoPE or interleaved M-RoPE unconditionally.
@@ -313,12 +327,6 @@ def hybrid_state_bytes(geometry: HybridGeometry, cells: int, *, checkpoints: int
     """
     if checkpoints < 0:
         raise SizingError(f"checkpoint count {checkpoints} is negative")
-    if checkpoints:
-        raise SizingError(
-            f"{checkpoints} context checkpoints requested; their appendix has not been "
-            f"decoded, only inferred from one file's arithmetic, and predicting from that "
-            f"would dress a guess as a derivation. Decode an artifact from a patched build "
-            f"first")
     attention = geometry.attention
     problems = attention.validate()
     if geometry.recurrent_layers < 0:
@@ -348,4 +356,12 @@ def hybrid_state_bytes(geometry: HybridGeometry, cells: int, *, checkpoints: int
                  + geometry.recurrent_layers
                  * (2 * BYTES_PER_TENSOR_HEADER
                     + recurrent_cells * (geometry.conv_row_bytes + geometry.ssm_row_bytes)))
-    return FILE_HEADER + BYTES_PER_HEADER_TOKEN * tokens + attn_bytes + rec_bytes
+    appendix = 0
+    if checkpoints:
+        # Each checkpoint carries a recurrent-only state, so the fixed tail is paid again
+        # per checkpoint - which is why one of them roughly doubles a short artifact.
+        payload = CHECKPOINT_PAYLOAD_PREAMBLE + rec_bytes
+        appendix = CHECKPOINT_APPENDIX_HEADER + checkpoints * (
+            BYTES_PER_CHECKPOINT_RECORD + 3 * BYTES_PER_CHECKPOINT_BUFFER_LENGTH + payload)
+    return (FILE_HEADER + BYTES_PER_HEADER_TOKEN * tokens + attn_bytes + rec_bytes
+            + appendix)
