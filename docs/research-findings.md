@@ -1371,3 +1371,66 @@ guess costs a re-prefill rather than producing wrong output. That check covers *
 *weights* — which is exactly why a foreign model's attachment is still refused outright. Same
 model, different text: the runtime protects us. Different model, same text: nothing does. The
 drive draws the line in that one place, deliberately.
+
+---
+
+## 32. The drive across dense, hybrid and MoE: it works, and only one of them pays
+
+Asked directly whether one drive serves models of different families. Three models, three
+geometries, none shared:
+
+| model | arch | layers | kv heads | head_dim |
+|---|---|---:|---:|---:|
+| Qwen2.5-3B-Instruct | `qwen2` (dense) | 36 | 2 | 128 |
+| Qwen3.8-27B | `qwen35` (hybrid) | 65 | 4 | 256 |
+| Tiel-Coder-35B-A3B | `qwen35moe` (hybrid MoE) | 41 | 2 | 256 |
+
+No pair shares a geometry, so the tensor question was answered before a GPU was touched: no
+attachment can move between them, which is §20 and already measured at 0.00 top-1. What was
+untested is the drive itself.
+
+| visit | model | attachment | cache_n | prefilled | prompt ms |
+|---|---|---|---:|---:|---:|
+| 1 | dense 3B | miss | 0 | 676 | 84 |
+| 1 | hybrid 27B | miss | 0 | 676 | 760 |
+| 1 | MoE tiel | miss | 0 | 676 | 453 |
+| 2 | dense 3B | hit | **675** | **1** | **18** |
+| 2 | hybrid 27B | hit | **0** | 676 | 761 |
+| 2 | MoE tiel | hit | **0** | 676 | 439 |
+
+Three content documents, each resolving only to its owner, three distinct attachment keys, no
+collisions. **The drive is architecture-agnostic. The payoff is not.**
+
+Both hybrid families store and restore their attachments perfectly and reuse nothing, because a
+recurrent state is a function of the whole processed sequence and has no common-prefix
+semantics. That is §25's architectural finding arriving in the product: MoE is not the
+distinguishing property — `qwen35` is not a mixture of experts and fails identically — **hybrid
+is**.
+
+Incidentally, all three tokenized the same text to 673 tokens, so the Qwen families share a
+tokenizer even where they share nothing else.
+
+### The drive now says which attachments pay
+
+The gap this exposed is that a drive stores an attachment that can never be reused and reports
+the same "hit" as one that saves 97% of a prefill. `supports_prefix_reuse` predicted all three
+outcomes *before* any cache existed, so `attach` records the architecture's verdict beside the
+attachment and `describe` reports it.
+
+Recorded rather than refused: the bytes are correct and a patched runtime can use them. What
+would be wrong is a drive that lets a caller assume a hit saved something. Unknown is reported
+as unknown — `pays` is true only when reuse is known to be supported, and unreadable metadata
+reads as unknown rather than as good.
+
+### Note on where this ran
+
+The request named the W6800s. Both were fully occupied by the fleet's two tiel instances
+(33.5 GB and 33.0 GB, ports 5818 and 5819), so this ran on the free 3090s instead of unloading
+a live service. The substitution is sound rather than a compromise: §17 and §26 already
+established that an artifact is portable across backends and vendors, so the card is not a
+variable in what this test measures. The one thing it does not cover is the fleet's own fork
+binary, which is what serves tiel in production.
+
+There is also no 9B model on this host or in the llama-swap config — Ornith 1.5 is 35B-A3B, and
+it would not fit a context on two 3090s. The dense 3B stands in for it, which is what makes
+this a dense/hybrid/MoE comparison rather than a size comparison.

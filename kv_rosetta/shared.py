@@ -34,6 +34,7 @@ from .identity import CacheABIIdentity, ModelIdentity, digest_of, require_digest
 
 CONTENT_SUFFIX = ".content.json"
 ATTACHMENT_SUFFIX = ".state"
+META_SUFFIX = ".meta.json"
 DRIVE_MODE = 0o700
 
 
@@ -155,6 +156,33 @@ def _common_prefix(left: tuple[int, ...], right: tuple[int, ...]) -> int:
 
 
 @dataclass(frozen=True)
+class AttachmentInfo:
+    """What is known about one stored attachment, including whether it can pay.
+
+    An attachment is storable and restorable for any architecture, and for a hybrid one it
+    will still reuse nothing: the model resumes from a context checkpoint that an unpatched
+    slot save does not persist. Measured on this drive - a 27B `qwen35` and a `qwen35moe`
+    MoE both restored their own attachments cleanly and re-prefilled all 676 tokens, while
+    a dense `qwen2` went from 676 prefilled to 1.
+
+    Recorded rather than refused, because a patched runtime can use these and the bytes are
+    not wrong. What would be wrong is a drive that reports a hit and lets the caller assume
+    it saved something.
+    """
+
+    key: str
+    path: Path
+    architecture: str = ""
+    expects_reuse: bool | None = None
+    reason: str = ""
+
+    @property
+    def pays(self) -> bool:
+        """True only when reuse is known to be supported. Unknown is not a promise."""
+        return self.expects_reuse is True
+
+
+@dataclass(frozen=True)
 class PrefixMatch:
     """An attachment that covers a prefix of the content being asked for."""
 
@@ -216,8 +244,34 @@ class SharedDrive:
         return self.root / (f"{require_digest(content_digest, 'content_digest')}."
                             f"{require_digest(key, 'attachment_key')}{ATTACHMENT_SUFFIX}")
 
+    def _meta_path(self, content_digest: str, key: str) -> Path:
+        return self.root / (f"{require_digest(content_digest, 'content_digest')}."
+                            f"{require_digest(key, 'attachment_key')}{META_SUFFIX}")
+
+    def describe(self, content_digest: str) -> tuple[AttachmentInfo, ...]:
+        """Every attachment for this content, and whether each is expected to pay."""
+        out = []
+        for key in self.attachments(content_digest):
+            meta_path = self._meta_path(content_digest, key)
+            meta = {}
+            if meta_path.is_file():
+                try:
+                    loaded = json.loads(meta_path.read_text())
+                    if isinstance(loaded, dict):
+                        meta = loaded
+                except (OSError, ValueError):
+                    meta = {}      # unreadable metadata is unknown, never assumed good
+            expects = meta.get("expects_reuse")
+            out.append(AttachmentInfo(
+                key=key, path=self._attachment_path(content_digest, key),
+                architecture=str(meta.get("architecture", "")),
+                expects_reuse=expects if isinstance(expects, bool) else None,
+                reason=str(meta.get("reason", ""))))
+        return tuple(out)
+
     def attach(self, content_digest: str, model: ModelIdentity, abi: CacheABIIdentity,
-               state: Path | str, *, token_count: int | None = None) -> Path:
+               state: Path | str, *, token_count: int | None = None,
+               architecture: str = "") -> Path:
         """Deposit this model's cache for this content.
 
         `token_count` is checked against the content when supplied, because a state file
@@ -232,10 +286,25 @@ class SharedDrive:
             raise SharedError(
                 f"state holds {token_count} tokens against the content's "
                 f"{len(content.token_ids)}; it was not warmed on this content")
-        dest = self._attachment_path(content_digest, attachment_key(model, abi))
+        key = attachment_key(model, abi)
+        dest = self._attachment_path(content_digest, key)
         tmp = dest.with_name(dest.name + ".tmp")
         shutil.copyfile(source, tmp)
         os.replace(tmp, dest)
+
+        # Record whether this architecture can reuse a restored prefix at all. Known before
+        # the cache is ever built, so a caller never has to discover it by measuring a
+        # cache_n of zero.
+        arch = architecture or model.architecture
+        expects, reason = None, ""
+        if arch:
+            from .gguf import supports_prefix_reuse
+            expects, reason = supports_prefix_reuse(arch)
+        meta = self._meta_path(content_digest, key)
+        meta_tmp = meta.with_name(meta.name + ".tmp")
+        meta_tmp.write_text(json.dumps({"architecture": arch, "expects_reuse": expects,
+                                        "reason": reason, "tokens": token_count}, indent=1))
+        os.replace(meta_tmp, meta)
         return dest
 
     def cache_for(self, content_digest: str, model: ModelIdentity,

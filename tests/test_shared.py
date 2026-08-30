@@ -337,3 +337,74 @@ class PrefixAddressedAttachments(unittest.TestCase):
         path.write_text(json.dumps(data))
         self.assertIsNone(self.drive.best_attachment(
             self._content((5, 6, 7)), _model(), _abi()))
+
+
+class AttachmentsReportWhetherTheyPay(unittest.TestCase):
+    """An attachment can be stored, restored, and still reuse nothing.
+
+    Measured on this host: a 27B `qwen35` and a `qwen35moe` MoE both restored their own
+    attachments cleanly and re-prefilled all 676 tokens, while a dense `qwen2` went from
+    676 prefilled to 1. The drive records the difference instead of reporting three
+    identical-looking hits.
+    """
+
+    def setUp(self):
+        self.drive = SharedDrive(Path(tempfile.mkdtemp()) / "drive")
+        self.digest = self.drive.publish(_content())
+        self.state = Path(tempfile.mkdtemp()) / "s.state"
+        self.state.write_bytes(b"qsgg" + b"\x00" * 64)
+
+    def _attach(self, arch):
+        model = ModelIdentity(architecture=arch, weights_sha256=arch.ljust(64, "0"),
+                              tokenizer_sha256="b" * 64, chat_template_sha256="c" * 64)
+        self.drive.attach(self.digest, model, _abi(), self.state, architecture=arch)
+        return model
+
+    def test_a_dense_architecture_is_recorded_as_paying(self):
+        self._attach("qwen2")
+        info = self.drive.describe(self.digest)[0]
+        self.assertEqual(info.architecture, "qwen2")
+        self.assertTrue(info.expects_reuse)
+        self.assertTrue(info.pays)
+
+    def test_a_hybrid_architecture_is_recorded_as_not_paying(self):
+        self._attach("qwen35")
+        info = self.drive.describe(self.digest)[0]
+        self.assertFalse(info.expects_reuse)
+        self.assertFalse(info.pays)
+        self.assertIn("hybrid", info.reason)
+
+    def test_a_hybrid_moe_is_recorded_as_not_paying(self):
+        self._attach("qwen35moe")
+        info = self.drive.describe(self.digest)[0]
+        self.assertFalse(info.pays)
+
+    def test_the_attachment_is_still_stored_and_served(self):
+        # Not refused: the bytes are correct and a patched runtime can use them. Only the
+        # expectation is recorded.
+        model = self._attach("qwen35")
+        self.assertIsNotNone(self.drive.cache_for(self.digest, model, _abi()))
+
+    def test_an_unknown_architecture_does_not_promise_reuse(self):
+        # None is not True. A drive that cannot tell must not imply it can.
+        model = ModelIdentity(architecture="", weights_sha256="a" * 64,
+                              tokenizer_sha256="b" * 64, chat_template_sha256="c" * 64)
+        self.drive.attach(self.digest, model, _abi(), self.state)
+        info = self.drive.describe(self.digest)[0]
+        self.assertIsNone(info.expects_reuse)
+        self.assertFalse(info.pays)
+
+    def test_unreadable_metadata_reads_as_unknown_not_as_paying(self):
+        model = self._attach("qwen2")
+        for meta in self.drive.root.glob("*.meta.json"):
+            meta.write_text("{ this is not json")
+        info = self.drive.describe(self.digest)[0]
+        self.assertIsNone(info.expects_reuse)
+        self.assertFalse(info.pays)
+
+    def test_describe_covers_every_attachment(self):
+        for arch in ("qwen2", "qwen35", "qwen35moe"):
+            self._attach(arch)
+        described = self.drive.describe(self.digest)
+        self.assertEqual(len(described), 3)
+        self.assertEqual(sum(1 for i in described if i.pays), 1)
