@@ -11,6 +11,7 @@ from kv_rosetta.metrics import (
     MetricsError,
     top1_agreement,
     tensor_cosine,
+    positionwise_agreement,
 )
 
 
@@ -98,3 +99,68 @@ class TestTensorCosine(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PositionwiseAgreementTest(unittest.TestCase):
+    """A metric that grades a map, as distinct from one that admits a cache.
+
+    Top-1 agreement over a free generation is a cliff: generation is autoregressive, so one
+    wrong token derails everything after it and the number reports when the first divergence
+    happened rather than how good the cache was. Measured on a real pair, a nearly-perfect
+    blend and a fully translated one both scored 0.042 - identical, and useless for tuning.
+
+    Scored position by position against the same forced prefix, the result varies smoothly
+    with quality. These tests pin that smoothness, because it is the whole point.
+    """
+
+    def dist(self, *pairs):
+        return [dict(p) for p in pairs]
+
+    def test_identical_sequences_agree_completely(self):
+        ref = self.dist({1: -0.1, 2: -2.0}, {1: -0.5, 2: -1.0})
+        found = positionwise_agreement(ref, ref)
+        self.assertEqual(found["top1_agreement"], 1.0)
+        self.assertEqual(found["mean_abs_logprob_delta"], 0.0)
+
+    def test_the_delta_varies_smoothly_with_perturbation(self):
+        """The property a cliff metric does not have: more error, more number."""
+        ref = self.dist({1: -0.1, 2: -2.0}, {1: -0.5, 2: -1.0})
+        previous = -1.0
+        for scale in (0.001, 0.01, 0.1, 1.0):
+            candidate = [{k: v + scale for k, v in pos.items()} for pos in ref]
+            found = positionwise_agreement(ref, candidate)["mean_abs_logprob_delta"]
+            self.assertGreater(found, previous)
+            previous = found
+
+    def test_one_wrong_position_does_not_condemn_the_rest(self):
+        """Under free generation this would be near zero; here it is 3 of 4."""
+        ref = self.dist({1: -0.1, 2: -2.0}, {1: -0.1, 2: -2.0},
+                        {1: -0.1, 2: -2.0}, {1: -0.1, 2: -2.0})
+        candidate = list(ref)
+        candidate[1] = {1: -2.0, 2: -0.1}
+        self.assertAlmostEqual(positionwise_agreement(ref, candidate)["top1_agreement"], 0.75)
+
+    def test_the_mean_and_the_max_are_both_reported(self):
+        """A single bad position raises the max while barely moving the mean; reporting only
+        one of them hides which case you are in."""
+        ref = self.dist({1: -0.1}, {1: -0.1}, {1: -0.1}, {1: -0.1})
+        candidate = self.dist({1: -0.1}, {1: -0.1}, {1: -0.1}, {1: -4.1})
+        found = positionwise_agreement(ref, candidate)
+        self.assertAlmostEqual(found["max_abs_logprob_delta"], 4.0)
+        self.assertAlmostEqual(found["mean_abs_logprob_delta"], 1.0)
+
+    def test_membership_differences_are_counted_not_folded_in(self):
+        found = positionwise_agreement(self.dist({1: -0.1, 2: -0.2}),
+                                       self.dist({1: -0.1, 9: -0.2}))
+        self.assertEqual((found["shared_tokens"], found["tokens_only_in_one"]), (1, 2))
+        self.assertEqual(found["max_abs_logprob_delta"], 0.0)
+
+    def test_comparison_stops_at_the_shorter_and_says_so(self):
+        found = positionwise_agreement(self.dist({1: -0.1}),
+                                       self.dist({1: -0.1}, {1: -0.2}, {1: -0.3}))
+        self.assertEqual(found["positions"], 1)
+
+    def test_nothing_to_compare_is_not_agreement(self):
+        found = positionwise_agreement([], [])
+        self.assertEqual(found["positions"], 0)
+        self.assertIsNone(found["top1_agreement"])
