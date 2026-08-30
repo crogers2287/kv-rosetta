@@ -2513,3 +2513,51 @@ Status: **measured on this host** — 8 layer/kind combinations, 60 epochs each,
 fraction, ridge given its best source layer and four ridge values as a fair baseline.
 **The conclusion**: cross-model KV translation from source KV alone is limited by information,
 not by model class, and no map of this family will close the gap.
+
+## REQ-065 — Round table consensus, and the one recommendation that did not survive checking
+
+The operator asked for a panel. Four profiles were configured; **two produced nothing** - the
+Architect returned HTTP 502 and the Skeptic returned an empty position - and the two that
+answered, Engineer and Pragmatist, are **the same model** (`codex/gpt-5.6-luna`). So this is one
+model answering twice, not a four-way consensus, and it is weighted accordingly.
+
+### What they said
+
+- **Abandon universal cross-model KV translation for production.** The 0.208 gate agreement
+  against ~1.000 required, with geometry and lineage controls both failing, supports an
+  information bottleneck rather than an inadequate projector.
+- **The bottleneck conclusion is right for zero-training translation, but is not a theorem.** A
+  trained bridge for deliberately co-trained families or shared trunks is not excluded - it
+  would simply not be an architecture-independent format.
+- **Hidden-state export does not rescue it.** The target must still run its layers to turn
+  source hidden states into target KV, which is prefill with serialisation overhead. If the
+  artifact carries the text, prefilling is the simpler route.
+- **Ship model-specific portable KV instead**: fingerprints, content-addressed blocks, pinned
+  hot prefixes, worker affinity, eviction and admission fixes, text/token fallback.
+
+That matches the measured evidence and I accept it.
+
+### The recommendation that did not survive checking
+
+The Engineer's headline practical fix was to enable vLLM's Automatic Prefix Caching to stop the
+warmer thrashing, with the Pragmatist adding that hybrid prefix caching is documented
+experimental. Checked on this host:
+
+```
+vllm 0.27.1 (the version actually serving the 27B)
+enable_prefix_caching default: True
+launch path: no --no-enable-prefix-caching, no override
+```
+
+**It is already on, and the warmer still thrashes.** So APC is not the missing fix, and the
+reason is what this project exists for: vLLM's prefix cache is in-memory and per-instance. It
+evicts under pressure and is gone when the model unloads. Durable, restorable caches are
+precisely the gap, and REQ-054 measured what closing it is worth - 14.68x at 8,192 tokens with
+restore time flat where prefill grows linearly.
+
+A panel's practical advice is worth exactly as much as checking it costs.
+
+Status: **verified on this host** — vLLM version and default read from the serving venv at
+`~/qwen38-27b-rtx3090/venv`. **Accepted**: the verdict on cross-model translation, which
+matches REQ-064. **Rejected on evidence**: that enabling APC addresses the warmer, since it is
+already enabled.
