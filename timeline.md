@@ -1903,3 +1903,43 @@ Status: **measured once on this host** — 3 prompts, 8 ratios, 32 forced positi
 swept offline from one capture. **Corrects**: REQ-051's monotonicity claim for margin skipping.
 **Unchanged**: teacher forcing as the scoring protocol, and the separation of the translated
 cache from the blends.
+
+## REQ-053 — The whole pipeline, end to end, on the model the user actually runs
+
+Capture, admit, restore and refuse - on `Tiel-Coder-35B-A3B` (qwen35moe, hybrid), on the
+vacant W6800, with a live negative control.
+
+```
+saved      n_saved=512  checkpoints=1
+admitted   e1dbb7a52cd9  needs patch: True  kv f16/f16  state v3
+RESTORE    ok=True  cache_n=508  prompt_n=4  of 512 tokens
+           "verified reuse: cache_n=508 of 512, 4 reprocessed"
+
+check against the patched runtime : no objection
+check against the STOCK runtime   : 2 objections -> refused
+```
+
+The stock runtime is the fleet's own binary. Offered the same artifact it is refused because
+it reports neither a state-file version nor checkpoint persistence - and on that build the
+restore would have been *accepted* and reused nothing, reporting the same `n_restored` as the
+patched one. That is the failure this mechanism exists to convert into an error, demonstrated
+rather than argued.
+
+### Two defects the run found that no test had
+
+**The store must be the slot-save-path.** Restore resolves an admitted object and hands the
+server its filename with no copy on the request path, so a store in a different directory is
+one the server cannot see. It failed with a bare HTTP 400.
+
+**Model identity has to come from the caller.** The artifact records the model it was captured
+from; llama.cpp's `/props` carries no identity at all, and the check read that as "cannot be
+shown to match" - refusing a restore that then succeeded with 508 of 512 tokens reused. The
+adapter derives identity from the weights file, so it is now supplied rather than looked up,
+with `/props` as a fallback and absent-from-both still a refusal. It failed in the safe
+direction, which is why it survived every offline test: the fixtures supplied an identity that
+real props do not have.
+
+Status: **measured once on this host** — one prompt, 512 tokens, one model, both binaries.
+**Proven by retained test**: the requirements arithmetic and every refusal including the
+caller-identity path (949 offline tests). **What this does not show**: any cross-model claim,
+and any timing - this run measured correctness, not latency.
