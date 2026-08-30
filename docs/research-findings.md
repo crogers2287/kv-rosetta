@@ -1026,3 +1026,38 @@ floor; holding the API fixed and changing the vendor costs 0.965-0.974 against a
 Crossing vendors costs about exactly what the vendors already differ by; crossing APIs on one
 card costs distinctly less than the APIs differ by. Neither degrades top-1 agreement or the
 emitted tokens at 2,048 tokens.
+
+---
+
+## 27. A rejected restore leaves the slot pristine — measured, not inferred from the 400
+
+The steer's P-1: llama.cpp answers a wrong-model restore with HTTP 400, but it logs work done
+on the way to that 400, and no test had ever issued a completion afterwards to see what the
+slot looked like. A refusal is not safety until something checks.
+
+`scripts/slot_poisoning.py` takes a baseline cold completion, offers the slot a state file
+written by a *different model*, and — without erasing, which would destroy the evidence — runs
+the identical completion again. Text, token ids and per-position probability vectors must all
+match the baseline.
+
+It refuses to render a verdict unless handed a passing `reader_determinism` record **for that
+exact reader label**. On a reader that answers identical work differently, a post-rejection
+difference cannot be attributed to the restore rather than to the reader, and the verdict would
+be noise wearing a safety label. Demonstrated in the field, not just in tests: pointed at
+`vulkan-nvidia-hybrid`, it refuses before starting a server.
+
+| target (CUDA, reproducible) | foreign artifact | rejected at | slot pristine |
+|---|---|---|---|
+| Qwen3.8-27B (`qwen35`) | Qwen2.5-3B (`qwen2`), 443 KB | `state_read_meta: invalid seq_id-agnostic kv cell` | **yes** |
+| Qwen3.8-27B (`qwen35`) | Qwen3.5-4B (`qwen35`), 53 MB | `state_read_data: mismatched layer count (8 instead of 16)` | **yes** |
+
+Both returned HTTP 400. The second is the stronger case: the reader got past the metadata
+section and into the data section before failing, so the rejection is not a cheap early-out —
+and the slot was still byte-identical afterwards, vectors included. In both, the post-rejection
+completion re-prefilled all 430 tokens (`cache_n=0`), which is what an untouched slot does.
+
+**Limit, stated rather than glossed:** neither artifact carried an `SCKP` appendix, because
+neither writer was a patched build. The specific checkpoint-appendix-before-rejection path the
+steer described is therefore *not* exercised by these two runs. What is established is that a
+model-mismatch rejection, including one that fails deep in the data section, leaves the slot
+pristine on this reader. The appendix path needs a patched writer and remains untested.

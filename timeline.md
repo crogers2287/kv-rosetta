@@ -2864,3 +2864,38 @@ Status: **proven by retained test** — the runner's refusals. **Measured once o
 all six configurations, with raw records committed. **Not claimed**: this preflight allowlists
 the four reproducible configurations for exact-parity comparison; it does not by itself
 allowlist any restore tuple, which is the steer's next step.
+
+---
+
+## REQ-071 — P-1: proving a rejected restore is actually harmless
+
+The steer's first execution step. Its premise: all six wrong-model restores returned HTTP 400,
+but llama.cpp logged that it did work before rejecting, and no harness had issued a completion
+afterwards — so nothing had established the target slot was untouched.
+
+`scripts/slot_poisoning.py` establishes it. Baseline cold completion, offer the slot a foreign
+model's state file, then re-run the identical completion **without erasing** — erasing would
+destroy the evidence. Text, token ids and probability vectors must all match.
+
+| target (CUDA, reproducible) | foreign artifact | rejected at | pristine |
+|---|---|---|---|
+| Qwen3.8-27B `qwen35` | Qwen2.5-3B `qwen2`, 443 KB | `state_read_meta` | yes |
+| Qwen3.8-27B `qwen35` | Qwen3.5-4B `qwen35`, 53 MB | `state_read_data: mismatched layer count (8 instead of 16)` | yes |
+
+The second case matters more: the reader consumed metadata and entered the data section before
+failing, so this is not a cheap early-out, and the slot was still byte-identical afterwards
+down to the vectors.
+
+The runner will not render a verdict without a passing `reader_determinism` record for that
+exact reader label — otherwise a post-rejection difference could not be attributed to the
+restore rather than to the reader. Pointed at `vulkan-nvidia-hybrid`, it refuses before
+starting a server. That guard is what connects REQ-070 to this result rather than leaving two
+unrelated measurements.
+
+**Not claimed:** neither foreign artifact carried an `SCKP` appendix, since neither writer was
+a patched build, so the checkpoint-appendix-before-rejection path the steer specifically
+described is untested. Establishing it needs a patched writer.
+
+Status: **proven by retained test** — the runner's refusals (3/3 guards, 9 tests).
+**Measured once on this host** — both poisoning cases, records at
+`docs/records/slot-poisoning/`. **Untested** — the appendix path.
