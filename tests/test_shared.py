@@ -248,3 +248,92 @@ class AttachmentsAreModelSpecific(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrefixAddressedAttachments(unittest.TestCase):
+    """Growing a memory must not re-prefill the system prompt that did not change.
+
+    Safe only because llama.cpp checks the token prefix itself, so a wrong guess costs a
+    re-prefill rather than producing wrong output. That check covers tokens, not weights,
+    which is why a different model's attachment is still refused outright below.
+    """
+
+    def setUp(self):
+        self.drive = SharedDrive(Path(tempfile.mkdtemp()) / "drive")
+        self.state = Path(tempfile.mkdtemp()) / "s.state"
+        self.state.write_bytes(b"qsgg" + b"\x00" * 64)
+
+    def _content(self, memory_ids):
+        return Content(tokenizer_id="t", entries=(
+            Entry("system", "system", "sys ", (1, 2, 3, 4)),
+            Entry("recall", "memory", "mem ", tuple(memory_ids))))
+
+    def _warm(self, content):
+        digest = self.drive.publish(content)
+        self.drive.attach(digest, _model(), _abi(), self.state)
+        return digest
+
+    def test_a_grown_memory_still_reuses_the_unchanged_head(self):
+        self._warm(self._content((5, 6)))
+        grown = self._content((5, 6, 7, 8))
+        match = self.drive.best_attachment(grown, _model(), _abi())
+        self.assertIsNotNone(match)
+        self.assertEqual(match.shared_tokens, 6)      # 4 system + 2 memory
+        self.assertEqual(match.target_tokens, 8)
+        self.assertFalse(match.exact)
+        self.assertAlmostEqual(match.reusable_fraction, 0.75)
+
+    def test_an_exact_match_is_marked_exact(self):
+        content = self._content((5, 6))
+        self._warm(content)
+        match = self.drive.best_attachment(content, _model(), _abi())
+        self.assertTrue(match.exact)
+        self.assertEqual(match.shared_tokens, match.target_tokens)
+
+    def test_the_longest_prefix_wins(self):
+        # Several generations of a growing memory; the newest that still fits must be used.
+        self._warm(self._content((5,)))
+        self._warm(self._content((5, 6, 7)))
+        self._warm(self._content((5, 6)))
+        match = self.drive.best_attachment(self._content((5, 6, 7, 8)), _model(), _abi())
+        self.assertEqual(match.shared_tokens, 7)      # 4 system + 3 memory
+
+    def test_a_rewritten_memory_falls_back_to_the_shared_head(self):
+        # Not appended but replaced: only the system region is common, and that is still
+        # worth more than nothing.
+        self._warm(self._content((5, 6, 7)))
+        match = self.drive.best_attachment(self._content((9, 9, 9)), _model(), _abi())
+        self.assertEqual(match.shared_tokens, 4)
+
+    def test_content_sharing_nothing_is_not_offered(self):
+        self._warm(self._content((5, 6)))
+        alien = Content(tokenizer_id="t", entries=(
+            Entry("other", "system", "x ", (99, 98)),))
+        self.assertIsNone(self.drive.best_attachment(alien, _model(), _abi()))
+
+    def test_a_minimum_can_be_required(self):
+        self._warm(self._content((5, 6, 7)))
+        grown = self._content((9, 9, 9))
+        self.assertIsNotNone(self.drive.best_attachment(grown, _model(), _abi()))
+        self.assertIsNone(self.drive.best_attachment(grown, _model(), _abi(), minimum=5))
+
+    def test_another_models_attachment_is_never_offered_as_a_prefix(self):
+        # The whole safety argument for prefix matching is that the runtime checks tokens.
+        # It does not check weights, so this case stays refused.
+        self._warm(self._content((5, 6)))
+        self.assertIsNone(
+            self.drive.best_attachment(self._content((5, 6, 7)), _model("f" * 64), _abi()))
+
+    def test_another_cache_abi_is_never_offered_as_a_prefix(self):
+        self._warm(self._content((5, 6)))
+        self.assertIsNone(self.drive.best_attachment(
+            self._content((5, 6, 7)), _model(), _abi(k_dtype="q8_0")))
+
+    def test_tampered_content_is_skipped_rather_than_offered(self):
+        digest = self._warm(self._content((5, 6)))
+        path = self.drive.root / f"{digest}.content.json"
+        data = json.loads(path.read_text())
+        data["entries"][0]["text"] = "tampered "
+        path.write_text(json.dumps(data))
+        self.assertIsNone(self.drive.best_attachment(
+            self._content((5, 6, 7)), _model(), _abi()))

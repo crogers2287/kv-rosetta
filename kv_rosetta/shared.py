@@ -145,6 +145,31 @@ def attachment_key(model: ModelIdentity, abi: CacheABIIdentity) -> str:
     return digest_of("SharedAttachment", model.digest(), abi.digest())
 
 
+def _common_prefix(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    count = 0
+    for a, b in zip(left, right):
+        if a != b:
+            break
+        count += 1
+    return count
+
+
+@dataclass(frozen=True)
+class PrefixMatch:
+    """An attachment that covers a prefix of the content being asked for."""
+
+    path: Path
+    content_digest: str
+    shared_tokens: int
+    attachment_tokens: int
+    target_tokens: int
+    exact: bool
+
+    @property
+    def reusable_fraction(self) -> float:
+        return self.shared_tokens / self.target_tokens if self.target_tokens else 0.0
+
+
 class SharedDrive:
     """A directory holding one content document and any number of cache attachments."""
 
@@ -254,6 +279,48 @@ class SharedDrive:
             shutil.copyfile(source, tmp)
         os.replace(tmp, dest)
         return dest.name
+
+    def published(self) -> tuple[str, ...]:
+        """Every content digest on the drive."""
+        return tuple(sorted(p.name[:-len(CONTENT_SUFFIX)]
+                            for p in self.root.glob(f"*{CONTENT_SUFFIX}")))
+
+    def best_attachment(self, content: Content, model: ModelIdentity,
+                        abi: CacheABIIdentity, *, minimum: int = 1) -> "PrefixMatch | None":
+        """The attachment sharing the longest token prefix with `content`, for this model.
+
+        Exact-digest lookup is the wrong instrument when a memory entry grows. Editing one
+        region changes the whole content digest, so `cache_for` misses and the unchanged
+        system and tools regions are prefilled again. Measured on this host: appending to a
+        memory and restoring the *previous* attachment reused 820 of 892 tokens and cut the
+        prefill from 108ms to 18ms. Refusing that is not caution, it is waste.
+
+        It is safe for one specific reason, and the reason does not generalise. llama.cpp
+        compares the restored cache's tokens against the incoming prompt itself and reuses
+        only the common prefix, so a wrong guess costs a re-prefill rather than producing
+        wrong output. That check covers tokens, not weights - which is exactly why a
+        foreign *model's* attachment is still refused outright here. Same model, different
+        text: the runtime protects us. Different model, same text: nothing does.
+        """
+        target = content.token_ids
+        best: PrefixMatch | None = None
+        for digest in self.published():
+            path = self._attachment_path(digest, attachment_key(model, abi))
+            if not path.is_file():
+                continue
+            try:
+                candidate = self.content(digest)
+            except SharedError:
+                continue        # tampered or unreadable content is never offered
+            shared = _common_prefix(candidate.token_ids, target)
+            if shared < minimum:
+                continue
+            if best is None or shared > best.shared_tokens:
+                best = PrefixMatch(path=path, content_digest=digest, shared_tokens=shared,
+                                   attachment_tokens=len(candidate.token_ids),
+                                   target_tokens=len(target),
+                                   exact=candidate.token_ids == target)
+        return best
 
     def attachments(self, content_digest: str) -> tuple[str, ...]:
         """Which attachment keys are warmed for this content, newest last."""

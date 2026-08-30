@@ -3048,3 +3048,55 @@ information about it.
 
 Status: **measured once on this host**, records at `docs/records/splice/`. **Proven by retained
 test** — the splice's layout precondition and both sweep endpoints (5/5 guards, 17 tests).
+
+---
+
+## REQ-075 — The shared drive, and memory that does not throw away the prompt
+
+**Request:** storing prompts is the main goal, storing memories would be nice, and it would be
+nice if the KVX file acted as a shared drive any model can use.
+
+Three measurements say the *tensors* cannot be the shared thing. Everything else in the file
+can be, and that is the part the goal needs. `kv_rosetta/shared.py` splits a drive into
+model-neutral **content** — system text, tool schemas, memory entries — and one cache
+**attachment** per `(model identity, cache ABI)` that has warmed it.
+
+Live, three models on one drive, 963 tokens:
+
+| visit | attachment | cache_n | prefilled |
+|---|---|---:|---:|
+| 1 (all three models) | miss | 0 | 966 |
+| 2 (all three models) | hit | 965 | 1 |
+
+Three attachments, one content document, no cross-model leaks.
+
+### Memory: measured the waste, then fixed it
+
+Keying attachments to the whole content means editing a memory invalidates the unchanged system
+and tools regions too. Measured what that costs before building anything, on a memory grown
+from 823 to 889 tokens behind 642 unchanged tokens:
+
+| | cache_n | prefilled | ms |
+|---|---:|---:|---:|
+| v2 cold — what exact-digest lookup forces | 0 | 892 | 110 |
+| v2 via the drive's prefix match | 820 | 72 | 19 |
+
+**5.8x**, for text the drive already held. `best_attachment` now returns the attachment sharing
+the longest token prefix, with the reusable fraction — 822/889 predicted, 820 achieved.
+
+Safe for one specific reason that does not generalise: llama.cpp checks the token prefix
+itself, so a wrong guess costs a re-prefill rather than wrong output. That check covers tokens,
+not weights, which is why a foreign *model's* attachment stays refused outright. Same model,
+different text: the runtime protects us. Different model, same text: nothing does.
+
+### Two bugs the tests found
+
+The content digest covered token ids, names and roles but not the entry **text**, so editing an
+entry left the identity unchanged and the tamper check could not fire. And a drive is not a
+runtime's slot directory — llama.cpp resolves restore filenames only inside its own
+`--slot-save-path`, which surfaced as an opaque HTTP 400 rather than a miss. `stage()` now
+places the attachment where the runtime looks, hard-linking when the filesystems match.
+
+Status: **proven by retained test** — 11/11 guards, 42 tests, including that a foreign model is
+never offered an attachment by either lookup. **Measured once on this host** — the three-model
+drive and the memory-growth timings.

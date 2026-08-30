@@ -1348,6 +1348,26 @@ rather than dangerous — no attachment is ever served for text it did not see �
 wasteful in exactly the case memory creates, where a small tail changes often and a large head
 never does.
 
-`compose.py` already holds the machinery for the fix: regions carry the chain digest of what
-they were prefilled behind, so an attachment could be addressed by a *prefix* of the content
-rather than the whole of it. Untested, and it is the next thing worth running.
+### Fixed: attachments addressed by prefix, and what it is worth
+
+Measured before building anything. A memory grown from 823 to 889 tokens, with 642 tokens of
+system and tools unchanged in front of it:
+
+| | cache_n | prefilled | prompt ms |
+|---|---:|---:|---:|
+| v1 cold | 0 | 826 | 115 |
+| v1 with its own attachment | 825 | 1 | 5 |
+| v2 cold — what exact-digest lookup forces | 0 | 892 | 110 |
+| **v2 via the drive's prefix match** | **820** | **72** | **19** |
+
+**5.8x on a memory update**, for text the drive already held. `best_attachment` returns the
+attachment sharing the longest token prefix with the content being asked for, along with how
+much of it is reusable — 822 of 889 predicted here against 820 achieved, so the estimate is an
+upper bound the runtime nearly meets.
+
+**Why this is safe, and why the reason does not generalise.** llama.cpp compares the restored
+cache's tokens against the incoming prompt itself and reuses only the common prefix, so a wrong
+guess costs a re-prefill rather than producing wrong output. That check covers *tokens*, not
+*weights* — which is exactly why a foreign model's attachment is still refused outright. Same
+model, different text: the runtime protects us. Different model, same text: nothing does. The
+drive draws the line in that one place, deliberately.
