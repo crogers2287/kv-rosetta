@@ -1599,3 +1599,55 @@ twelve tokens. **The conclusion for the project**: cross-model translation for t
 roughly R² 0.9-0.96, and a per-layer linear map on 16k tokens reaches 0.55. **Untested**:
 whether a teacher-forced metric gives a smooth quality curve, which is what a map should be
 tuned against; whether the prompt-dependence narrows over more prompts.
+
+## REQ-047 — Teacher forcing, and what the translated cache is actually worth
+
+REQ-046 found the gate's failure is a cliff: a nearly-perfect cache and a fully translated one
+both scored 0.042 top-1, because generation is autoregressive and one wrong token derails the
+rest. That measures *when the first divergence happened*, not how good the cache is, and gives
+nothing to tune a map against.
+
+Scoring each position against the same **forced** prefix removes the cascade.
+`kv_rosetta.metrics.positionwise_agreement` does the arithmetic; the protocol is one request
+per position, submitting `prompt + reference[:k]` and reading the single next-token
+distribution.
+
+| alpha | teacher-forced top-1 | mean \|Δlogprob\| | free-generation verdict |
+|---:|---:|---:|---|
+| 1.0 | 1.000 | 0.000 | pass |
+| 0.8 | 1.000 | 0.313 | pass |
+| 0.7 | 1.000 | 0.484 | pass |
+| 0.6 | 1.000 | 0.508 | **fail** |
+| 0.5 | 1.000 | 1.171 | fail |
+| 0.4 | 0.958 | 1.678 | fail |
+| 0.3 | 0.958 | 1.925 | fail |
+| 0.2 | 0.875 | 2.220 | fail |
+| 0.0 | **0.667** | 2.180 | fail |
+
+### The translated cache is far better than the gate made it look
+
+**0.667 against 0.042.** Under teacher forcing the fully translated cache predicts the same
+next token as the true cache two thirds of the time. Under free generation the same cache
+scored four percent. The cascade, not the cache, accounts for the difference — and any
+judgement of map quality taken from a free generation is worthless for that reason.
+
+`mean |Δlogprob|` is monotonic from 0.000 to 2.22 across the sweep, which is the gradient a
+better map can be tuned against. It was not available before.
+
+### But the admission bar is harsher than any R² target implies
+
+Teacher-forced top-1 is 1.000 at alpha 0.5, and alpha 0.5 **fails** the free-generation gate.
+So perfect agreement over 24 forced positions does not buy a passing generation over 48 free
+ones. The real requirement is not "R² above 0.9" but **top-1 correct at every position over
+the whole generation** - one wrong token in forty-eight is a failure, and the longer the
+generation the harder it gets.
+
+That reframes REQ-045 and REQ-046's R² targets: they are necessary, not sufficient, and they
+understate the difficulty. A map at two-thirds per-token accuracy is not two thirds of the way
+there.
+
+Status: **measured once on this host** — one prompt, 24 forced positions, nine blend ratios,
+identity exact at alpha 1.0. **Proven by retained test**: `positionwise_agreement`, including
+that it varies smoothly with perturbation, which is the property the cliff metric lacks (915
+offline tests). **Untested**: whether mean |Δ| below some value predicts a passing generation;
+that needs the two metrics measured together across more prompts.
