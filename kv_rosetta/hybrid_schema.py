@@ -17,7 +17,10 @@ would have to be rewritten.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SCHEMA = "kvx-hybrid/1"
@@ -35,6 +38,265 @@ ROPE_STATES = frozenset({"applied", "not_applied"})
 
 class SchemaError(ValueError):
     """Raised when hybrid state cannot be represented or verified. Never a warning."""
+
+
+# -- evidence for the state classes nothing here has restored ---------------------------
+#
+# `common_prompt_checkpoint` carries `data_tgt`, `data_dft` and `data_spec`, and the SCKP
+# appendix serializes all three. A live server running MTP speculative decoding reports
+# `sckp_serializes_speculative_state: true` beside `supports_speculative_checkpoint_state:
+# false` - the bytes are in the file and nothing has shown they restore. That is why draft
+# and speculative state are refused by default, and the default is not the interesting part:
+# the refusal has to be liftable by whoever does the demonstration, without becoming a switch
+# that lifts it for everyone.
+#
+# So the lift is scoped to exactly what was demonstrated - one state class, one build, one
+# model - and is supplied by the caller at admission time rather than carried in the
+# artifact. An artifact that carried its own proof would be a permission slip signed by the
+# thing being admitted.
+
+#: The two checkpoint blob classes whose restoration is unproven here.
+DRAFT_STATE = "draft"
+SPECULATIVE_STATE = "speculative"
+PROOF_STATE_CLASSES = (DRAFT_STATE, SPECULATIVE_STATE)
+
+#: What a run record may report. A proof is not a permission slip: a record of a run that
+#: diverged is evidence too, and it is the stronger kind - it refuses, where an absent record
+#: merely fails to admit.
+PROOF_RESTORED = "restored_and_matched"
+PROOF_DIVERGED = "diverged"
+PROOF_OUTCOMES = frozenset({PROOF_RESTORED, PROOF_DIVERGED})
+
+#: A proof states its own validity window, and the window is bounded so that no record can
+#: admit forever. An unexpiring proof is the "trust me" boolean again, wearing provenance.
+MAX_PROOF_VALIDITY = timedelta(days=365)
+
+#: The refusal in force whenever nothing proves otherwise, verbatim as it has always read.
+#: It is what an artifact gets with no evidence at all, which is still every artifact.
+UNPROVEN_STATE_REFUSAL = (
+    "checkpoint carries draft or speculative state, whose restoration is not behaviourally "
+    "proven; refusing rather than forwarding state nothing has verified")
+
+#: Keys that would smuggle an admission decision into the artifact payload itself.
+EVIDENCE_KEYS = frozenset({"evidence", "proof", "proofs", "restoration_proof",
+                           "restoration_proofs", "admission", "admitted_state_classes"})
+
+_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+def _is_digest(value: Any) -> bool:
+    return isinstance(value, str) and _DIGEST.match(value) is not None
+
+
+def _blank(value: Any) -> bool:
+    return not isinstance(value, str) or not value.strip()
+
+
+def _moment(text: Any) -> datetime | None:
+    """An ISO-8601 instant, or None when the text is not one.
+
+    A timestamp with no zone is refused rather than assumed local or assumed UTC: the two
+    readings are hours apart, and an expiry that depends on where the reader is standing is
+    not an expiry.
+    """
+    if _blank(text):
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class RestorationProof:
+    """One behavioural demonstration, scoped to exactly what it demonstrated.
+
+    Every field is here because a reader six months from now has to be able to re-derive the
+    claim or throw it away: which state class, which build *and which binary*, which model,
+    how it was shown, over how many runs, where the record is, and what that record hashed to
+    when the proof was written.
+
+    Build string and binary digest are both required because they answered differently once:
+    the fleet's fork and a patched tree can report build_info that does not distinguish a
+    binary carrying the checkpoint patch from one without it, and the same model reused 0 of
+    676 tokens on one and 672 on the other.
+    """
+
+    state_class: str
+    runtime_build: str          # what the runtime reports as build_info, matched exactly
+    binary_sha256: str          # the exact library that was measured
+    model_identity: str         # the weights digest it was measured against
+    outcome: str
+    trials: int
+    method: str                 # how it was demonstrated, in enough prose to repeat it
+    record_uri: str             # where the run record lives
+    record_sha256: str          # what that record hashed to when this was written
+    proven_at: str              # ISO-8601 with a timezone
+    expires_at: str
+
+    def validate(self) -> list[str]:
+        """Everything wrong with the record itself. Scope is checked separately."""
+        problems: list[str] = []
+        if self.state_class not in PROOF_STATE_CLASSES:
+            problems.append(f"proof names state class {self.state_class!r}, not one of "
+                            f"{list(PROOF_STATE_CLASSES)}; a proof that does not say what it "
+                            f"proved would admit everything or nothing")
+        if self.outcome not in PROOF_OUTCOMES:
+            problems.append(f"proof outcome {self.outcome!r} is not one of "
+                            f"{sorted(PROOF_OUTCOMES)}, so the run's result is unreadable")
+        if not isinstance(self.trials, int) or isinstance(self.trials, bool) \
+                or self.trials <= 0:
+            problems.append(f"proof reports {self.trials!r} trials; a demonstration that was "
+                            f"never run is a claim")
+        if _blank(self.method):
+            problems.append("proof does not say how it was demonstrated, so it can be "
+                            "neither re-derived nor contradicted")
+        if _blank(self.record_uri):
+            problems.append("proof cites no run record, so there is nothing to re-read")
+        if _blank(self.runtime_build):
+            problems.append("proof names no runtime build, so it is scoped to no build")
+        for name in ("binary_sha256", "model_identity", "record_sha256"):
+            if not _is_digest(getattr(self, name)):
+                problems.append(f"proof {name} is not a 64-character lowercase digest")
+        proven, expires = _moment(self.proven_at), _moment(self.expires_at)
+        if proven is None:
+            problems.append(f"proof proven_at {self.proven_at!r} is not an ISO-8601 instant "
+                            f"with a timezone")
+        if expires is None:
+            problems.append(f"proof expires_at {self.expires_at!r} is not an ISO-8601 "
+                            f"instant with a timezone")
+        if proven is not None and expires is not None:
+            if expires <= proven:
+                problems.append("proof expires at or before the run it records")
+            elif expires - proven > MAX_PROOF_VALIDITY:
+                problems.append(f"proof claims validity for longer than "
+                                f"{MAX_PROOF_VALIDITY.days} days; a record that never "
+                                f"expires is a standing permission, not a measurement")
+        return problems
+
+
+@dataclass(frozen=True)
+class RestorationEvidence:
+    """Proofs, plus the facts they have to be checked against.
+
+    Those facts describe the runtime and the model the caller is actually holding. They never
+    come from the artifact and never from the proof: a record compared only against its own
+    contents shows that it is self-consistent, which is exactly what a forgery is.
+    """
+
+    runtime_build: str
+    binary_sha256: str
+    model_identity: str
+    proofs: tuple[RestorationProof, ...] = ()
+    #: The digest of each cited run record, hashed by the caller now. A proof whose record
+    #: cannot be produced and hashed at admission time is a citation, not a record.
+    record_digests: Mapping[str, str] = field(default_factory=dict)
+    #: ISO-8601 with a timezone. Empty means "the moment this is being decided".
+    as_of: str = ""
+
+    def own_problems(self) -> list[str]:
+        problems: list[str] = []
+        if _blank(self.runtime_build):
+            problems.append("evidence does not name the build it is being checked against")
+        for name in ("binary_sha256", "model_identity"):
+            if not _is_digest(getattr(self, name)):
+                problems.append(f"evidence {name} is not a 64-character lowercase digest, so "
+                                f"no proof can be tied to what is actually running")
+        if not isinstance(self.record_digests, Mapping):
+            problems.append("evidence record_digests is not a mapping of record to digest")
+        if self.as_of and _moment(self.as_of) is None:
+            problems.append(f"evidence as_of {self.as_of!r} is not an ISO-8601 instant with "
+                            f"a timezone, so expiry cannot be decided")
+        return problems
+
+    def verdict(self, state_class: str) -> tuple[bool | None, str]:
+        """Proven, disproven, or unknown - and why.
+
+        Three states, because unrecorded is not the same answer as recorded-false. This repo
+        collapsed them twice, once for hybrid architectures and once for sliding-window ones,
+        and both times the collapse read "no" where the honest answer was "nobody looked".
+        Here both refuse, and they must still be told apart: a divergence is a finding, and
+        an absent record is a gap somebody can go and close.
+        """
+        problems = self.own_problems()
+        if problems:
+            return None, "; ".join(problems)
+        now = _moment(self.as_of) or datetime.now(timezone.utc)
+        restored: list[RestorationProof] = []
+        diverged: list[RestorationProof] = []
+        misses: list[str] = []
+        for index, proof in enumerate(self.proofs):
+            why = self._out_of_scope(proof, state_class, now)
+            if why:
+                misses.append(f"proof {index} does not apply: {why}")
+            elif proof.outcome == PROOF_DIVERGED:
+                diverged.append(proof)
+            else:
+                restored.append(proof)
+        if diverged:
+            found = diverged[0]
+            return False, (f"a proof in scope records that {state_class} state did NOT "
+                           f"restore on this build: {found.method} ({found.record_uri})")
+        if restored:
+            found = restored[0]
+            return True, (f"{state_class} checkpoint restoration demonstrated on build "
+                          f"{found.runtime_build} over {found.trials} trial(s): "
+                          f"{found.method} ({found.record_uri})")
+        if misses:
+            return None, "; ".join(misses)
+        return None, f"no proof of {state_class} checkpoint restoration was offered"
+
+    def _out_of_scope(self, proof: RestorationProof, state_class: str,
+                      now: datetime) -> str:
+        """Why this proof says nothing about this class, build, model or moment."""
+        if proof.state_class != state_class:
+            return (f"it proves {proof.state_class} state, not {state_class}; a "
+                    f"demonstration of one class says nothing about the other")
+        problems = proof.validate()
+        if problems:
+            return "; ".join(problems)
+        if proof.runtime_build != self.runtime_build:
+            return (f"it was gathered on build {proof.runtime_build!r}, this runtime reports "
+                    f"{self.runtime_build!r}")
+        if proof.binary_sha256 != self.binary_sha256:
+            return (f"it names the same build string but a different binary "
+                    f"({proof.binary_sha256[:16]} against {self.binary_sha256[:16]}); a "
+                    f"fork's build_info did not distinguish a binary carrying the checkpoint "
+                    f"patch from one without it")
+        if proof.model_identity != self.model_identity:
+            return (f"it was gathered on model {proof.model_identity[:16]}, this is "
+                    f"{self.model_identity[:16]}")
+        if _moment(proof.expires_at) <= now:
+            return (f"it expired at {proof.expires_at}; re-derive it against this build "
+                    f"rather than extending it")
+        if _moment(proof.proven_at) > now:
+            return (f"it is dated {proof.proven_at}, which has not happened yet; a record "
+                    f"from the future is not a record")
+        observed = self.record_digests.get(proof.record_uri)
+        if not observed:
+            return (f"its run record {proof.record_uri} was not produced at admission time, "
+                    f"so the evidence it cites cannot be read")
+        if observed != proof.record_sha256:
+            return (f"its run record {proof.record_uri} now hashes to {observed[:16]}, and "
+                    f"the proof was written against {proof.record_sha256[:16]}; the record "
+                    f"and the claim have drifted apart")
+        return ""
+
+
+def admission_problems(state_class: str,
+                       evidence: RestorationEvidence | None) -> list[str]:
+    """Why this class of state may not be forwarded. Empty means a proof admits it."""
+    if evidence is None:
+        return [UNPROVEN_STATE_REFUSAL]
+    proven, reason = evidence.verdict(state_class)
+    if proven is True:
+        return []
+    if proven is False:
+        return [f"checkpoint carries {state_class} state and {reason}"]
+    return [f"{UNPROVEN_STATE_REFUSAL} ({state_class}: {reason})"]
 
 
 @dataclass(frozen=True)
@@ -120,7 +382,14 @@ class CheckpointRecord:
     has_draft_state: bool = False
     has_speculative_state: bool = False
 
-    def validate(self) -> list[str]:
+    def validate(self, evidence: RestorationEvidence | None = None) -> list[str]:
+        """Every reason this checkpoint may not be forwarded.
+
+        `evidence` defaults to None, which is the state every caller is in until somebody
+        does the demonstration, and in that state this refuses exactly what it always did.
+        A proof is checked per state class, so admitting draft state leaves speculative
+        state refused.
+        """
         problems: list[str] = []
         if self.n_tokens <= 0:
             problems.append(f"checkpoint covers {self.n_tokens} tokens")
@@ -129,10 +398,10 @@ class CheckpointRecord:
         if not self.recurrent_segments:
             problems.append("checkpoint names no recurrent segments; a hybrid model cannot "
                             "reuse a prefix without them")
-        if self.has_draft_state or self.has_speculative_state:
-            problems.append("checkpoint carries draft or speculative state, whose "
-                            "restoration is not behaviourally proven; refusing rather than "
-                            "forwarding state nothing has verified")
+        for state_class, carried in ((DRAFT_STATE, self.has_draft_state),
+                                     (SPECULATIVE_STATE, self.has_speculative_state)):
+            if carried:
+                problems += admission_problems(state_class, evidence)
         return problems
 
 
@@ -149,7 +418,7 @@ class HybridState:
     layout: str = CANONICAL_LAYOUT
     notes: tuple[str, ...] = field(default_factory=tuple)
 
-    def validate(self) -> list[str]:
+    def validate(self, evidence: RestorationEvidence | None = None) -> list[str]:
         problems: list[str] = []
         if self.schema != SCHEMA:
             problems.append(f"schema {self.schema!r} is not {SCHEMA!r}")
@@ -174,12 +443,29 @@ class HybridState:
         if not self.checkpoints:
             problems.append("no checkpoint records; a hybrid prefix cannot be reused "
                             "without at least one")
+        # Evidence is bound to this artifact's own model before it can admit anything in it.
+        # A proof gathered on one model would otherwise travel to any artifact it was handed
+        # to, which is the blanket override this design exists to avoid.
+        bound = evidence
+        if evidence is not None:
+            if self.geometry is None:
+                problems.append("evidence was offered for an artifact with no source "
+                                "geometry, so it cannot be tied to the model it would admit")
+                bound = None
+            elif evidence.model_identity != self.geometry.model_weights_sha256:
+                problems.append(
+                    f"evidence was gathered on model "
+                    f"{str(evidence.model_identity)[:16]} and this "
+                    f"artifact was written from "
+                    f"{self.geometry.model_weights_sha256[:16]}; a proof for one model does "
+                    f"not admit another")
+                bound = None
         for index, checkpoint in enumerate(self.checkpoints):
-            problems += [f"checkpoint {index}: {p}" for p in checkpoint.validate()]
+            problems += [f"checkpoint {index}: {p}" for p in checkpoint.validate(bound)]
         return problems
 
-    def require_valid(self) -> HybridState:
-        problems = self.validate()
+    def require_valid(self, evidence: RestorationEvidence | None = None) -> HybridState:
+        problems = self.validate(evidence)
         if problems:
             raise SchemaError("; ".join(problems))
         return self
@@ -221,6 +507,16 @@ class HybridState:
     def from_dict(cls, value: dict[str, Any]) -> HybridState:
         if not isinstance(value, dict):
             raise SchemaError(f"expected a mapping, got {type(value).__name__}")
+        # An artifact does not get to carry its own admission. Evidence is supplied by the
+        # caller, out of band, against the runtime and model it is actually holding; a proof
+        # travelling inside the payload would be a permission slip signed by the thing asking
+        # to be let in, and forging one would be a text edit.
+        smuggled = sorted(EVIDENCE_KEYS.intersection(value))
+        if smuggled:
+            raise SchemaError(
+                f"artifact payload carries admission evidence in {smuggled}; evidence is "
+                f"supplied by the caller at admission time and is never read from the "
+                f"artifact, which cannot vouch for itself")
         geometry_raw = value.get("geometry")
         geometry = None
         if geometry_raw is not None:
@@ -253,6 +549,12 @@ class HybridState:
                 raise SchemaError(f"layer map is not readable: {exc}") from exc
         checkpoints = []
         for raw in value.get("checkpoints", []):
+            if isinstance(raw, dict):
+                smuggled = sorted(EVIDENCE_KEYS.intersection(raw))
+                if smuggled:
+                    raise SchemaError(
+                        f"checkpoint carries admission evidence in {smuggled}; the record "
+                        f"that carries the unproven state does not get to authorise it")
             try:
                 checkpoints.append(CheckpointRecord(
                     n_tokens=int(raw["n_tokens"]), pos_min=int(raw["pos_min"]),
