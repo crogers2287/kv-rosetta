@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from kvx_diff import DiffError, compare_tensor, parse_models, require_same_input
+from kvx_diff import DiffError, build_parser, compare_tensor, parse_models, require_same_input
 
 
 def _decoded(token_ids=(1, 2, 3), cells=3):
@@ -115,3 +115,25 @@ class Decomposition(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtraArgsTests(unittest.TestCase):
+    """Both captures must receive identical launch flags or the diff is meaningless."""
+
+    def _base(self):
+        return ["--binary", "b", "--model", "a=x", "--n-head-kv", "2",
+                "--head-dim", "256", "--slots", "s", "--out", "o.json"]
+
+    def test_extra_defaults_to_empty(self):
+        args = build_parser().parse_args(self._base())
+        self.assertEqual(args.extra, [])
+
+    def test_extra_accumulates_in_order(self):
+        args = build_parser().parse_args(
+            self._base() + ["--extra=--device", "--extra", "CUDA0"])
+        self.assertEqual(args.extra, ["--device", "CUDA0"])
+
+    def test_flag_valued_extra_needs_equals_form(self):
+        """argparse reads a bare leading dash as the next option, so --extra=-x is required."""
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(self._base() + ["--extra", "--device"])

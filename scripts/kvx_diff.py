@@ -142,7 +142,7 @@ def capture(binary: str, model: str, prompt: str, slots: Path, name: str,
             "tokenized": len(token_ids), "saved": saved}
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True)
     ap.add_argument("--model", action="append", required=True,
@@ -153,7 +153,16 @@ def main() -> int:
     ap.add_argument("--n-ctx", type=int, default=8192)
     ap.add_argument("--prompt-repeat", type=int, default=60)
     ap.add_argument("--out", required=True)
-    args = ap.parse_args()
+    # Some models do not fit without placement flags -- Flash-Next needs its
+    # per-layer embedding table forced to CPU. Both models get the same extras,
+    # which is what keeps the two captures comparable.
+    ap.add_argument("--extra", action="append", default=[],
+                    help="repeatable; passed verbatim to every llama-server launch. Values starting with a dash need the equals form: --extra=--flag")
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     pairs = parse_models(args.model)
 
@@ -163,7 +172,7 @@ def main() -> int:
     slots.mkdir(parents=True, exist_ok=True)
     out = Path(args.out)
 
-    captures = [capture(args.binary, path, prompt, slots, name, [], args.n_ctx,
+    captures = [capture(args.binary, path, prompt, slots, name, args.extra, args.n_ctx,
                         out.with_suffix(f".{name}.log")) for name, path in pairs]
 
     decoded = {name: decode(slots / f"{name}.state", n_head_kv=args.n_head_kv,
