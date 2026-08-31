@@ -3459,3 +3459,59 @@ cache geometry preserved) and is the evidence behind REQ-082.
 predates this finding and has been used, so it is flagged rather than removed.
 
 **Verification.** Config parses; 24 models remain; both tiel entries untouched.
+
+## REQ-084 — Two salvage attempts for the 0.625 warmer: both measured, both negative
+
+**Request.** "run them both" — (1) use the 8-expert model as a speculative-decoding draft, where
+verification is cheap and lossless, and (2) test whether cache agreement climbs with context
+depth, on the theory that attention over more positions dilutes any single wrong entry.
+
+### 1. The 8E model as a speculative-decoding draft — net loss
+
+Speculation did not engage at first: with the server's default 4 slots the response carried no
+`draft_n` fields and `graphs reused = 157/160`. It engages with `--parallel 1`.
+
+**A result was measured, believed, and then withdrawn.** The first matched-config comparison gave
+5.70 → 8.16 tok/s, a 1.43x speedup. Re-running the baseline produced 8.49, and a 4-slot baseline
+produced 66.29 — an 8x swing on an identical config. The uncontrolled variable is the page cache:
+`per_layer_token_embd` is 28.8 GB, mmapped, and pinned to CPU, so a cold cache makes every token
+fault from the NAS. Every decode figure recorded before this point (8.37, 8.48, 5.70) measured
+page-cache state, not the thing under test.
+
+Redone with both files pre-read into page cache (193 GB buff/cache), 3 repetitions, configs
+interleaved rather than run in blocks:
+
+| config | median | runs |
+|---|---|---|
+| 1 slot, no draft | 64.49 tok/s | 9.8 / 64.5 / 65.2 |
+| 1 slot + 8E draft | **8.50 tok/s** | 8.9 / 8.5 / 8.3 |
+| 4 slots, no draft | 64.15 tok/s | 64.2 / 64.7 / 63.7 |
+
+Speculative decoding is **7.6x slower**, not 1.43x faster. Output was byte-identical in every
+comparison, so the mechanism is lossless as designed — it is simply unprofitable here. The draft
+is not the problem: measured alone it decodes at 52.91 tok/s against the target's 64, and
+prefills faster still.
+
+**Hypothesis, not a finding.** This is a hybrid attention+recurrent architecture. Rejecting a
+drafted token requires rewinding recurrent state, which llama.cpp does by restoring a context
+checkpoint — the same SCKP blobs measured at ~225 MiB in REQ-082. Paying that per rejection would
+swamp any drafting gain. Consistent with the numbers; not proven by them.
+
+### 2. Cache agreement against context depth — real effect, insufficient size
+
+| context | cells reused | top-1 vs own restore | max logprob delta |
+|---|---|---|---|
+| 2,804 tokens | 2,804 | 0.625 | 6.46 |
+| 33,604 tokens | 33,604 | **0.750** | 4.88 |
+
+Controls clean on both runs. The predicted dilution is real and measurable: a 12x longer context
+gained +0.125 and lowered the worst-case delta. But the gate needs 0.99, and at roughly +0.125
+per 12x, closing the remaining 0.24 would take context lengths in the millions of tokens. The
+effect exists and does not rescue the approach.
+
+**Standing.** Every avenue tried for the expert-pruned warmer is now closed by measurement:
+retained-expert count (REQ-082), speculative verification, and context depth. Untested remains
+REAP-style selection by router-weighted activation.
+
+**Cleanup.** Slot directories `slots-spec`, `slots-deep` removed; no servers left running; tiel on
+the W6800 untouched throughout.
