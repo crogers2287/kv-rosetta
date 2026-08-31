@@ -3440,3 +3440,22 @@ different axis and this run does not measure it.
 **Kept / removed.** `Qwen3.8-Flash-Next-WARMER-8E.gguf` kept. The 41.7 GB 128-expert diagnostic
 build and all slot directories removed. No servers left running; tiel on the W6800 untouched
 throughout.
+
+## REQ-083 — Retire the warmer entry that would silently serve a failing cache
+
+**Request.** "yeah go ahead and prune it."
+
+Removed `qwen38-flash-next-warmer-8e` from `~/llama-swap/config.yaml` (backup:
+`config.yaml.pre-warmer-removal`, committed in the llama-swap repo). The entry was added in
+REQ-081 and never served real traffic. Its cache measured 0.625 in REQ-082 and, critically, was
+*accepted* rather than refused — an entry that silently produces a bad cache is worse than no
+entry at all.
+
+`Qwen3.8-Flash-Next-WARMER-8E.gguf` is kept on disk: the file itself is sound (byte-exact slice,
+cache geometry preserved) and is the evidence behind REQ-082.
+
+**Still present and the same hazard.** `qwen38-flash-next-warmer` (the 2-experts-per-token
+`--override-kv` entry) selects a subset by the same arbitrary mechanism and was never gated. It
+predates this finding and has been used, so it is flagged rather than removed.
+
+**Verification.** Config parses; 24 models remain; both tiel entries untouched.
