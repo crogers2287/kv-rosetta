@@ -116,16 +116,23 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:
                     print(f"[capture] cannot read prefixes: {str(exc)[:120]}", flush=True)
                     return None
-                for entry in sorted(prefixes,
-                                    key=lambda e: -(e.get("est_tokens") or 0)):
+                # Ordered by what each artifact actually covers, not by the manifest's
+                # est_tokens: that field counts the whole request rather than the
+                # cacheable prefix, and ranking on it picked a 9,146-token attachment
+                # over a 32,624-token one for the same model.
+                candidates = []
+                for entry in prefixes:
                     fingerprint = str(entry.get("fingerprint", ""))
-                    if sidecar.find_artifact(fingerprint, model) is None:
+                    found = sidecar.find_artifact(fingerprint, model)
+                    if found is None:
                         continue
+                    covered = int((found.manifest or {}).get("prompt_token_count") or 0)
+                    candidates.append((covered, fingerprint))
+                for covered, fingerprint in sorted(candidates, reverse=True):
                     result = sidecar.ensure(fingerprint, model, slot)
                     with sidecar._lock:
                         sidecar.stats.restores_served += 1
-                    return {"prefix": fingerprint[:12],
-                            "est_tokens": entry.get("est_tokens"), **result}
+                    return {"prefix": fingerprint[:12], "covers_tokens": covered, **result}
                 return None
 
             loop = CaptureLoop(args.swap, args.store_root,

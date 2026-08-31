@@ -3703,3 +3703,57 @@ restore (`captured tiel-kvx-w6800 slot 1: 44933 cells, 524 MB`).
 **Known remaining.** A stale 6,123-token tiel artifact (prefix `29391ab4`) still fails the tail
 contract when tried; it loses to the larger prefix on ordering, so it costs a refusal rather than
 correctness. Only one prefix per model is warmed; the other 111 manifests are unwarmed.
+
+## REQ-088 — Route the callable names to the restore path, pin it resident, warm the real prefix
+
+**Request.** "why is teal's larger? I'm going to be running the same agents and everything through
+it" and "point all the aliases to the new 3090 flash kvx model so it stays loaded ... lock it so
+nothing swaps it out".
+
+**Why tiel's looked larger: a selection error, not a harness difference.** Prefixes were ranked by
+`est_tokens`, which is **0 in every raw cfrproxy manifest** and, where the sidecar computes it,
+counts the whole request rather than the cacheable prefix. Ranking by the actual system+tools
+content gives a different answer:
+
+| model | manifests | largest real prefix | tools in it |
+|---|---|---|---|
+| 27b | 7 | ~73,151 tok | 243 |
+| qwen-w6800 | 6 | ~60,830 tok | 168 |
+| tiel-coder-q5-w6800 | 6 | ~58,045 tok | 35 |
+| tiel-w6800 | 9 | ~43,129 tok | 124 |
+| qwen38-flash-next-3090 | 43 | ~32,450 tok | 12 |
+
+So flash-next's real best is 32.4k against tiel's 43.1k, and the remaining gap is tool count in
+those particular captures (124 against 12), not the model. The 9,131-token flash-next prefix
+warmed in REQ-087 was simply the wrong pick.
+
+**Warmed the right one.** `admitted 48ca6899962cca40 for qwen38-flash-next-kvx: 32,624 tokens,
+1,576 MB`. It first stalled: prefill crawled 24,576 -> 26,624 tokens then froze, roughly 18 tok/s,
+because the 28.8 GB CPU-resident `per_layer_token_embd` had been evicted from page cache by the
+782 MB state files and tiel's weights. Reading the model file back into cache first, the same
+32,609-token replay completed in about two minutes. `post()` timeout raised 1800 -> 7200s.
+
+**Ordering fixed.** The restorer ranked candidates by `est_tokens`, which would have kept picking
+the 9,146-token attachment over the 32,624-token one for the same model. It now ranks by the
+artifact's own `prompt_token_count`. Verified after a reload: `restored qwen38-flash-next-kvx
+slot 0: prefix 95dd55cab923, covers_tokens 32624`.
+
+**Routing and residency.** Clients call `qwen38-flash-next-3090`; that entry sits in the `parked`
+group (blocked from loading), so the name reached nothing. Renamed to
+`qwen38-flash-next-3090-retired` -- along with its park-gate argument and the parked member, so a
+parked name never shadows a live alias -- and the KVX entry now carries `qwen38-flash-next-3090`,
+`qwen38-flash-next`, `qwen3.8-flash-next`, `flash-next` and `flashnext`. `ttl: 0` so idle never
+unloads it, and it joins the `qwen38-flash-next-resident` group (swap false, persistent true),
+which had been created for exactly this and left empty. Verified: loading via the alias
+`flash-next` brings up `qwen38-flash-next-kvx` and the daemon restores its attachment.
+
+**Standing state.** Each model restores its largest attachment on load, unattended:
+
+| model | restores | restore time |
+|---|---|---|
+| qwen38-flash-next-kvx | 32,624 tokens | ~1.7 s |
+| tiel-kvx-w6800 | 44,933 tokens | 1.43 s |
+
+**Untested.** Only one prefix per model is warmed; 111 manifests remain, including the
+`tiel-coder-q5-w6800` traffic carrying 26.6M cold tokens and 8.7 prefill hours. Page-cache
+residency is load-bearing for prefill speed on flash-next and nothing currently maintains it.

@@ -147,7 +147,9 @@ def prewarm_cli(args) -> int:
     def get(path, timeout=60):
         return _json.load(urllib.request.urlopen(base + path, timeout=timeout))
 
-    def post(path, payload, timeout=1800):
+    # 1800s was not enough: a 32k-token replay on a model whose CPU-resident
+    # embedding table has fallen out of page cache runs at roughly 18 tok/s.
+    def post(path, payload, timeout=7200):
         req = urllib.request.Request(base + path, data=_json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
