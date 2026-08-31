@@ -3757,3 +3757,54 @@ which had been created for exactly this and left empty. Verified: loading via th
 **Untested.** Only one prefix per model is warmed; 111 manifests remain, including the
 `tiel-coder-q5-w6800` traffic carrying 26.6M cold tokens and 8.7 prefill hours. Page-cache
 residency is load-bearing for prefill speed on flash-next and nothing currently maintains it.
+
+## REQ-089 — Why prefill collapses: NAS random-read latency, not content or length
+
+**Request.** "I've measured like 600 tokens per second you have something wrong", then "how bad
+will that hurt our performance" about streaming the embedding table from SSD.
+
+**The operator's number was right and two of mine were wrong.** Measured on this host:
+
+| condition | tokens | rate |
+|---|---|---|
+| repeated sentence, warm page cache | 6,001 | ~1,000 tok/s |
+| real prose, warm page cache | 5,183 | **~720 tok/s** |
+| real prose, cold page cache | 5,907 | ~40 tok/s |
+
+An earlier "34 tok/s" was a real observation of a cold, I/O-contended moment but was reported as
+the model's prefill rate, which it is not. It was then retracted as simply mistaken, which was
+also wrong. Both statements are superseded by the table above.
+
+**There is no crash.** The 502s at ~20k tokens were client and llama-swap timeouts on a prefill
+that was merely slow; the server logged steady progress (`19.91`, `17.31`, `16.90 tok/s` across
+successive 2,048-token batches) and stayed healthy throughout.
+
+**The mechanism, measured.** `per_layer_token_embd` is 28.8 GB, pinned to CPU, and read from the
+mapped file for every token. Storage comparison:
+
+| store | sequential | random 4K latency |
+|---|---|---|
+| NAS (SMB, 10 GbE) | 2,688 MB/s | **6,091 us** |
+| model-ssd (SATA striped) | 995 MB/s | **167 us** |
+
+The NAS is *faster* sequentially and 36x worse on random reads, which is what a per-token
+embedding lookup is. At 64 tok/s the budget is 15.6 ms per token, so one 6.1 ms NAS read consumes
+39% of it. That is the whole effect; content type and prompt length are secondary.
+
+**Added.** `scripts/keep_warm.py` -- `posix_fadvise(WILLNEED)` over the table's byte range
+(shard 2, offset 528,505,792, length 28,800,138,240). Needs no privileges and holds no resident
+memory of its own; `mlock` was unavailable because `RLIMIT_MEMLOCK` is 8 MB and raising it needs
+root, as does installing vmtouch. Advisory rather than guaranteed, which is stated in the module.
+8 tests, 5/5 mutation guards.
+
+**Storage incident, unresolved and NOT caused by this project's code.** Copying the model to
+`/mnt/model-ssd` failed with EIO partway through shard 3. That volume now returns EIO on reads and
+writes of files that predate the copy, while still mounted `rw`. It is an LVM stripe across two
+SATA SSDs (sda, sdb) with no redundancy. A 66 GB copy should not fail a healthy drive, so this
+reads as a latent fault surfaced by load, but that cannot be proven from here. No llama-swap entry
+references that volume and all three loaded models are unaffected. Needs an operator with root:
+`dmesg`, `smartctl -a /dev/sda /dev/sdb`, `lvs`.
+
+**Blocked.** Moving the model to local storage -- the correct fix on the latency numbers -- is
+blocked until that volume is diagnosed. `/` (NVMe) has 77 GB free against a 66 GB model, which
+would fit but leave little headroom.
