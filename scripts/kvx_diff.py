@@ -33,19 +33,22 @@ from production_matrix import free_port, sha256_file  # noqa: E402
 from reader_determinism import Reader  # noqa: E402
 
 from kv_rosetta.adapters import ggsq_envelope, llamacpp_ggsq  # noqa: E402
+from kv_rosetta import sizing  # noqa: E402
 
 
 class DiffError(RuntimeError):
     """A refusal. Two caches that are not over identical input are not comparable."""
 
 
-def decode(path: Path, *, n_head_kv: int, head_dim: int) -> dict:
+def decode(path: Path, *, n_head_kv: int, head_dim: int,
+           has_cell_ext: bool = False) -> dict:
     """Every layer's K and V as canonical float32, plus the token ids they cover."""
     raw = path.read_bytes()
     envelope = ggsq_envelope.parse_file_envelope(raw)
     with open(path, "rb") as handle:
         section = llamacpp_ggsq.read_attention_section(
-            handle, envelope.body_offset, len(raw), has_cell_ext=False)
+            handle, envelope.body_offset, len(raw), has_cell_ext=has_cell_ext,
+            cell_ext_size=sizing.BYTES_PER_CELL_EXT if has_cell_ext else 0)
         tensors = {}
         for span in section.spans:
             tensors[(span.layer_index, span.kind)] = llamacpp_ggsq.materialise(
@@ -156,6 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Some models do not fit without placement flags -- Flash-Next needs its
     # per-layer embedding table forced to CPU. Both models get the same extras,
     # which is what keeps the two captures comparable.
+    ap.add_argument("--arch", default="",
+                    help="model architecture; decides whether cells carry a 12-byte cell_ext")
     ap.add_argument("--extra", action="append", default=[],
                     help="repeatable; passed verbatim to every llama-server launch. Values starting with a dash need the equals form: --extra=--flag")
     return ap
@@ -175,8 +180,12 @@ def main() -> int:
     captures = [capture(args.binary, path, prompt, slots, name, args.extra, args.n_ctx,
                         out.with_suffix(f".{name}.log")) for name, path in pairs]
 
+    # 12 bytes per cell that the parser must skip; misreading it turns the very
+    # first cell's sequence-id count into garbage rather than failing quietly.
+    has_cell_ext = sizing.writes_cell_ext(args.arch) if args.arch else False
     decoded = {name: decode(slots / f"{name}.state", n_head_kv=args.n_head_kv,
-                            head_dim=args.head_dim) for name, _ in pairs}
+                            head_dim=args.head_dim, has_cell_ext=has_cell_ext)
+               for name, _ in pairs}
     reference = pairs[0][0]
     for name, _ in pairs[1:]:
         require_same_input(decoded[reference], decoded[name], reference, name)

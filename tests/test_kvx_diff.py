@@ -137,3 +137,21 @@ class ExtraArgsTests(unittest.TestCase):
         """argparse reads a bare leading dash as the next option, so --extra=-x is required."""
         with self.assertRaises(SystemExit):
             build_parser().parse_args(self._base() + ["--extra", "--device"])
+
+
+class CellExtTests(unittest.TestCase):
+    """A missed cell_ext does not fail quietly -- it misreads the first cell's seq-id count."""
+
+    def test_arch_that_writes_cell_ext_is_recognised(self):
+        from kv_rosetta import sizing
+        self.assertTrue(sizing.writes_cell_ext("qwen4exp"))
+
+    def test_arch_without_cell_ext_is_recognised(self):
+        from kv_rosetta import sizing
+        self.assertFalse(sizing.writes_cell_ext("qwen3next"))
+
+    def test_arch_defaults_to_empty_meaning_no_cell_ext(self):
+        args = build_parser().parse_args(
+            ["--binary", "b", "--model", "a=x", "--n-head-kv", "2",
+             "--head-dim", "256", "--slots", "s", "--out", "o.json"])
+        self.assertEqual(args.arch, "")

@@ -3383,3 +3383,60 @@ check was unreachable, and an unreachable guard reads as protection that was nev
 SCKP appendix, and the per-layer KV divergence against the full model are all unmeasured. The
 llama-swap entry `qwen38-flash-next-warmer-8e` (CUDA0, tensor-split 1, KV f16, ctx 131072, vision
 off) is configured and visible in `/v1/models` but has never been started.
+
+## REQ-082 — The expert-pruned prefill warmer fails its gate; count is not the lever
+
+**Request.** "do it fam. the GPUs are yours" — run the per-layer divergence and the end-to-end
+gate on the pruned warmer built in REQ-081.
+
+**Per-layer KV divergence** (`scripts/kvx_diff.py`, 1410 cells, same token ids on both legs,
+12 attention layers, `has_cell_ext=True`):
+
+| layer | K cosine | V cosine | norm ratio |
+|---|---|---|---|
+| 0 | 0.890 | 0.875 | ~1.00 |
+| 8 (worst) | 0.519 | 0.615 | ~1.01 |
+| 11 | 0.842 | 0.923 | ~1.00 |
+
+**A prediction in REQ-081 was wrong and is withdrawn.** It said shallow attention layers would be
+near-exact because `attn_k`/`attn_v` are bit-identical. They are not: `full_attention_interval 4`
+means attention layer 0 sits *after three expert blocks*, so divergence is present in the first KV
+layer. Bit-identical projections do not buy an exact cache when their input has already drifted.
+
+Norm ratio is ~1.00 at every layer, so the difference is direction rather than scale — by
+`kvx_diff`'s own framing, the kind no per-layer scalar can undo.
+
+**End-to-end gate** (`scripts/cross_model_gate.py`; warmer WRITES, full model READS):
+
+| warmer | file | top-1 vs the full model's own restore |
+|---|---|---|
+| 8 experts (1.6% of 512) | 32.9 GB | 0.625 |
+| 128 experts (25% of 512) | 41.7 GB | 0.688 |
+| identity control | — | 1.000 |
+| noise control | — | 0.000 |
+
+Controls clean on both runs (`controls_ok: true`, no problems), so these are trustworthy.
+
+**Finding.** A 16× increase in retained experts bought +0.0625. Count is not the lever. Both
+warmers were *accepted* — 2,804 cells reused, no refusal — and then disagreed with the model
+itself on a third of positions. That is the silent-absorption failure the gate exists to catch.
+
+For scale: an unrelated model of the same geometry scored 0.859 through this same gate. **A
+subset-pruned warmer is worse for cache purposes than a different model entirely** (different
+runs and prompts, so indicative rather than exact).
+
+**Measured once on this host.** Every number above. Also measured: with plain flags the patched
+binary *does* write an SCKP appendix (`appended 2 context checkpoint(s), 225.142 MiB`), so the
+earlier no-checkpoint observation was specific to the llama-swap wrapper's flags, not the build.
+
+**Caveat on attribution.** 0.625/0.688 score the whole saved state — attention, recurrent half and
+checkpoints. The recurrent half is perturbed by the expert change too, so the number cannot be
+attributed to the KV tensors alone.
+
+**Untested.** REAP-style selection (top-k by router-weighted activation, with router rescaling)
+rather than first-k. The flat count-curve makes a large gain unlikely, but selection is a
+different axis and this run does not measure it.
+
+**Kept / removed.** `Qwen3.8-Flash-Next-WARMER-8E.gguf` kept. The 41.7 GB 128-expert diagnostic
+build and all slot directories removed. No servers left running; tiel on the W6800 untouched
+throughout.
