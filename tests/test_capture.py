@@ -359,3 +359,42 @@ class PrefixFingerprintTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             prefix_fingerprint([])
         self.assertIn("empty token sequence", str(cm.exception))
+
+
+class NoRecaptureOfRestoreTests(unittest.TestCase):
+    """Restoring then capturing the same slot admits a duplicate of the artifact just
+    restored, under a fresh fingerprint. Observed live: a 9,146-token attachment was
+    restored and re-admitted seconds later."""
+
+    def test_a_restored_slot_is_not_captured_again(self):
+        logs, captures = [], []
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10,
+                           restorer=lambda m, s: {"covers_tokens": 9146},
+                           log=logs.append)
+        loop.loaded_models = lambda: frozenset(["m"])
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False,
+                                      "n_prompt_tokens": 0}]
+
+        def json_stub(url, payload=None, timeout=900):
+            captures.append(url)
+            return {"n_saved": 9146, "n_written": 1}
+        loop._json = json_stub
+        loop.tick()
+        self.assertEqual(loop.restored, 1)
+        self.assertIn(("m", 9146), loop._seen)
+        # A second tick with the slot now holding the restored tokens must not capture it.
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False,
+                                      "n_prompt_tokens": 9146}]
+        captures.clear()
+        loop.tick()
+        self.assertEqual([u for u in captures if "action=save" in u], [])
+
+    def test_a_restore_without_a_token_count_does_not_poison_seen(self):
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10,
+                           restorer=lambda m, s: {"restored": True}, log=lambda m: None)
+        loop.loaded_models = lambda: frozenset(["m"])
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        loop._json = lambda url, payload=None, timeout=900: {"n_saved": 1, "n_written": 1}
+        loop.tick()
+        self.assertEqual(loop.restored, 1)
+        self.assertFalse(any(t is None for _, t in loop._seen))

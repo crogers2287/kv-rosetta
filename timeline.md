@@ -3894,3 +3894,50 @@ it in `cache-observability.jsonl`.
 
 **Known noise.** A stale 6,123-token tiel artifact (`29391ab4`) fails the tail contract on every
 load. It loses on ordering so it costs one wasted attempt, not correctness.
+
+## REQ-092 — Three bugs behind "everything is cold loading", two of them mine
+
+**Request.** "check the ash session. it still seems like everything is cold loading", then a
+screenshot showing `Provider: cfrproxy-fred`, "329s with no output" and repeated "Empty response
+from model".
+
+**A wrong conclusion, corrected.** REQ-091 claimed Ash bypassed cfrproxy, inferred from a stale
+telemetry log. The screenshot shows it does not: the provider is cfrproxy. cfrproxy has live
+connections on :8420 but stopped writing `cache-observability.jsonl` at 13:03 and has captured no
+new prefix in six hours, which is a cfrproxy-side fault and remains undiagnosed. Reading a stale
+log as absence of traffic was the error.
+
+**1. A single slot serving the whole fleet.** `run-qwen38-flash-next-3090.sh` hardcoded
+`--parallel 1`. Tolerable with six aliases; REQ-088 moved twenty-nine more onto that entry, so
+every request in the fleet queued behind one slot. Measured: a trivial 18-token request through
+cfrproxy took **345.3 s**, almost all of it waiting, and returned correctly. `QWEN38_NEXT_NP` now
+controls it, default 1 so no other entry changes, and the kvx entry uses 2 -- at ctx 131072 that
+is 65,536 tokens per slot, which holds a 32,624-token attachment with conversation headroom.
+
+**2. Capture re-captured its own restore.** Restore-on-load put a 9,146-token attachment in the
+slot and the capture pass in the same tick saved it straight back and admitted a duplicate under
+a fresh fingerprint. The restored token count is now recorded in `_seen` so the slot is skipped.
+
+**3. Auto-captured artifacts were invisible to the restorer.** The restorer ranked candidates by
+iterating `known_prefixes()` -- the cfrproxy manifest corpus. An artifact captured from a live
+slot is keyed by a fingerprint derived from its own tokens, which by construction never appears
+in that corpus, so REQ-091's admit-on-capture produced artifacts nothing could find: the same
+class of bug it was written to fix. The restorer now enumerates the STORE. Relevance is decided
+as: a fingerprint absent from the corpus was captured from this model's own traffic and is
+therefore relevant; one present in the corpus is relevant only if its label denotes this model.
+
+**Fleet outage, caused here.** Parking models that already belonged to `fleet`, `w6800` or
+`hotstep` produced a config llama-swap rejects -- a model may be in exactly one group. It kept
+running on its old in-memory config, so nothing failed until the process was restarted to pick up
+the slot change, after which systemd could not start it at all and looped on
+`Error loading config`. The fleet was down for roughly six minutes. Fixed by making parked
+membership exclusive; all four keepers are back.
+
+**Consequence of the slot change, unanticipated.** Per-slot context is part of the cache ABI, so
+halving it invalidated every flash-next attachment: `restore refused: cache ABI mismatch: admitted
+987ddfc8af41 vs live abedd3b23ef1`. The attachments warmed earlier today are dead. Capture rebuilds
+them on the next prefill, so this self-heals, but it is a real cost of changing slot count.
+
+**Proven by retained test.** Two tests for the no-recapture rule. `test_no_undefined_names` caught
+a deleted `admit_capture` and, earlier, a missing `Path` import -- both NameErrors that would have
+fired only in the daemon. Suite green at 1,618.

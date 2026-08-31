@@ -105,52 +105,59 @@ def main(argv: list[str] | None = None) -> int:
             from kv_rosetta.daemon.capture import CaptureLoop
 
             def restore_on_load(model: str, slot: int):
-                """The largest published prefix that already has an artifact for this model.
+                """The best attachment this model has, ranked by relevance then size.
 
-                Largest first because the whole point is the prompts that cost the most to
-                prefill; a small prefix restored into the slot would occupy it and block the
-                big one. Returns None when nothing matches, which the loop logs and skips --
-                a model with no attachment simply prefills natively, as it does today.
+                Enumerates the STORE, not the cfrproxy prefix corpus. An attachment built
+                by capturing this model's own traffic is keyed by a fingerprint derived
+                from its tokens, which by construction never appears among the proxy's
+                manifests -- so ranking over the corpus made exactly those artifacts
+                invisible, which is the bug that made every capture useless.
+
+                Relevance: a prefix absent from the corpus was captured from this model's
+                own slot, so it is by definition this model's traffic. One present in the
+                corpus is only relevant if its label denotes this model.
                 """
+                from kv_rosetta.daemon.capture import same_model
                 try:
-                    prefixes = sidecar.known_prefixes()
+                    labels = {str(e.get("fingerprint", "")): str(e.get("model", ""))
+                              for e in sidecar.known_prefixes()}
                 except Exception as exc:
                     print(f"[capture] cannot read prefixes: {str(exc)[:120]}", flush=True)
+                    labels = {}
+                try:
+                    objects = list(sidecar.store().list_objects())
+                except Exception as exc:
+                    print(f"[capture] cannot read store: {str(exc)[:120]}", flush=True)
                     return None
-                # Ordered by what each artifact actually covers, not by the manifest's
-                # est_tokens: that field counts the whole request rather than the
-                # cacheable prefix, and ranking on it picked a 9,146-token attachment
-                # over a 32,624-token one for the same model.
-                # Relevance first, size second. Ranking on size alone restored a
-                # 74,607-token attachment captured from a different harness over the
-                # 32,624-token one this model's own traffic produced; it matched nothing
-                # and the request prefilled cold anyway.
-                from kv_rosetta.daemon.capture import same_model
+
                 candidates = []
-                for entry in prefixes:
-                    fingerprint = str(entry.get("fingerprint", ""))
-                    found = sidecar.find_artifact(fingerprint, model)
-                    if found is None:
+                for obj in objects:
+                    man = obj.manifest or {}
+                    if man.get("runtime_model") != model:
                         continue
-                    covered = int((found.manifest or {}).get("prompt_token_count") or 0)
-                    own = same_model(str(entry.get("model", "")), model)
+                    fingerprint = str(man.get("prefix_fingerprint") or "")
+                    if not fingerprint:
+                        continue
+                    covered = int(man.get("prompt_token_count") or 0)
+                    own = (fingerprint not in labels) or same_model(labels[fingerprint], model)
                     candidates.append((own, covered, fingerprint))
+
                 for own, covered, fingerprint in sorted(candidates, reverse=True):
                     result = sidecar.ensure(fingerprint, model, slot)
                     with sidecar._lock:
                         sidecar.stats.restores_served += 1
-                    return {"prefix": fingerprint[:12], "covers_tokens": covered, **result}
+                    return {"prefix": fingerprint[:12], "covers_tokens": covered,
+                            "own": own, **result}
                 return None
 
             def admit_capture(model: str, basename: str, saved: dict):
                 """Turn a saved slot into an artifact restore-on-load can find.
 
-                Without this a capture is bytes on disk that nothing looks up, because
-                artifacts are keyed by prefix fingerprint and runtime model and a bare
-                .state carries neither. The fingerprint comes from the captured tokens
-                themselves, so traffic that never passes through cfrproxy -- a harness
-                pointed straight at llama-swap -- still gets a reusable attachment after
-                its first prefill.
+                Without this a capture is bytes on disk that nothing looks up: artifacts
+                are keyed by prefix fingerprint and runtime model, and a bare .state
+                carries neither. The fingerprint comes from the captured tokens, so
+                traffic that never produced a cfrproxy manifest still gains a reusable
+                attachment after its first prefill.
                 """
                 from kv_rosetta.adapters import ggsq_envelope
                 from kv_rosetta.adapters.admitted_path import AdmittedPath

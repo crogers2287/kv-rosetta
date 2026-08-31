@@ -166,6 +166,13 @@ class CaptureLoop:
                 self._log(f"{model} appeared but no attachment matches it yet")
                 continue
             self.restored += 1
+            # What was just restored is already an artifact. Without this the capture pass
+            # in the same tick saves the restored slot straight back and admits a duplicate
+            # under a fresh fingerprint, which is how the store gained a second copy of a
+            # 9,146-token attachment moments after restoring it.
+            covered = info.get("covers_tokens") if isinstance(info, dict) else None
+            if covered:
+                self._seen.add((model, int(covered)))
             self._log(f"restored {model} slot {slot}: {info}")
             done.append(model)
         return done
