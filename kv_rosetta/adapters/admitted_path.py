@@ -99,8 +99,19 @@ class AdmittedPath:
         envelope = ggsq_envelope.parse_file_envelope(head)
         carried = list(ggsq_envelope.decode_prompt_tokens(envelope.token_ids))
         if carried != list(token_ids):
+            # The comparison is on the ids; reporting only the counts printed
+            # "state carries 6169 tokens, not the 6169 under test" when the lengths
+            # matched and the contents did not, which reads as a bug in the checker
+            # rather than a mismatch in the caller's tokens.
+            if len(carried) != len(token_ids):
+                raise AdmissionError(
+                    f"state carries {len(carried)} tokens, not the {len(token_ids)} "
+                    f"under test")
+            first = next(i for i, (a, b) in enumerate(zip(carried, token_ids)) if a != b)
             raise AdmissionError(
-                f"state carries {len(carried)} tokens, not the {len(token_ids)} under test")
+                f"state carries {len(carried)} tokens but they are not the ones under "
+                f"test: first difference at position {first}, state has {carried[first]} "
+                f"and the caller passed {list(token_ids)[first]}")
 
         n_written = int(save_response.get("n_written", 0) or 0)
         checkpoint_bytes = int(save_response.get("checkpoint_bytes", 0) or 0)

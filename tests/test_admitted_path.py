@@ -437,3 +437,28 @@ class RestoreUnderAnAlias(AdmittedPathTest):
         report = path.restore(obj.digest, model="tiel-kvx-w6800", token_ids=TOKENS, slot=0)
         self.assertFalse(report.ok)
         self.assertIn("model identity mismatch", report.reason)
+
+
+class TokenMismatchMessage(AdmittedPathTest):
+    """Equal-length, different-content token lists must not report as equal counts.
+
+    The check compares ids; the message reported lengths. On a real admission that printed
+    "state carries 6169 tokens, not the 6169 under test", which reads as a broken checker
+    rather than as the caller passing the wrong tokens.
+    """
+
+    def test_a_different_length_still_reports_the_two_lengths(self):
+        path, _ = self.path_for()
+        with self.assertRaises(AdmissionError) as caught:
+            path.admit(self.raw, model="", token_ids=TOKENS[:2], save_response=self.save)
+        self.assertIn("not the 2 under test", str(caught.exception))
+
+    def test_the_same_length_reports_where_they_diverge(self):
+        path, _ = self.path_for()
+        wrong = list(TOKENS)
+        wrong[1] = wrong[1] + 1
+        with self.assertRaises(AdmissionError) as caught:
+            path.admit(self.raw, model="", token_ids=wrong, save_response=self.save)
+        message = str(caught.exception)
+        self.assertIn("first difference at position 1", message)
+        self.assertIn(str(TOKENS[1]), message)

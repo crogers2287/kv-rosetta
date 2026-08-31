@@ -62,7 +62,22 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--swap", default="http://127.0.0.1:9069")
     serve.add_argument("--manifest-root", default="~/.cfrproxy/cache")
     serve.add_argument("--store-root", default="~/.kvrosetta/admitted")
+    pre = commands.add_parser(
+        "prewarm", help="give a model its own attachment for a prefix, before it is needed")
+    pre.add_argument("--model", required=True, help="llama-swap model name")
+    pre.add_argument("--manifest", required=True, help="a cfrproxy prefix manifest")
+    pre.add_argument("--swap", default="http://127.0.0.1:9069")
+    pre.add_argument("--store-root", default="~/.kvrosetta/admitted")
+    pre.add_argument("--from-scratch", action="store_true",
+                     help="ignore any prior attachment and prefill the whole prefix")
+    pre.add_argument("--allow-wake", action="store_true",
+                     help="load the model if parked; off by default so this cannot become "
+                          "the recompute warmer it replaces")
     args = parser.parse_args(argv)
+
+    if args.command == "prewarm":
+        from kv_rosetta.prewarm import prewarm_cli
+        return prewarm_cli(args)
 
     if args.command == "serve":
         from kv_rosetta.daemon.server import SidecarConfig, build_server
