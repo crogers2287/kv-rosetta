@@ -24,14 +24,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import math
+
 from kv_rosetta import requirements
 from kv_rosetta import gguf, weights
 from kv_rosetta.admitted_store import AdmissionError, AdmittedObject, AdmittedStore
 from kv_rosetta.adapters import ggsq_envelope
 from kv_rosetta.adapters.base import AdapterError
 
-#: The measured tail is 4; 8 is the working ceiling carried from the earlier steer.
+#: The measured tail is 4 on a pure-attention model; 8 is the working ceiling carried from
+#: the earlier steer. It is a floor here, not the whole rule -- see uncovered_allowance.
 MAX_UNCOVERED_TAIL = 8
+
+#: A hybrid model resumes from a context checkpoint rather than from the exact end of the
+#: saved sequence, so its uncovered tail scales with the artifact instead of being a fixed
+#: handful of tokens: Flash-Next left 19 of 9,146 uncovered, which a flat ceiling of 8 read
+#: as a failed restore when 99.8% of the cache had in fact come back. The question the check
+#: exists to answer is "did the restore actually cover this artifact", and a proportional
+#: bound asks that directly while still refusing a restore that covered almost nothing.
+MAX_UNCOVERED_FRACTION = 0.01
+
+
+def uncovered_allowance(n_tokens: int) -> int:
+    """How many trailing tokens a genuine restore may leave for the runtime to reprocess."""
+    if n_tokens <= 0:
+        raise ValueError(f"artifact token count {n_tokens} is not positive")
+    return max(MAX_UNCOVERED_TAIL, math.ceil(MAX_UNCOVERED_FRACTION * n_tokens))
 
 
 @dataclass
@@ -281,10 +299,11 @@ class AdmittedPath:
             self._erase(slot, calls)
             return refuse(f"cache_n {cache_n} does not equal declared coverage "
                           f"{declared['n_tokens']}")
-        if not 1 <= uncovered <= MAX_UNCOVERED_TAIL or prompt_n != uncovered:
+        allowance = uncovered_allowance(len(token_ids))
+        if not 1 <= uncovered <= allowance or prompt_n != uncovered:
             self._erase(slot, calls)
             return refuse(f"tail contract violated: cache_n={cache_n} prompt_n={prompt_n} "
-                          f"uncovered={uncovered}")
+                          f"uncovered={uncovered} allowance={allowance}")
 
         mark = time.time()
         calls.append(f"/slots/{slot}?action=erase")

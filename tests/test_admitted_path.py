@@ -9,6 +9,9 @@ rather than asserted.
 import struct
 import tempfile
 import unittest
+
+from kv_rosetta.adapters.admitted_path import (
+    MAX_UNCOVERED_TAIL, uncovered_allowance)
 from pathlib import Path
 
 from kv_rosetta.admitted_store import AdmissionError, AdmittedStore
@@ -462,3 +465,27 @@ class TokenMismatchMessage(AdmittedPathTest):
         message = str(caught.exception)
         self.assertIn("first difference at position 1", message)
         self.assertIn(str(TOKENS[1]), message)
+
+
+class UncoveredAllowanceTests(unittest.TestCase):
+    """A hybrid model resumes from a checkpoint boundary, so its tail scales with the
+    artifact. A flat ceiling read a 99.8%-complete restore as a failure."""
+
+    def test_small_artifacts_keep_the_measured_floor(self):
+        self.assertEqual(uncovered_allowance(100), MAX_UNCOVERED_TAIL)
+        self.assertEqual(uncovered_allowance(1), MAX_UNCOVERED_TAIL)
+
+    def test_large_artifacts_scale_with_size(self):
+        self.assertEqual(uncovered_allowance(9146), 92)
+
+    def test_the_flash_next_tail_that_was_refused_now_passes(self):
+        self.assertLessEqual(19, uncovered_allowance(9146))
+
+    def test_a_restore_that_covered_almost_nothing_is_still_refused(self):
+        # 2,000 of 9,146 covered leaves 7,146 uncovered, far beyond any allowance.
+        self.assertGreater(9146 - 2000, uncovered_allowance(9146))
+
+    def test_refuses_a_non_positive_token_count(self):
+        with self.assertRaises(ValueError) as cm:
+            uncovered_allowance(0)
+        self.assertIn("is not positive", str(cm.exception))

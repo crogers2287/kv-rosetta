@@ -132,3 +132,34 @@ class BuildOnWhatTheModelAlreadyHas(unittest.TestCase):
         blank = _Artifact("m", 0, "blank")
         blank.manifest.pop("prompt_token_count")
         self.assertEqual(best_prior([blank, _Artifact("m", 10, "real")], "m").digest, "real")
+
+
+class GeneratedTokenAccountingTests(unittest.TestCase):
+    """The replay generates as well as sends; the slot holds both."""
+
+    def _slots(self, held):
+        return [{"id": 0, "is_processing": False, "n_prompt_tokens": held}]
+
+    def test_slot_holding_prompt_plus_generated_is_accepted(self):
+        choice = choose_slot(self._slots(9141), 9131, generated=10)
+        self.assertEqual(choice.slot_id, 0)
+        self.assertEqual(choice.held_tokens, 9141)
+
+    def test_a_stale_unrelated_slot_is_still_refused(self):
+        with self.assertRaises(PrewarmError) as cm:
+            choose_slot(self._slots(6169), 12298, generated=16)
+        self.assertIn("describing different text", str(cm.exception))
+
+    def test_generated_is_reported_in_the_refusal(self):
+        with self.assertRaises(PrewarmError) as cm:
+            choose_slot(self._slots(100), 9131, generated=10)
+        self.assertIn("plus 10 generated", str(cm.exception))
+
+    def test_refuses_negative_generated_count(self):
+        with self.assertRaises(PrewarmError) as cm:
+            choose_slot(self._slots(9141), 9131, generated=-1)
+        self.assertIn("cannot be negative", str(cm.exception))
+
+    def test_zero_generated_keeps_the_old_behaviour(self):
+        choice = choose_slot(self._slots(9131), 9131)
+        self.assertEqual(choice.held_tokens, 9131)

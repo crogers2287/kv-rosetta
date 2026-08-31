@@ -92,7 +92,7 @@ class SlotChoice:
 
 
 def choose_slot(slots: list[dict[str, Any]], expected_tokens: int, *,
-                tolerance: int = 8) -> SlotChoice:
+                generated: int = 0, tolerance: int = 8) -> SlotChoice:
     """Which slot holds the prefix that was just replayed.
 
     llama.cpp assigns slots itself, so the replay lands where it lands and the slot must be
@@ -104,16 +104,23 @@ def choose_slot(slots: list[dict[str, Any]], expected_tokens: int, *,
     """
     if expected_tokens <= 0:
         raise PrewarmError(f"expected token count {expected_tokens} is not positive")
+    if generated < 0:
+        raise PrewarmError(f"generated token count {generated} cannot be negative")
     free = [s for s in slots if not s.get("is_processing")]
     if not free:
         raise PrewarmError("every slot is busy with live traffic; refusing to disturb one")
-    best = min(free, key=lambda s: abs(int(s.get("n_prompt_tokens") or 0) - expected_tokens))
+    # The replay asks for tokens as well as sending them, so the slot legitimately ends
+    # up holding the prompt plus whatever was generated. Subtracting the reported completion
+    # keeps the check on the thing it exists to catch -- a stale slot holding somebody else's
+    # prompt -- instead of failing on the model's own reply.
+    want = expected_tokens + generated
+    best = min(free, key=lambda s: abs(int(s.get("n_prompt_tokens") or 0) - want))
     held = int(best.get("n_prompt_tokens") or 0)
-    if abs(held - expected_tokens) > tolerance:
+    if abs(held - want) > tolerance:
         raise PrewarmError(
             f"no free slot holds the replayed prefix: closest is slot {best.get('id')} with "
-            f"{held} tokens against {expected_tokens} replayed. Saving it would publish an "
-            f"artifact describing different text")
+            f"{held} tokens against {expected_tokens} replayed plus {generated} generated. "
+            f"Saving it would publish an artifact describing different text")
     return SlotChoice(slot_id=int(best["id"]), held_tokens=held)
 
 
@@ -173,7 +180,8 @@ def prewarm_cli(args) -> int:
     usage = response.get("usage") or {}
     replayed = int(usage.get("prompt_tokens") or 0)
     cached = int(usage.get("prompt_tokens_cached") or usage.get("cached_tokens") or 0)
-    choice = choose_slot(get("/slots"), replayed)
+    generated = int(usage.get("completion_tokens") or 0)
+    choice = choose_slot(get("/slots"), replayed, generated=generated)
     print(f"replayed {replayed} tokens ({cached} already cached); "
           f"slot {choice.slot_id} holds {choice.held_tokens}")
 
