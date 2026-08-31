@@ -1714,3 +1714,59 @@ same code path. **Not covered** — a chunked or symmetric window, whose shape i
 C++ rather than declared in the GGUF and is refused rather than assumed; and the checkpoint
 payload of a sliding-window-free model, where `PARTIAL_ONLY` writes a whole attention section
 that has never been measured.
+
+---
+
+## 36. The MTP checkpoint labels are backwards, confirmed from the bytes
+
+Wiring the fleet's tiel into the drive hit a refusal: kv_rosetta declines a checkpoint that
+carries draft or speculative state, and the MTP instance reports
+
+```
+active_checkpoint_state_classes       = ['target', 'speculative']
+sckp_serializes_speculative_state     = true
+supports_speculative_checkpoint_state = false
+```
+
+A source reading said those labels are wrong in both directions. Confirmed against two real
+state files, using the field order in `docs/ggsq-layout.md` §5 rather than a guess at it:
+
+| launch | `data_tgt` | `data_dft` | `data_spec` |
+|---|---:|---:|---:|
+| MTP on (`TIEL_SPEC=1 draft-mtp`) | 65,864,428 | **2,894,636** | **0** |
+| speculative off | 65,864,428 | 0 | 0 |
+
+Both appendices close exactly at end of file, so the parse is not merely self-consistent, it
+accounts for every byte.
+
+**So the file carries draft state and no speculative state, while `/props` announces
+speculative state and never mentions draft.** The MTP implementation does not override
+`get_state`, so `sckp_serializes_speculative_state: true` describes writing a zero-length
+blob; the draft context's cache is real and unannounced.
+
+Our refusal was correct in outcome and wrong in its stated reason — it named the empty blob.
+A refusal that cites the wrong cause is a refusal nobody can act on, and it would have sent the
+fix at the speculative path rather than the draft one.
+
+### What that changes
+
+The MTP driver state (`pending_h`) is a pure function of the target's accepted prefix and is
+recomputed after every target decode before any draft is produced, so **restoring it is
+redundant rather than unsafe**. What is genuinely absent after a plain restore is the draft
+context's KV for the restored prefix — which costs draft acceptance rate, not correctness, at
+temperature 0 where the emitted token comes from the target sampler either way. That last step
+is reasoning, not measurement, and `scripts/mtp_speculative_gate.py` exists to settle it.
+
+One hazard is worth separating from the "unproven" framing, because it is not about proof:
+`load_dft` aborts the process when a draft blob does not fit the live draft context, and
+nothing binds model identity to these blobs. For a format whose purpose is moving caches
+between builds, a checkpoint that can kill a server on a divergence rollback earns a hard
+refusal on its own merits, whatever the acceptance-rate question turns out to be.
+
+### A note on method
+
+The first attempt at this parse was hand-rolled from memory of the struct, assumed `int32` for
+`n_tokens`, and omitted the version/count header. Every record failed to close, which is
+exactly what a wrong layout looks like. `docs/ggsq-layout.md` already recorded the correct
+order with the annotation "int64_t, NOT int32 - this cost us a day". Reading it took a minute
+and made the result exact.
