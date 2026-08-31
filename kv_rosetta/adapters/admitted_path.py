@@ -131,7 +131,13 @@ class AdmittedPath:
                 "pos_max": save_response.get("checkpoint_pos_max"),
             },
             "model_weights_sha256": model_ident.weights_sha256,
-            "model_content_digest": weights.model_content_digest(model) if model else "",
+            # model_path, not model. `model` is whatever the caller names the runtime by,
+            # and every caller that reaches here through the sidecar names it by its
+            # llama-swap alias -- "tiel-kvx-w6800" is not a file, so digesting it raised
+            # WeightsError and no artifact could be admitted at all. The resolved path a
+            # few lines above is the same value this line always meant.
+            "model_content_digest": (weights.model_content_digest(model_path)
+                                     if model_path and Path(model_path).is_file() else ""),
             "prompt_token_digest": hashlib.sha256(
                 json.dumps(list(token_ids), separators=(",", ":")).encode()).hexdigest(),
             "prompt_token_count": len(token_ids),
@@ -218,9 +224,18 @@ class AdmittedPath:
             phases["resolve_identity"] = time.time() - mark
             return refuse("prompt identity mismatch between the admitted state and the "
                           "tokens being restored")
-        if model and manifest.get("model_content_digest") not in (
-                "", weights.model_content_digest(model)):
+        # As in admit(): `model` is how the caller names the runtime, which through the
+        # sidecar is an llama-swap alias rather than a path. Digesting it raised
+        # WeightsError and turned every aliased restore into a 400. The weights path comes
+        # from the runtime itself.
+        live_path = str(self.adapter.props().get("model_path", "")) or str(model)
+        live_digest = (weights.model_content_digest(live_path)
+                       if live_path and Path(live_path).is_file() else "")
+        if model and manifest.get("model_content_digest") not in ("", live_digest):
             phases["resolve_identity"] = time.time() - mark
+            # Reached when the digests differ AND when the live one could not be
+            # resolved at all: an artifact that recorded an identity we can no longer
+            # check is refused rather than restored on the strength of the record alone.
             return refuse("model identity mismatch")
         phases["resolve_identity"] = time.time() - mark
 

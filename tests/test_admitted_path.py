@@ -336,3 +336,104 @@ def requirements_for(*, checkpoints, version):
         hybrid=bool(checkpoints), checkpoints=checkpoints,
         sequence_state_version=version, kv_type_k="f16", kv_type_v="f16",
         model_identity="a" * 64).as_dict()
+
+
+class ModelNamedByAlias(AdmittedPathTest):
+    """A runtime named by its llama-swap alias, not by a path to its weights.
+
+    Every other test here passes model="", so this path was never exercised: admit()
+    resolved model_path from /props and then digested the raw `model` argument instead.
+    Against a live fleet the sidecar names models by alias, so admission failed outright
+    with WeightsError: cannot stat 'tiel-kvx-w6800'.
+    """
+
+    def test_an_alias_is_admitted_using_the_runtime_reported_weights_path(self):
+        import struct
+        def s_(text):
+            raw = text.encode()
+            return struct.pack("<Q", len(raw)) + raw
+        blob = bytearray(b"GGUF" + struct.pack("<IQQ", 3, 0, 1))
+        blob += s_("general.architecture") + struct.pack("<I", 8) + s_("qwen35moe")
+        weights = self.dir / "weights.gguf"
+        weights.write_bytes(bytes(blob))
+        runtime = props(**TARGET_ONLY)
+        runtime["model_path"] = str(weights)
+        path, _ = self.path_for(runtime=runtime)
+        obj = path.admit(self.raw, model="tiel-kvx-w6800", token_ids=TOKENS,
+                         save_response=self.save)
+        self.assertTrue(obj.manifest["model_content_digest"])
+
+    def test_an_alias_with_no_resolvable_weights_records_no_content_digest(self):
+        # Refusing here would block admission on a runtime that simply does not report
+        # model_path; recording an empty digest keeps the artifact honest instead, and
+        # every identity check that matters runs off model_weights_sha256.
+        runtime = props(**TARGET_ONLY)
+        runtime["model_path"] = ""
+        path, _ = self.path_for(runtime=runtime)
+        obj = path.admit(self.raw, model="tiel-kvx-w6800", token_ids=TOKENS,
+                         save_response=self.save)
+        self.assertEqual(obj.manifest["model_content_digest"], "")
+
+
+class RuntimeCannotSupportTheState(AdmittedPathTest):
+    """The refusal that fires on a real MTP launch.
+
+    A tiel instance running draft-MTP reports active_checkpoint_state_classes
+    ['target','speculative'], and admission stops there rather than publishing an artifact
+    whose restoration the runtime does not claim to support. Worth pinning because the
+    message is what an operator acts on: §36 showed the runtime's own labels are wrong in
+    both directions, so a refusal that names the wrong class sends the fix to the wrong
+    code path.
+    """
+
+    def test_a_runtime_declaring_unproven_state_classes_is_refused(self):
+        runtime = props(active_checkpoint_state_classes=["target", "speculative"])
+        path, _ = self.path_for(runtime=runtime)
+        with self.assertRaises(AdmissionError) as caught:
+            path.admit(self.raw, model="", token_ids=TOKENS, save_response=self.save)
+        self.assertIn("runtime cannot support this state", str(caught.exception))
+
+    def test_a_target_only_runtime_is_admitted(self):
+        # The control: without it the test above would pass on any refusal at all.
+        self.assertTrue(self.admitted().digest)
+
+
+class RestoreUnderAnAlias(AdmittedPathTest):
+    """The restore side had the same alias-as-path bug as admit().
+
+    Fixing admit() alone left every sidecar restore returning
+    "cannot stat tiel-kvx-w6800", because ensure() names models by llama-swap alias.
+    """
+
+    def _gguf(self, arch="qwen35moe"):
+        import struct
+        def s_(t):
+            raw = t.encode()
+            return struct.pack("<Q", len(raw)) + raw
+        blob = bytearray(b"GGUF" + struct.pack("<IQQ", 3, 0, 1))
+        blob += s_("general.architecture") + struct.pack("<I", 8) + s_(arch)
+        path = self.dir / "w.gguf"
+        path.write_bytes(bytes(blob))
+        return path
+
+    def test_an_aliased_restore_resolves_identity_from_the_runtime(self):
+        runtime = props(**TARGET_ONLY)
+        runtime["model_path"] = str(self._gguf())
+        path, _ = self.path_for(runtime=runtime)
+        obj = path.admit(self.raw, model="tiel-kvx-w6800", token_ids=TOKENS,
+                         save_response=self.save)
+        report = path.restore(obj.digest, model="tiel-kvx-w6800", token_ids=TOKENS, slot=0)
+        self.assertTrue(report.ok, report.reason)
+
+    def test_an_unresolvable_identity_is_refused_not_waved_through(self):
+        # The artifact recorded a content digest; if the live one cannot be resolved the
+        # restore is refused rather than trusted on the record alone.
+        runtime = props(**TARGET_ONLY)
+        runtime["model_path"] = str(self._gguf())
+        path, adapter = self.path_for(runtime=runtime)
+        obj = path.admit(self.raw, model="tiel-kvx-w6800", token_ids=TOKENS,
+                         save_response=self.save)
+        adapter._props_value = dict(runtime, model_path="/nonexistent/gone.gguf")
+        report = path.restore(obj.digest, model="tiel-kvx-w6800", token_ids=TOKENS, slot=0)
+        self.assertFalse(report.ok)
+        self.assertIn("model identity mismatch", report.reason)
