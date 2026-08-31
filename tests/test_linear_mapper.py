@@ -21,6 +21,8 @@ from kv_rosetta.mappers.linear import (
     fit_ridge,
     residual,
     select_source_layer,
+    select_source_layers,
+    stack_sources,
 )
 
 
@@ -231,3 +233,120 @@ class CorpusDigestTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiSourceSelectionTests(unittest.TestCase):
+    """Concatenating several source layers is the published recipe; one layer is weaker.
+
+    Each refusal is asserted on its message: a mis-stacked block still fits and still
+    produces a mapper, so these guards are the only thing between a wrong column order
+    and a silently useless map.
+    """
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.target = rng.normal(size=(600, 8))
+        mix = rng.normal(size=(8, 8))
+        self.candidates = {
+            0: rng.normal(size=(600, 8)),
+            1: self.target @ mix + 0.01 * rng.normal(size=(600, 8)),   # the real signal
+            2: rng.normal(size=(600, 8)),
+        }
+
+    def test_stack_preserves_caller_order_not_sorted_order(self):
+        stacked = stack_sources(self.candidates, (2, 0))
+        self.assertTrue(np.array_equal(stacked[:, :8], self.candidates[2]))
+        self.assertTrue(np.array_equal(stacked[:, 8:], self.candidates[0]))
+
+    def test_stack_refuses_empty_selection(self):
+        with self.assertRaises(MapperError) as cm:
+            stack_sources(self.candidates, ())
+        self.assertIn("no source layers to stack", str(cm.exception))
+
+    def test_stack_refuses_unknown_layer(self):
+        with self.assertRaises(MapperError) as cm:
+            stack_sources(self.candidates, (0, 99))
+        self.assertIn("not among the candidates", str(cm.exception))
+
+    def test_stack_refuses_mismatched_token_counts(self):
+        bad = dict(self.candidates)
+        bad[3] = np.zeros((17, 8))
+        with self.assertRaises(MapperError) as cm:
+            stack_sources(bad, (0, 3))
+        self.assertIn("disagree on token count", str(cm.exception))
+
+    def test_selection_finds_the_predictive_layer_first(self):
+        chosen, _ = select_source_layers(self.target, self.candidates, k=3)
+        self.assertEqual(chosen[0], 1)
+
+    def test_selection_stops_early_rather_than_padding_to_k(self):
+        chosen, _ = select_source_layers(self.target, self.candidates, k=3)
+        self.assertLess(len(chosen), 3)
+
+    def test_multi_source_is_never_worse_than_the_single_best(self):
+        one, score_one = select_source_layers(self.target, self.candidates, k=1)
+        many, score_many = select_source_layers(self.target, self.candidates, k=3)
+        self.assertEqual(one[0], many[0])
+        self.assertLessEqual(score_many, score_one + 1e-12)
+
+    def test_agrees_with_the_single_layer_selector_at_k_of_one(self):
+        chosen, _ = select_source_layers(self.target, self.candidates, k=1)
+        single, _ = select_source_layer(self.target, self.candidates)
+        self.assertEqual(chosen, (single,))
+
+    def test_refuses_no_candidates(self):
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(self.target, {}, k=1)
+        self.assertIn("no candidate source layers", str(cm.exception))
+
+    def test_refuses_k_below_one(self):
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(self.target, self.candidates, k=0)
+        self.assertIn("k must be at least 1", str(cm.exception))
+
+    def test_refuses_k_above_candidate_count(self):
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(self.target, self.candidates, k=9)
+        self.assertIn("only 3 exist", str(cm.exception))
+
+    def test_refuses_out_of_range_holdout(self):
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(self.target, self.candidates, k=1, holdout=1.5)
+        self.assertIn("must be between 0 and 1", str(cm.exception))
+
+    def test_refuses_when_concatenation_outruns_the_token_budget(self):
+        """Every candidate must carry signal, or greedy stops before the budget bites."""
+        # 20 tokens, holdout 0.25 -> 15 training rows. One layer of 8 features fits;
+        # two concatenated layers is 16 features and cannot be determined by 15 rows,
+        # so the guard trips on the second round regardless of what greedy prefers.
+        rng = np.random.default_rng(3)
+        cands = {i: rng.normal(size=(20, 8)) for i in range(3)}
+        target = cands[0] @ rng.normal(size=(8, 8)) + 0.01 * rng.normal(size=(20, 8))
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(target, cands, k=3)
+        self.assertIn("cannot determine", str(cm.exception))
+
+    def test_refuses_calibration_data_that_scores_as_nan(self):
+        """A NaN residual compares false against everything, which would otherwise
+        leave the selection silently empty rather than reporting bad input."""
+        rng = np.random.default_rng(11)
+        cands = {0: rng.normal(size=(600, 8)), 1: rng.normal(size=(600, 8))}
+        target = rng.normal(size=(600, 8))
+        target[3, 2] = np.nan
+        with self.assertRaises(MapperError) as cm:
+            select_source_layers(target, cands, k=2)
+        self.assertIn("no source layer improved", str(cm.exception))
+
+
+class RidgeAndSingleLayerGuardTests(unittest.TestCase):
+    def test_fit_ridge_refuses_non_matrix_input(self):
+        with self.assertRaises(MapperError) as cm:
+            fit_ridge(np.zeros(10), np.zeros((10, 2)))
+        self.assertIn("expected 2-D", str(cm.exception))
+
+    def test_single_layer_selector_refuses_too_few_tokens_to_hold_out(self):
+        rng = np.random.default_rng(5)
+        target = rng.normal(size=(9, 8))
+        with self.assertRaises(MapperError) as cm:
+            select_source_layer(target, {0: rng.normal(size=(9, 8))})
+        self.assertIn("not enough tokens to hold any out", str(cm.exception))

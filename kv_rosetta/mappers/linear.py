@@ -195,6 +195,77 @@ class LinearMapper:
                    weights=weights, biases=biases, residuals=meta.get("residuals", {}))
 
 
+def stack_sources(candidates: dict[int, np.ndarray], layers: tuple[int, ...]) -> np.ndarray:
+    """Concatenate several source layers into one feature block, in a fixed order.
+
+    Order is the caller's tuple, not sorted, because a fitted map's columns must line up
+    with the same layers in the same positions when it is applied later.
+    """
+    if not layers:
+        raise MapperError("no source layers to stack")
+    missing = [l for l in layers if l not in candidates]
+    if missing:
+        raise MapperError(f"source layers {missing} are not among the candidates")
+    rows = {candidates[l].shape[0] for l in layers}
+    if len(rows) != 1:
+        raise MapperError(f"source layers disagree on token count: {sorted(rows)}")
+    return np.hstack([candidates[l] for l in layers])
+
+
+def select_source_layers(target: np.ndarray, candidates: dict[int, np.ndarray], *,
+                         k: int = 1, ridge: float = 1e-2, holdout: float = 0.25
+                         ) -> tuple[tuple[int, ...], float]:
+    """Greedily grow a set of up to k source layers, scored on held-out tokens.
+
+    One source layer is a weaker predictor than several: published results on matched-KV
+    pairs report a single layer explaining about half the variance in the target's keys,
+    rising substantially once several are concatenated. Grown greedily rather than by
+    exhaustive search because the number of subsets is combinatorial and the gain is in
+    the first few layers.
+
+    Stops early when adding a layer does not improve the held-out score, so k is a
+    ceiling rather than a quota -- a set padded to k with layers that hurt would fit the
+    calibration set and generalise worse.
+    """
+    if not candidates:
+        raise MapperError("no candidate source layers")
+    if k < 1:
+        raise MapperError(f"k must be at least 1, got {k}")
+    if k > len(candidates):
+        raise MapperError(f"asked for {k} source layers but only {len(candidates)} exist")
+    if not 0.0 < holdout < 1.0:
+        raise MapperError(f"holdout fraction {holdout} must be between 0 and 1")
+
+    chosen: tuple[int, ...] = ()
+    best_score = float("inf")
+    for _ in range(k):
+        round_best, round_score = None, best_score
+        for layer in sorted(candidates):
+            if layer in chosen:
+                continue
+            trial = chosen + (layer,)
+            source = stack_sources(candidates, trial)
+            split = int(source.shape[0] * (1.0 - holdout))
+            # Concatenation multiplies the feature width, so the token budget that was
+            # ample for one layer can be underdetermined for several. Say so plainly
+            # rather than letting fit_ridge report it as a shape problem.
+            if split <= source.shape[1]:
+                raise MapperError(
+                    f"{split} training tokens cannot determine {source.shape[1]} features "
+                    f"from {len(trial)} concatenated source layers; supply more calibration "
+                    f"tokens or lower k")
+            weights, bias = fit_ridge(source[:split], target[:split], ridge)
+            score = residual(source[split:], target[split:], weights, bias)
+            if score < round_score:
+                round_best, round_score = layer, score
+        if round_best is None:
+            break
+        chosen, best_score = chosen + (round_best,), round_score
+    if not chosen:
+        raise MapperError("no source layer improved on an empty fit")
+    return chosen, float(best_score)
+
+
 def select_source_layer(target: np.ndarray, candidates: dict[int, np.ndarray],
                         ridge: float = 1e-2, holdout: float = 0.25
                         ) -> tuple[int, float]:

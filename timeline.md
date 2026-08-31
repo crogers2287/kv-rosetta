@@ -3515,3 +3515,80 @@ REAP-style selection by router-weighted activation.
 
 **Cleanup.** Slot directories `slots-spec`, `slots-deep` removed; no servers left running; tiel on
 the W6800 untouched throughout.
+
+## REQ-085 — Literature check, the Muon hypothesis measured, and a real flaw in our own mapper
+
+**Request.** "check arXiv to see if there's any research that could help" then "try it. also could
+our issue be because of the muon optimizer and we're not taking that into account?"
+
+### What the literature says
+
+| work | what it does | metric it reports |
+|---|---|---|
+| [Cross-Model KV Cache Transfer 2608.03893](https://arxiv.org/abs/2608.03893) | closed-form ridge mapper, RoPE stripped, top-k source layers concatenated | 73-98% accuracy retention |
+| [DroidSpeak 2411.02820](https://arxiv.org/abs/2411.02820) | selective layer recomputation, same architecture | F1, Rouge-L, code similarity |
+| [PrefillShare 2602.12029](https://arxiv.org/abs/2602.12029) | frozen shared prefill module across task models | p95 latency, throughput |
+| [REAP 2510.13999](https://arxiv.org/abs/2510.13999) | router-weighted expert pruning, ICLR 2026 | <8% quality drop at 50% pruning |
+| [SpecPrefill 2502.02789](https://arxiv.org/abs/2502.02789) | small model selects important prompt tokens; big model prefills only those | 7.66x TTFT |
+
+**The reframe.** Every cache-transfer result above is scored on downstream task quality. This
+project's gate requires 0.99 top-1 agreement against the model's own restore. Those are different
+questions -- "does the output stay good" versus "does the output stay the same". Our negative
+results and their positive ones are not necessarily in conflict, and REQ-082/084 should be read
+with that in mind.
+
+**REAP is answered without measuring it.** Validated at ~50% pruning; we ran 75% and 98.4%, far
+outside its range. Its criterion is task quality, not KV fidelity, and a model can hold 97.6% of
+coding ability on a different hidden-state trajectory. The planned REAP warmer is dropped.
+
+**SpecPrefill inverts the mechanism** that failed here: the small model does triage (which prompt
+tokens matter), not production (KV the big model reads). No cache transfer, so nothing to gate.
+
+### The Muon hypothesis, measured
+
+Muon orthogonalises updates, which should leave weight matrices with flatter singular-value
+spectra and less low-rank structure -- exactly the structure a linear cross-model map needs.
+Normalised effective rank (`exp(entropy of singular values) / full rank`) of the KV projections,
+all layers:
+
+| model | attn_k mean | spread | lowest layer | attn_v mean |
+|---|---|---|---|---|
+| Qwen2.5-3B-Instruct (2024) | 0.8671 | 0.2763 | 0.6632 | 0.9738 |
+| Qwen3-Next-REAP-20B (2025) | 0.8395 | 0.1912 | 0.7064 | 0.9068 |
+| Qwen3.8-Flash-Next (2026) | **0.8893** | **0.1206** | **0.8176** | 0.9439 |
+
+Flash-Next has the flattest spectra and by far the most uniform layers; no layer drops below
+0.818, while the older models have layers at 0.66-0.71. Low-rank layers are where a linear map
+gets traction, and this family has none.
+
+**Quantisation confound measured and dismissed.** Same weights at Q8_0 versus Q4_K_M shift
+effective rank by **+0.0004** on average, against a cross-model gap of about +0.10 -- 250x
+smaller. The signal is not a quantisation artifact.
+
+**Two limits stated.** This is weight-matrix rank, not representation rank, which is what the
+mapper actually fits and which also depends on the input distribution. And Flash-Next has not been
+confirmed to use Muon; flat spectra are consistent with orthogonalised updates and have other
+possible causes.
+
+**Falsifiable prediction it makes.** A multi-source linear mapper should underperform the paper's
+79%/65% explained variance on this family specifically.
+
+### The flaw in our own mapper
+
+Our RoPE handling was already correct (`translate.py` uses `strip_rope`). But
+`select_source_layer` fits **one** source layer per target layer, while the published recipe
+concatenates the **top-k**, which lifts explained variance from 56% to 79% on keys and 32% to 65%
+on values. REQ-020's "fitted linear is worse than identity at all 36 layers" may therefore be an
+artifact of our single-source design rather than a property of the problem.
+
+**Added.** `stack_sources` and `select_source_layers` in `kv_rosetta/mappers/linear.py` -- greedy
+forward selection scored on held-out tokens, stopping early rather than padding to k, with an
+explicit refusal when concatenation outruns the token budget (k layers multiply the feature width,
+so a budget that was ample for one layer is underdetermined for several).
+
+**Proven by retained test.** 41 tests in `tests/test_linear_mapper.py`, 21/21 mutation guards
+defended (three of which, including two pre-existing gaps, this run surfaced and closed). Full
+suite green at 1,553.
+
+**Untested.** Whether multi-source beats single-source on real KV from a matched model pair. That
+needs a GPU capture and has not been run.
