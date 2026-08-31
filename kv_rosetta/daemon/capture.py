@@ -108,6 +108,11 @@ class CaptureLoop:
         self.restore_refused = 0
         self.admitted = 0
         self.admit_refused = 0
+        self.skipped_small_growth = 0
+        self._largest: dict[str, int] = {}
+        #: (model, slot) pairs already holding an attachment we put there. Dropped when the
+        #: slot is seen non-empty, so once real work displaces the prefix we warm it again.
+        self._warmed: set[tuple[str, int]] = set()
 
     # -- runtime access ----------------------------------------------------------------
 
@@ -150,11 +155,20 @@ class CaptureLoop:
         if self.restorer is None:
             return []
         done = []
-        for model in sorted(newly_loaded(loaded, self._previous)):
+        # Not only models that just appeared. A model that stays resident never appears
+        # again, so gating on appearance meant a long-lived model was warmed once at load
+        # and never afterwards -- a session reset against it prefills from scratch even
+        # though an attachment exists. Any idle EMPTY slot is a place to keep the prefix
+        # resident, and llama.cpp assigns slots by prefix match, so a new conversation can
+        # land on it. The marker stops us restoring into the same empty slot every tick.
+        for model in sorted(loaded):
             slot = restorable(by_model.get(model, []))
             if slot is None:
-                self._log(f"{model} appeared with no idle empty slot; leaving it to "
-                          f"prefill natively")
+                if model in newly_loaded(loaded, self._previous):
+                    self._log(f"{model} appeared with no idle empty slot; leaving it to "
+                              f"prefill natively")
+                continue
+            if (model, slot) in self._warmed:
                 continue
             try:
                 info = self.restorer(model, slot)
@@ -166,6 +180,7 @@ class CaptureLoop:
                 self._log(f"{model} appeared but no attachment matches it yet")
                 continue
             self.restored += 1
+            self._warmed.add((model, slot))
             # What was just restored is already an artifact. Without this the capture pass
             # in the same tick saves the restored slot straight back and admits a duplicate
             # under a fresh fingerprint, which is how the store gained a second copy of a
@@ -180,6 +195,10 @@ class CaptureLoop:
     def tick(self) -> list[Candidate]:
         loaded = self.loaded_models()
         by_model = {m: self.slots_for(m) for m in sorted(loaded)}
+        for model, slots in by_model.items():
+            for slot in slots:
+                if int(slot.get("n_prompt_tokens") or 0) > 0:
+                    self._warmed.discard((model, int(slot.get("id", -1))))
         self.restore_fresh(loaded, by_model)
         self._previous = loaded
         candidates = require_loaded_only(
@@ -187,6 +206,10 @@ class CaptureLoop:
                               already=frozenset(self._seen)), loaded)
         done = []
         for cand in candidates:
+            if not worth_capturing(cand.tokens, self._largest.get(cand.model, 0)):
+                self.skipped_small_growth += 1
+                self._seen.add((cand.model, cand.tokens))
+                continue
             name = f"auto-{cand.model}-slot{cand.slot_id}-{cand.tokens}.state"
             try:
                 saved = self._json(
@@ -198,6 +221,7 @@ class CaptureLoop:
                           f"{str(exc)[:120]}")
                 continue
             self._seen.add((cand.model, cand.tokens))
+            self._largest[cand.model] = max(self._largest.get(cand.model, 0), cand.tokens)
             self.captured += 1
             self._log(f"captured {cand.model} slot {cand.slot_id}: "
                       f"{saved.get('n_saved')} cells, "
@@ -257,6 +281,22 @@ def prefix_fingerprint(token_ids) -> str:
     for tok in token_ids:
         digest.update(int(tok).to_bytes(4, "little", signed=False))
     return digest.hexdigest()
+
+
+#: A growing conversation passes through many token counts, and capturing each one admits
+#: a near-duplicate of the last at full size -- 11 artifacts averaging 600 MB were written
+#: from a single session before this was noticed. A capture must add materially more than
+#: the previous one for that model to be worth its disk.
+MIN_CAPTURE_GROWTH = 0.20
+
+
+def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_GROWTH) -> bool:
+    """Whether a capture at this size adds enough over the last one to be worth storing."""
+    if tokens <= 0:
+        raise ValueError(f"token count {tokens} is not positive")
+    if previous <= 0:
+        return True
+    return tokens >= previous * (1.0 + growth)
 
 
 def same_model(capture_label: str, runtime_model: str) -> bool:

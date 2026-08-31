@@ -3941,3 +3941,51 @@ them on the next prefill, so this self-heals, but it is a real cost of changing 
 **Proven by retained test.** Two tests for the no-recapture rule. `test_no_undefined_names` caught
 a deleted `admit_capture` and, earlier, a missing `Path` import -- both NameErrors that would have
 fired only in the daemon. Suite green at 1,618.
+
+## REQ-093 — Disk bloat from admit-on-capture, and why a resident model never re-warms
+
+**Context.** The operator is testing on `tiel-kvx-w6800` (W6800) while flash-next work continues
+on the 3090s. Ash runs against tiel-kvx; an earlier note here that "Ash is on the wrong model" was
+wrong -- that is the deliberate test bed.
+
+**Disk bloat, caused by REQ-091.** Admit-on-capture stored a full artifact for every distinct
+token count a growing conversation passed through: 44,622 -> 45,192 -> 46,746 -> 47,243, each
+about 600 MB. Eleven artifacts came from one session and the store reached 58 GB with `/home` at
+93%.
+
+Two fixes and a cleanup:
+
+- `worth_capturing(tokens, previous)` requires 20% growth over the last capture for that model.
+  Not 25%: an existing test treats 50,000 -> 61,000 (22%) as a real growth, and it is. The bloat
+  came from 1-3% steps.
+- **54 orphaned `.state` files** with no manifest -- written before capture learned to admit, and
+  unusable by anything -- removed, freeing **52.9 GB**. Store 57 GB -> 8.3 GB, `/home` 92% -> 87%.
+- Near-duplicate admitted snapshots pruned, keeping materially distinct sizes only (5.8 GB).
+
+**Why a session reset still prefilled cold.** Restore was gated on `newly_loaded`. A model that
+stays resident never appears again, so it was warmed once at load and never afterwards; resetting
+a session does not reload the model, so nothing restored and llama.cpp prefilled from scratch.
+
+Restore now considers any loaded model with an idle EMPTY slot, not only ones that just appeared,
+and marks (model, slot) so it does not re-restore every tick. The marker is dropped once the slot
+is seen non-empty, so a slot is re-warmed after real work displaces the prefix.
+
+**It does not help in the observed case, and that is worth stating.** tiel-kvx had no empty slot:
+slot 0 held 615 tokens and slot 1 held 75,523. `restorable()` requires idle AND empty, which is
+the rule that prevents turning a warm session cold, so it correctly declined. Restoring over a
+slot holding a trivial 615 tokens would be worth far more than what it displaces, but relaxing
+that rule risks evicting a short live session and has not been done.
+
+**Attachments invalidated.** Changing `--parallel` 1 -> 2 halved the per-slot context, which is
+part of the cache ABI, so every flash-next attachment failed with `cache ABI mismatch` on each
+tick. They were dropped; capture rebuilds them on the next prefill.
+
+**Proven by retained test.** 10 new tests: growth threshold including the boundary and the 22%
+case an existing test depends on, and the warm-slot rules (a resident model is warmed without
+reappearing, a slot is not re-warmed while it still holds our prefix, it is re-warmed after use,
+and a busy slot is never restored over). Suite green at 1,628.
+
+**The gap this does not close.** KVX restores at model load or into an empty slot. It does not
+intercept a request. The mechanism that would make a session reset fast on a busy resident model
+is on-demand restore -- `POST /v1/ensure` matches an incoming prefix against the store and
+restores before the model prefills. It exists, works, and nothing calls it.

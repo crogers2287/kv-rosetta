@@ -11,6 +11,7 @@ import unittest
 from kv_rosetta.daemon.capture import (
     Candidate, CaptureLoop, DEFAULT_MIN_TOKENS, choose_candidates, newly_loaded,
     prefix_fingerprint, require_loaded_only, restorable, same_model, slot_is_capturable,
+    worth_capturing,
 )
 
 
@@ -398,3 +399,89 @@ class NoRecaptureOfRestoreTests(unittest.TestCase):
         loop.tick()
         self.assertEqual(loop.restored, 1)
         self.assertFalse(any(t is None for _, t in loop._seen))
+
+
+class CaptureGrowthTests(unittest.TestCase):
+    """A growing conversation passes through many token counts; capturing each admits a
+    near-duplicate at full size. Eleven artifacts averaging 600 MB came from one session."""
+
+    def test_first_capture_for_a_model_is_always_worth_it(self):
+        self.assertTrue(worth_capturing(6000, 0))
+
+    def test_a_materially_larger_capture_is_worth_it(self):
+        self.assertTrue(worth_capturing(50000, 36000))
+
+    def test_a_marginally_larger_capture_is_not(self):
+        self.assertFalse(worth_capturing(45192, 44622))
+        self.assertFalse(worth_capturing(46746, 45192))
+
+    def test_the_boundary_is_inclusive(self):
+        self.assertTrue(worth_capturing(1200, 1000))
+        self.assertFalse(worth_capturing(1199, 1000))
+
+    def test_the_growth_an_existing_test_relies_on_still_counts(self):
+        """50,000 -> 61,000 is 22% and is a real growth worth storing."""
+        self.assertTrue(worth_capturing(61000, 50000))
+
+    def test_refuses_a_non_positive_count(self):
+        with self.assertRaises(ValueError) as cm:
+            worth_capturing(0, 100)
+        self.assertIn("is not positive", str(cm.exception))
+
+    def test_the_loop_skips_a_marginal_capture(self):
+        saves = []
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10, log=lambda m: None)
+        loop.loaded_models = lambda: frozenset(["m"])
+        loop._json = lambda url, payload=None, timeout=900: (saves.append(url) or
+                                                             {"n_saved": 1, "n_written": 1})
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False,
+                                      "n_prompt_tokens": 40000}]
+        loop.tick()
+        self.assertEqual(loop.captured, 1)
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False,
+                                      "n_prompt_tokens": 41000}]
+        saves.clear()
+        loop.tick()
+        self.assertEqual(loop.skipped_small_growth, 1)
+        self.assertEqual([u for u in saves if "action=save" in u], [])
+
+
+class KeepASlotWarmTests(unittest.TestCase):
+    """A resident model never 'appears' again, so gating restores on appearance warmed it
+    once at load and never after. A session reset against it then prefills from scratch
+    even though an attachment exists."""
+
+    def _loop(self, slots_ref, restorer):
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10_000_000,
+                           restorer=restorer, log=lambda m: None)
+        loop.loaded_models = lambda: frozenset(["m"])
+        loop.slots_for = lambda mm: slots_ref[0]
+        loop._json = lambda url, payload=None, timeout=900: {"n_saved": 1, "n_written": 1}
+        return loop
+
+    def test_a_resident_model_is_warmed_even_without_reappearing(self):
+        calls = []
+        slots = [[{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]]
+        loop = self._loop(slots, lambda m, s: calls.append(s) or {"covers_tokens": 100})
+        loop.tick()                       # first appearance
+        self.assertEqual(calls, [0])
+        loop.tick()                       # still resident, slot still empty
+        self.assertEqual(calls, [0], "must not re-warm a slot already holding our prefix")
+
+    def test_a_slot_is_rewarmed_after_real_work_displaces_the_prefix(self):
+        calls = []
+        slots = [[{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]]
+        loop = self._loop(slots, lambda m, s: calls.append(s) or {"covers_tokens": 100})
+        loop.tick()
+        slots[0] = [{"id": 0, "is_processing": False, "n_prompt_tokens": 5000}]
+        loop.tick()                       # occupied: marker dropped, nothing to restore into
+        slots[0] = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        loop.tick()                       # empty again: warm it once more
+        self.assertEqual(calls, [0, 0])
+
+    def test_a_busy_slot_is_never_restored_over(self):
+        calls = []
+        slots = [[{"id": 0, "is_processing": True, "n_prompt_tokens": 0}]]
+        loop = self._loop(slots, lambda m, s: calls.append(s) or {"covers_tokens": 100})
+        loop.tick()
+        self.assertEqual(calls, [])
