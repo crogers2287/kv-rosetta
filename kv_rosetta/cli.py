@@ -21,6 +21,24 @@ def _json(value: Any) -> None:
 def _inspect(path: str) -> int:
     from kv_rosetta.container import ContainerError, read, verify
 
+    if args.command == "serve":
+        from kv_rosetta.daemon.server import SidecarConfig, build_server
+
+        sidecar = build_server(SidecarConfig(
+            host=args.host, port=args.port, swap=args.swap,
+            manifest_root=args.manifest_root, store_root=args.store_root))
+        # Deliberately no warm loop. A sidecar that reaches out to keep caches hot
+        # recreates the behaviour it replaces: it wakes parked models and pays a full
+        # prefill on a schedule whether or not anyone asked. This serves restores on
+        # demand, and `models_woken` staying zero is the property that says so.
+        print(f"kv-rosetta sidecar on http://{args.host}:{sidecar.port}  "
+              f"store={args.store_root}  swap={args.swap}", flush=True)
+        try:
+            sidecar.serve_forever()
+        except KeyboardInterrupt:
+            sidecar.shutdown()
+        return 0
+
     try:
         artifact = read(path, mmap=True)
     except ContainerError as exc:
@@ -55,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
     compat.add_argument("target")
     inspect = commands.add_parser("inspect", help="summarise a .kvx artifact without loading tensors")
     inspect.add_argument("artifact")
+    serve = commands.add_parser(
+        "serve", help="run the demand-driven restore sidecar (replaces a recompute warmer)")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8431)
+    serve.add_argument("--swap", default="http://127.0.0.1:9069")
+    serve.add_argument("--manifest-root", default="~/.cfrproxy/cache")
+    serve.add_argument("--store-root", default="~/.kvrosetta/admitted")
     args = parser.parse_args(argv)
 
     try:
