@@ -159,3 +159,28 @@ class CaptureLoop:
             except Exception as exc:                 # a poll failure is not fatal
                 self._log(f"capture tick failed: {str(exc)[:150]}")
             time.sleep(self.interval)
+
+
+def restorable(slots: list[dict[str, Any]], *, min_tokens: int = DEFAULT_MIN_TOKENS) -> int | None:
+    """A slot that is idle AND empty, into which an attachment may be restored.
+
+    Empty is the load-bearing half. A slot already holding a prompt is either serving live
+    work or holds a context worth more than the one being restored, and overwriting it turns
+    a warm session cold - which is the exact harm this whole loop exists to prevent.
+    """
+    for slot in slots:
+        if slot.get("is_processing"):
+            continue
+        if int(slot.get("n_prompt_tokens") or 0) == 0:
+            return int(slot["id"])
+    return None
+
+
+def newly_loaded(current: frozenset[str], previous: frozenset[str]) -> frozenset[str]:
+    """Models that appeared since the last poll.
+
+    Restoring is attempted once per appearance rather than continuously: a model that is up
+    and being used has its own cache, and re-restoring over it would be the overwrite the
+    rule above forbids.
+    """
+    return current - previous

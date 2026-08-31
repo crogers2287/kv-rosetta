@@ -149,3 +149,38 @@ class LoopBehaviour(unittest.TestCase):
         self.assertFalse(any("completion" in c or "chat" in c for c in loop.calls))
         self.assertFalse(any("action=restore" in c or "action=erase" in c
                              for c in loop.calls))
+
+
+class RestoreOnLoad(unittest.TestCase):
+    """Warm a model as it comes up, rather than making the first request pay.
+
+    The operator sent a prompt to a freshly loaded Flash-Next and watched it prefill 26,826
+    tokens from cold, with a matching attachment already sitting in the store.
+    """
+
+    def test_an_idle_empty_slot_can_receive_a_restore(self):
+        from kv_rosetta.daemon.capture import restorable
+        self.assertEqual(restorable([_slot(0, 0)]), 0)
+
+    def test_a_slot_holding_a_prompt_is_never_overwritten(self):
+        # Overwriting turns a warm session cold, which is the harm this loop prevents.
+        from kv_rosetta.daemon.capture import restorable
+        self.assertIsNone(restorable([_slot(0, 40000)]))
+
+    def test_a_busy_slot_is_never_overwritten(self):
+        from kv_rosetta.daemon.capture import restorable
+        self.assertIsNone(restorable([_slot(0, 0, busy=True)]))
+
+    def test_the_first_free_empty_slot_is_chosen(self):
+        from kv_rosetta.daemon.capture import restorable
+        self.assertEqual(restorable([_slot(0, 50000), _slot(1, 0)]), 1)
+
+    def test_models_are_detected_as_they_appear(self):
+        from kv_rosetta.daemon.capture import newly_loaded
+        self.assertEqual(newly_loaded(frozenset({"a", "b"}), frozenset({"a"})),
+                         frozenset({"b"}))
+
+    def test_a_model_that_was_already_up_is_not_restored_again(self):
+        # It has its own cache by now; re-restoring would overwrite live context.
+        from kv_rosetta.daemon.capture import newly_loaded
+        self.assertEqual(newly_loaded(frozenset({"a"}), frozenset({"a"})), frozenset())
