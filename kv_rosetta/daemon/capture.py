@@ -87,15 +87,21 @@ class CaptureLoop:
     """
 
     def __init__(self, swap: str, store_root, *, min_tokens: int = DEFAULT_MIN_TOKENS,
-                 interval: float = 20.0, log=None) -> None:
+                 interval: float = 20.0, log=None, restorer=None) -> None:
         self.swap = swap.rstrip("/")
         self.store_root = store_root
         self.min_tokens = min_tokens
         self.interval = interval
         self._log = log or (lambda msg: None)
         self._seen: set[tuple[str, int]] = set()
+        # Injected rather than constructed here so the loop stays testable without a
+        # sidecar, a store, or a running llama-swap. Called as restorer(model, slot).
+        self.restorer = restorer
+        self._previous: frozenset[str] = frozenset()
         self.captured = 0
         self.refused = 0
+        self.restored = 0
+        self.restore_refused = 0
 
     # -- runtime access ----------------------------------------------------------------
 
@@ -123,9 +129,46 @@ class CaptureLoop:
 
     # -- one pass ----------------------------------------------------------------------
 
+    def restore_fresh(self, loaded: frozenset[str],
+                      by_model: dict[str, list[dict[str, Any]]]) -> list[str]:
+        """Put an attachment back into each model that has just appeared.
+
+        This is the half that was missing: capture without restore writes caches nothing
+        ever reads, and the request that would benefit from a restore is precisely the one
+        already paying for the prefill.
+
+        Not primed on the first poll. A daemon restart therefore treats everything resident
+        as freshly appeared, which is safe because restorable() will only hand back a slot
+        that is idle AND empty -- a model in use is never restored over.
+        """
+        if self.restorer is None:
+            return []
+        done = []
+        for model in sorted(newly_loaded(loaded, self._previous)):
+            slot = restorable(by_model.get(model, []))
+            if slot is None:
+                self._log(f"{model} appeared with no idle empty slot; leaving it to "
+                          f"prefill natively")
+                continue
+            try:
+                info = self.restorer(model, slot)
+            except Exception as exc:
+                self.restore_refused += 1
+                self._log(f"restore refused for {model} slot {slot}: {str(exc)[:160]}")
+                continue
+            if info is None:
+                self._log(f"{model} appeared but no attachment matches it yet")
+                continue
+            self.restored += 1
+            self._log(f"restored {model} slot {slot}: {info}")
+            done.append(model)
+        return done
+
     def tick(self) -> list[Candidate]:
         loaded = self.loaded_models()
         by_model = {m: self.slots_for(m) for m in sorted(loaded)}
+        self.restore_fresh(loaded, by_model)
+        self._previous = loaded
         candidates = require_loaded_only(
             choose_candidates(by_model, min_tokens=self.min_tokens,
                               already=frozenset(self._seen)), loaded)
@@ -152,7 +195,8 @@ class CaptureLoop:
     def run_forever(self) -> None:
         import time
         self._log(f"capture loop: every {self.interval:.0f}s, "
-                  f"minimum {self.min_tokens} tokens, save only")
+                  f"minimum {self.min_tokens} tokens, "
+                  f"{'restore on load enabled' if self.restorer else 'save only'}")
         while True:
             try:
                 self.tick()

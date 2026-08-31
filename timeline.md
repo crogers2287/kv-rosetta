@@ -3592,3 +3592,62 @@ suite green at 1,553.
 
 **Untested.** Whether multi-source beats single-source on real KV from a matched model pair. That
 needs a GPU capture and has not been run.
+
+## REQ-086 — Restore-on-load was never wired; capture had been writing caches nothing read
+
+**Request.** "flash next on the 3090s with everything working is also the priority. both that and
+the kvx 6800. need to both work flawlessly", and correctly: "last night you told me you were
+building the restore, so the code should be there".
+
+**The operator was right and the earlier claim was wrong.** REQ-084's commit 594c565 ("restore an
+attachment when a model loads, not when someone asks") added 25 lines to `capture.py` -- the
+`restorable()` and `newly_loaded()` function bodies -- plus 35 lines of tests. It never touched
+`tick()` or `run_forever()`. Both helpers had **zero callers in production code**. The feature was
+reported as built while only its parts existed.
+
+**What the live daemon showed after 10.7 hours of uptime:**
+
+```
+restores_served: 0   fallbacks: 0   refusals: 0   models_woken: 0
+```
+
+24 auto-captures on disk (22 tiel-kvx-w6800, 2 qwen38-flash-next-kvx) and not one restore.
+Capture worked the whole time; nothing ever read what it wrote.
+
+**Where the token spend actually goes** (cfrproxy live traces, 7,355 requests, all status 200):
+
+| | |
+|---|---|
+| cold prefill tokens | 54,173,229 |
+| cache-hit tokens | 180,488,737 (76.9%) |
+| total time spent prefilling | **23.40 hours** |
+
+Requests with >=25k cold tokens: **823 requests, 33.9M cold tokens, 10.32 hours of prefill** --
+11% of requests consuming 44% of prefill time. `tiel-coder-q5-w6800` alone is 26.6M of those cold
+tokens at a 64.0% hit rate, and it is *not* the KVX-wired entry; `tiel-kvx-w6800` runs 91.6%
+(175 requests against 4,048, so indicative rather than controlled).
+
+**Fixed here.** `CaptureLoop.restore_fresh()` runs each tick before capture: `newly_loaded()`
+against the previous poll, `restorable()` for a slot that is idle AND empty, then an injected
+`restorer(model, slot)`. `serve` injects one that picks the largest published prefix having an
+admitted artifact for that model -- largest first, because a small prefix restored into the slot
+would occupy it and block the big one. Deliberately not primed on the first poll: a daemon restart
+treats residents as freshly appeared, which is safe precisely because `restorable()` refuses any
+slot holding a prompt.
+
+**The second gap, found while verifying the first.** `find_artifact` matches on
+`manifest["prefix_fingerprint"]` and `manifest["runtime_model"]`. Auto-captures are bare `.state`
+files with no manifest -- the loop saves whatever occupies a slot, which is a *session*, not a
+known prefix, so it cannot be keyed to one. Only `prewarm` produces fingerprint-keyed artifacts
+(`admit(..., prefix_fingerprint=fingerprint)`), and **prewarm has never been run**. Auto-capture
+and restore-on-load are therefore complementary, not one pipeline: capture preserves sessions,
+prewarm builds the attachments restore-on-load can find.
+
+**Proven by retained test.** 7 tests covering the wiring itself, since the helpers were fully
+tested once already while never being called: restores a freshly appeared model, does not restore
+one already resident, never restores over a slot holding a prompt or a busy slot, logs a missing
+attachment without counting it, and continues to the next model when one restore raises. Suite
+green at 1,573.
+
+**Untested.** No restore has yet been observed end to end on live hardware; the daemon has not
+been restarted with this wiring, and no prewarmed artifact exists for either model.

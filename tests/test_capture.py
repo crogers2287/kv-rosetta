@@ -9,8 +9,8 @@ are already loaded.
 import unittest
 
 from kv_rosetta.daemon.capture import (
-    Candidate, DEFAULT_MIN_TOKENS, choose_candidates, require_loaded_only,
-    slot_is_capturable,
+    Candidate, CaptureLoop, DEFAULT_MIN_TOKENS, choose_candidates, newly_loaded,
+    require_loaded_only, restorable, slot_is_capturable,
 )
 
 
@@ -184,3 +184,85 @@ class RestoreOnLoad(unittest.TestCase):
         # It has its own cache by now; re-restoring would overwrite live context.
         from kv_rosetta.daemon.capture import newly_loaded
         self.assertEqual(newly_loaded(frozenset({"a"}), frozenset({"a"})), frozenset())
+
+
+class RestoreOnLoadTests(unittest.TestCase):
+    """Capture without restore writes caches nothing reads. These cover the wiring itself,
+    because the helpers were fully tested once already while never being called."""
+
+    def _loop(self, running, slots, restorer):
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10, restorer=restorer,
+                           log=lambda m: self.logs.append(m))
+        loop.loaded_models = lambda: frozenset(running)
+        loop.slots_for = lambda m: slots.get(m, [])
+        return loop
+
+    def setUp(self):
+        self.logs = []
+        self.calls = []
+
+    def _restorer(self, result=None, boom=None):
+        def fn(model, slot):
+            self.calls.append((model, slot))
+            if boom is not None:
+                raise boom
+            return result
+        return fn
+
+    def test_restores_a_model_that_has_just_appeared(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]}
+        loop = self._loop(["m"], slots, self._restorer({"n_restored": 5}))
+        loop.tick()
+        self.assertEqual(self.calls, [("m", 0)])
+        self.assertEqual(loop.restored, 1)
+
+    def test_does_not_restore_a_model_that_was_already_loaded(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]}
+        loop = self._loop(["m"], slots, self._restorer({"n_restored": 5}))
+        loop.tick()
+        self.calls.clear()
+        loop.tick()
+        self.assertEqual(self.calls, [], "a resident model must not be restored over again")
+
+    def test_never_restores_over_a_slot_that_holds_a_prompt(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 4096}]}
+        loop = self._loop(["m"], slots, self._restorer({"n_restored": 5}))
+        loop.tick()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(loop.restored, 0)
+        self.assertTrue(any("no idle empty slot" in m for m in self.logs))
+
+    def test_never_restores_into_a_busy_slot(self):
+        slots = {"m": [{"id": 0, "is_processing": True, "n_prompt_tokens": 0}]}
+        loop = self._loop(["m"], slots, self._restorer({"n_restored": 5}))
+        loop.tick()
+        self.assertEqual(self.calls, [])
+
+    def test_no_matching_attachment_is_logged_and_not_counted(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]}
+        loop = self._loop(["m"], slots, self._restorer(None))
+        loop.tick()
+        self.assertEqual(loop.restored, 0)
+        self.assertTrue(any("no attachment matches" in m for m in self.logs))
+
+    def test_a_failing_restore_is_counted_and_does_not_stop_the_loop(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}],
+                 "n": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]}
+        calls = []
+
+        def fn(model, slot):
+            calls.append(model)
+            if model == "m":
+                raise RuntimeError("upstream refused")
+            return {"n_restored": 1}
+        loop = self._loop(["m", "n"], slots, fn)
+        loop.tick()
+        self.assertEqual(calls, ["m", "n"], "one failure must not skip the other model")
+        self.assertEqual(loop.restore_refused, 1)
+        self.assertEqual(loop.restored, 1)
+
+    def test_loop_without_a_restorer_still_captures(self):
+        slots = {"m": [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]}
+        loop = self._loop(["m"], slots, None)
+        self.assertEqual(loop.restore_fresh(frozenset(["m"]), slots), [])
+        self.assertEqual(loop.restored, 0)

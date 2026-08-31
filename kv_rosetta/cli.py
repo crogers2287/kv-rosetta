@@ -103,9 +103,35 @@ def main(argv: list[str] | None = None) -> int:
 
             from kv_rosetta.daemon.capture import CaptureLoop
 
+            def restore_on_load(model: str, slot: int):
+                """The largest published prefix that already has an artifact for this model.
+
+                Largest first because the whole point is the prompts that cost the most to
+                prefill; a small prefix restored into the slot would occupy it and block the
+                big one. Returns None when nothing matches, which the loop logs and skips --
+                a model with no attachment simply prefills natively, as it does today.
+                """
+                try:
+                    prefixes = sidecar.known_prefixes()
+                except Exception as exc:
+                    print(f"[capture] cannot read prefixes: {str(exc)[:120]}", flush=True)
+                    return None
+                for entry in sorted(prefixes,
+                                    key=lambda e: -(e.get("est_tokens") or 0)):
+                    fingerprint = str(entry.get("fingerprint", ""))
+                    if sidecar.find_artifact(fingerprint, model) is None:
+                        continue
+                    result = sidecar.ensure(fingerprint, model, slot)
+                    with sidecar._lock:
+                        sidecar.stats.restores_served += 1
+                    return {"prefix": fingerprint[:12],
+                            "est_tokens": entry.get("est_tokens"), **result}
+                return None
+
             loop = CaptureLoop(args.swap, args.store_root,
                                min_tokens=args.capture_min_tokens,
                                interval=args.capture_interval,
+                               restorer=restore_on_load,
                                log=lambda m: print(f"[capture] {m}", flush=True))
             threading.Thread(target=loop.run_forever, daemon=True,
                              name="kvx-capture").start()
