@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from kv_rosetta.manifest import ManifestError, compatibility, load
@@ -141,10 +142,39 @@ def main(argv: list[str] | None = None) -> int:
                     return {"prefix": fingerprint[:12], "covers_tokens": covered, **result}
                 return None
 
+            def admit_capture(model: str, basename: str, saved: dict):
+                """Turn a saved slot into an artifact restore-on-load can find.
+
+                Without this a capture is bytes on disk that nothing looks up, because
+                artifacts are keyed by prefix fingerprint and runtime model and a bare
+                .state carries neither. The fingerprint comes from the captured tokens
+                themselves, so traffic that never passes through cfrproxy -- a harness
+                pointed straight at llama-swap -- still gets a reusable attachment after
+                its first prefill.
+                """
+                from kv_rosetta.adapters import ggsq_envelope
+                from kv_rosetta.adapters.admitted_path import AdmittedPath
+                from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
+                from kv_rosetta.daemon.capture import prefix_fingerprint
+
+                store_root = Path(args.store_root).expanduser()
+                raw = (store_root / basename).read_bytes()
+                token_ids = list(ggsq_envelope.decode_prompt_tokens(
+                    ggsq_envelope.parse_file_envelope(raw).token_ids))
+                fingerprint = prefix_fingerprint(token_ids)
+                base = f"{args.swap.rstrip('/')}/upstream/{model}"
+                obj = AdmittedPath(LlamaCppHTTPAdapter(base, str(store_root)),
+                                   sidecar.store()).admit(
+                    store_root / basename, model=model, token_ids=token_ids,
+                    save_response=saved, prefix_fingerprint=fingerprint)
+                return (f"{obj.digest[:12]} covering {len(token_ids):,} tokens "
+                        f"(prefix {fingerprint[:12]})")
+
             loop = CaptureLoop(args.swap, args.store_root,
                                min_tokens=args.capture_min_tokens,
                                interval=args.capture_interval,
                                restorer=restore_on_load,
+                               admitter=admit_capture,
                                log=lambda m: print(f"[capture] {m}", flush=True))
             threading.Thread(target=loop.run_forever, daemon=True,
                              name="kvx-capture").start()

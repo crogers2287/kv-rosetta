@@ -87,7 +87,7 @@ class CaptureLoop:
     """
 
     def __init__(self, swap: str, store_root, *, min_tokens: int = DEFAULT_MIN_TOKENS,
-                 interval: float = 20.0, log=None, restorer=None) -> None:
+                 interval: float = 20.0, log=None, restorer=None, admitter=None) -> None:
         self.swap = swap.rstrip("/")
         self.store_root = store_root
         self.min_tokens = min_tokens
@@ -97,11 +97,17 @@ class CaptureLoop:
         # Injected rather than constructed here so the loop stays testable without a
         # sidecar, a store, or a running llama-swap. Called as restorer(model, slot).
         self.restorer = restorer
+        # Saving a slot writes bytes nothing can find: artifacts are looked up by prefix
+        # fingerprint and runtime model, and a bare .state carries neither. Admitting is
+        # what turns a capture into something restore-on-load can actually use.
+        self.admitter = admitter
         self._previous: frozenset[str] = frozenset()
         self.captured = 0
         self.refused = 0
         self.restored = 0
         self.restore_refused = 0
+        self.admitted = 0
+        self.admit_refused = 0
 
     # -- runtime access ----------------------------------------------------------------
 
@@ -189,6 +195,16 @@ class CaptureLoop:
             self._log(f"captured {cand.model} slot {cand.slot_id}: "
                       f"{saved.get('n_saved')} cells, "
                       f"{(saved.get('n_written') or 0) / 1e6:.0f} MB -> {name}")
+            if self.admitter is not None:
+                try:
+                    info = self.admitter(cand.model, name, saved)
+                except Exception as exc:          # an unusable capture is not fatal
+                    self.admit_refused += 1
+                    self._log(f"admit refused for {cand.model}: {str(exc)[:160]}")
+                else:
+                    if info is not None:
+                        self.admitted += 1
+                        self._log(f"admitted {cand.model}: {info}")
             done.append(cand)
         return done
 
@@ -218,6 +234,22 @@ def restorable(slots: list[dict[str, Any]], *, min_tokens: int = DEFAULT_MIN_TOK
         if int(slot.get("n_prompt_tokens") or 0) == 0:
             return int(slot["id"])
     return None
+
+
+def prefix_fingerprint(token_ids) -> str:
+    """A stable 64-hex identity for a token sequence.
+
+    Derived from the ids rather than the text: the cache is keyed to tokens, so two strings
+    that tokenise identically are the same prefix for reuse purposes. This is what lets a
+    slot captured from unproxied traffic be admitted and found later, without a manifest.
+    """
+    import hashlib
+    if not token_ids:
+        raise ValueError("cannot fingerprint an empty token sequence")
+    digest = hashlib.sha256()
+    for tok in token_ids:
+        digest.update(int(tok).to_bytes(4, "little", signed=False))
+    return digest.hexdigest()
 
 
 def same_model(capture_label: str, runtime_model: str) -> bool:

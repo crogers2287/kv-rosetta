@@ -3848,3 +3848,49 @@ larger-borrowed). Suite green at 1,598.
 **Not fixed here.** Ash's traffic does not pass through cfrproxy, so none of it appears in the
 prefix corpus and no attachment can be built from it until it does. The prefixes warmed for
 flash-next came from proxied traffic under a different client.
+
+## REQ-091 — Capture now admits, so a first prefill makes every later load instant
+
+**Request.** "I thought it was going to capture new stuff automatically. so after the first prefill
+it would load instantly every subsequent time whether we reloaded the model from scratch or not".
+
+**That is what was described and it was not what happened.** The capture loop saved slots as
+`auto-<model>-slot<N>-<tokens>.state` -- 22 of them for tiel -- but `find_artifact` looks up
+artifacts by `prefix_fingerprint` and `runtime_model`, and a bare `.state` carries neither. Every
+capture was bytes nothing could ever read. REQ-086 recorded this gap and then left it open,
+building a manual script instead of closing it.
+
+**Why it mattered for Ash.** That harness talks straight to llama-swap; cfrproxy's last entry was
+2h41m stale while flash-next was actively prefilling. No proxy record means no manifest, no
+manifest means prewarm has nothing to replay, and capture-without-admit meant the model's own
+traffic could not become an attachment either. So the restore path worked perfectly and restored
+somebody else's prefix, which matched nothing.
+
+**Fixed.** `CaptureLoop` takes an `admitter` and calls it after each successful save; `serve`
+injects one that parses the saved state's token ids, derives a fingerprint from them, and admits
+through `AdmittedPath`. The identity is `prefix_fingerprint(token_ids)` -- sha256 over the ids
+rather than over text, because the cache is keyed to tokens and two strings that tokenise
+identically are the same prefix. It lives in `capture.py` and `scripts/admit_live_slot.py` imports
+it, so a manual capture and an automatic one produce the same identity for the same tokens.
+
+The loop is now self-sufficient for unproxied traffic: first request prefills cold, the capture
+loop saves and admits what the slot holds, and the next load of that model restores it.
+
+**Threshold lowered.** `--capture-min-tokens` 20000 -> 6000. The old bar was above prompts worth
+capturing.
+
+**Proven by retained test.** 8 new tests: a capture is admitted; a failing admit is counted but
+does not lose the capture; an admitter returning None is not counted; capture still works with no
+admitter; plus fingerprint stability, order-sensitivity, hex shape and empty refusal. Suite green
+at 1,616.
+
+**A repo guard earned its keep.** `test_no_undefined_names` caught `Path` being referenced in
+`cli.py` without an import -- a NameError that would have fired only when the admitter ran, which
+is to say in production and not in any test.
+
+**Still true and unchanged.** Ash's traffic bypasses cfrproxy, so it contributes nothing to the
+prefix corpus. This makes that not matter for reuse, but it does mean no cache-hit telemetry for
+it in `cache-observability.jsonl`.
+
+**Known noise.** A stale 6,123-token tiel artifact (`29391ab4`) fails the tail contract on every
+load. It loses on ordering so it costs one wasted attempt, not correctness.

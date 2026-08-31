@@ -10,7 +10,7 @@ import unittest
 
 from kv_rosetta.daemon.capture import (
     Candidate, CaptureLoop, DEFAULT_MIN_TOKENS, choose_candidates, newly_loaded,
-    require_loaded_only, restorable, same_model, slot_is_capturable,
+    prefix_fingerprint, require_loaded_only, restorable, same_model, slot_is_capturable,
 )
 
 
@@ -296,3 +296,66 @@ class SameModelTests(unittest.TestCase):
         """The ordering the restorer relies on: own-model first, then larger."""
         cands = [(False, 74607, "borrowed"), (True, 32624, "own"), (True, 9146, "own-small")]
         self.assertEqual(sorted(cands, reverse=True)[0][2], "own")
+
+
+class AdmitOnCaptureTests(unittest.TestCase):
+    """A saved slot that is never admitted is bytes nothing can look up. This is the half
+    that makes capture self-sufficient for traffic which never reaches cfrproxy."""
+
+    def _loop(self, admitter):
+        loop = CaptureLoop("http://swap", "/tmp/store", min_tokens=10, admitter=admitter,
+                           log=lambda m: self.logs.append(m))
+        loop.loaded_models = lambda: frozenset(["m"])
+        loop.slots_for = lambda mm: [{"id": 0, "is_processing": False,
+                                      "n_prompt_tokens": 4096}]
+        loop._json = lambda url, payload=None, timeout=900: {"n_saved": 4096,
+                                                            "n_written": 1234}
+        return loop
+
+    def setUp(self):
+        self.logs = []
+        self.calls = []
+
+    def test_a_capture_is_admitted(self):
+        loop = self._loop(lambda model, name, saved: self.calls.append(name) or "ok")
+        loop.tick()
+        self.assertEqual(loop.captured, 1)
+        self.assertEqual(loop.admitted, 1)
+        self.assertTrue(any("admitted" in m for m in self.logs))
+
+    def test_a_failing_admit_does_not_lose_the_capture(self):
+        def boom(model, name, saved):
+            raise RuntimeError("state unreadable")
+        loop = self._loop(boom)
+        loop.tick()
+        self.assertEqual(loop.captured, 1, "the save still happened")
+        self.assertEqual(loop.admit_refused, 1)
+        self.assertEqual(loop.admitted, 0)
+
+    def test_an_admitter_returning_none_is_not_counted(self):
+        loop = self._loop(lambda model, name, saved: None)
+        loop.tick()
+        self.assertEqual(loop.admitted, 0)
+        self.assertEqual(loop.admit_refused, 0)
+
+    def test_capture_still_works_with_no_admitter(self):
+        loop = self._loop(None)
+        loop.tick()
+        self.assertEqual(loop.captured, 1)
+        self.assertEqual(loop.admitted, 0)
+
+
+class PrefixFingerprintTests(unittest.TestCase):
+    def test_stable_and_order_sensitive(self):
+        self.assertEqual(prefix_fingerprint([1, 2]), prefix_fingerprint([1, 2]))
+        self.assertNotEqual(prefix_fingerprint([1, 2]), prefix_fingerprint([2, 1]))
+
+    def test_is_64_hex(self):
+        fp = prefix_fingerprint([5])
+        self.assertEqual(len(fp), 64)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
+
+    def test_refuses_empty(self):
+        with self.assertRaises(ValueError) as cm:
+            prefix_fingerprint([])
+        self.assertIn("empty token sequence", str(cm.exception))
