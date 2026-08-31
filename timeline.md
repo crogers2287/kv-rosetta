@@ -3651,3 +3651,55 @@ green at 1,573.
 
 **Untested.** No restore has yet been observed end to end on live hardware; the daemon has not
 been restarted with this wiring, and no prewarmed artifact exists for either model.
+
+## REQ-087 — Both models now warm themselves on load, measured end to end
+
+**Request.** "flash next on the 3090s with everything working is also the priority. both that and
+the kvx 6800. need to both work flawlessly" / "do it don't wait on me".
+
+**Result.** Each model, on load, has its attachment restored before any request reaches it:
+
+| model | tokens restored | restore time | cold prefill it replaces (derived) |
+|---|---|---|---|
+| qwen38-flash-next-kvx | 9,127 | **1.65 s** | ~12 s at 750 tok/s |
+| tiel-kvx-w6800 | **44,914** | **1.43 s** | ~27 s at 1,670 tok/s |
+
+`restores_served: 3`, `fallbacks 0`, `refusals 0`, `errors 0`, `mode: admitted_direct_restore`.
+
+**Four blockers, each found only by running it.**
+
+1. *Restore was never called* (REQ-086). Fixed there.
+
+2. *`choose_slot` did not account for generated tokens.* `replay_body` sends `max_tokens: 16`, so
+the slot holds prompt plus completion; 9,131 replayed against 9,146 held was refused by a
+tolerance of 8. Now subtracts the reported `completion_tokens`.
+
+3. *The launcher fed a patched binary unpatched libraries.* `run-qwen38-flash-next-3090.sh` set
+`LD_LIBRARY_PATH="$RUNTIME_BIN"`, which defaults to the stock `llama-laurent/runtime-cuda-mtp/bin`.
+`QWEN38_NEXT_BIN` selected the patched *executable* while `LD_LIBRARY_PATH` overrode its RPATH and
+supplied the stock `libllama-server-impl.so` (`slot_checkpoint_persistence` absent). That is why
+`/props` advertised no checkpoint fields all session despite `build_info: b10665-ca3d5a3e1`, why
+saved states carried no SCKP appendix, and why admission refused qwen4exp as "runtime advertises
+no checkpoint-persistence protocol". The binary's own directory now comes first. After the fix
+`/props` reports `slot_checkpoint_persistence: True`, `slot_checkpoint_format: sckp/1`,
+`active_checkpoint_state_classes: ['target']`. Backup: `run-qwen38-flash-next-3090.sh.pre-ldpath`.
+
+4. *`MAX_UNCOVERED_TAIL = 8` encoded one model's behaviour as universal.* Its comment recorded a
+measured tail of 4 on a pure-attention model. A hybrid resumes from a context checkpoint rather
+than the exact end of the sequence, so Flash-Next left 19 of 9,146 uncovered and a 99.8%-complete
+restore was read as a failure. `uncovered_allowance()` is now proportional (1%, floor 8): 92 at
+9,146 tokens, still refusing a restore that covered almost nothing.
+
+**Also corrected.** `est_tokens` in a cfrproxy manifest counts the whole request, not the
+cacheable prefix -- reported here earlier as a 66,164-token flash-next prefix when the replay is
+9,131. The tiel prefix genuinely replays at 44,918.
+
+**Proven by retained test.** 5 tests for generated-token accounting (5/5 mutation guards), 5 for
+the proportional allowance. Suite green at 1,583.
+
+**Measured once on this host.** Every number in the table, plus capture continuing alongside
+restore (`captured tiel-kvx-w6800 slot 1: 44933 cells, 524 MB`).
+
+**Known remaining.** A stale 6,123-token tiel artifact (prefix `29391ab4`) still fails the tail
+contract when tried; it loses to the larger prefix on ordering, so it costs a refusal rather than
+correctness. Only one prefix per model is warmed; the other 111 manifests are unwarmed.
