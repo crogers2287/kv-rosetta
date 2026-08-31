@@ -12,7 +12,7 @@ from pathlib import Path
 
 from kv_rosetta.identity import CacheABIIdentity, IdentityError, ModelIdentity
 from kv_rosetta.shared import (Content, Entry, SharedDrive, SharedError,
-                               attachment_key, expected_reuse)
+                               attachment_key, expected_reuse, lineage_digest)
 
 
 def _model(weights="a" * 64):
@@ -471,3 +471,96 @@ class ReuseExpectation(unittest.TestCase):
     def test_a_plain_dense_model_is_unaffected_by_the_new_rule(self):
         # Without a sliding window the old answer must not change.
         self.assertTrue(expected_reuse("qwen2", sliding_window=False)[0])
+
+
+class LineageSharesAcrossQuantisations(unittest.TestCase):
+    """A re-quantised build should not have to be warmed from scratch.
+
+    Measured: a cache written by Qwen2.5-3B-Instruct Q4_K_M and read by the same model at
+    Q8_0 agreed on 0.984 of teacher-forced positions with byte-identical text. Keying on the
+    weights digest alone made that look like a different model.
+    """
+
+    def _md(self, **over):
+        base = {"general.architecture": "qwen2", "general.basename": "Qwen2.5",
+                "general.name": "Qwen2.5 3B Instruct", "general.finetune": "Instruct",
+                "general.size_label": "3B", "tokenizer.ggml.model": "gpt2",
+                "general.file_type": 15, "qwen2.block_count": 36,
+                "qwen2.attention.head_count_kv": 2, "qwen2.attention.key_length": 128,
+                "qwen2.rope.freq_base": 1000000.0}
+        base.update(over)
+        return base
+
+    def test_quantisation_does_not_change_the_lineage(self):
+        self.assertEqual(lineage_digest(self._md(**{"general.file_type": 15})),
+                         lineage_digest(self._md(**{"general.file_type": 7})))
+
+    def test_a_fine_tune_is_a_different_lineage(self):
+        # base vs Instruct scored 0.930, measurably worse than 0.984; not shared silently.
+        self.assertNotEqual(lineage_digest(self._md()),
+                            lineage_digest(self._md(**{"general.name": "Qwen2.5 3B",
+                                                       "general.finetune": ""})))
+
+    def test_a_different_cache_geometry_is_a_different_lineage(self):
+        # Two builds can share every label and lay their cache out differently.
+        self.assertNotEqual(lineage_digest(self._md()),
+                            lineage_digest(self._md(**{"qwen2.attention.head_count_kv": 4})))
+        self.assertNotEqual(lineage_digest(self._md()),
+                            lineage_digest(self._md(**{"qwen2.block_count": 48})))
+
+    def test_a_different_rope_base_is_a_different_lineage(self):
+        self.assertNotEqual(lineage_digest(self._md()),
+                            lineage_digest(self._md(**{"qwen2.rope.freq_base": 500000.0})))
+
+    def test_metadata_without_an_architecture_is_refused(self):
+        with self.assertRaises(SharedError) as caught:
+            lineage_digest({"general.basename": "Qwen2.5"})
+        self.assertIn("no architecture", str(caught.exception))
+
+    def test_a_non_mapping_is_refused(self):
+        with self.assertRaises(SharedError):
+            lineage_digest(["general.architecture", "qwen2"])
+
+
+class LineageLookup(unittest.TestCase):
+    def setUp(self):
+        self.drive = SharedDrive(Path(tempfile.mkdtemp()) / "drive")
+        self.digest = self.drive.publish(_content())
+        self.state = Path(tempfile.mkdtemp()) / "s.state"
+        self.state.write_bytes(b"qsgg" + b"\x00" * 64)
+        self.q4 = _model("a" * 64)
+        self.q8 = _model("b" * 64)          # same model, re-quantised: different bytes
+
+    def test_a_requantised_build_finds_the_other_quantisations_attachment(self):
+        self.drive.attach(self.digest, self.q4, _abi(), self.state, lineage="LINE")
+        self.assertIsNone(self.drive.cache_for(self.digest, self.q8, _abi()))
+        self.assertIsNotNone(
+            self.drive.cache_for_lineage(self.digest, self.q8, _abi(), "LINE"))
+
+    def test_the_exact_attachment_still_wins_when_present(self):
+        self.drive.attach(self.digest, self.q4, _abi(), self.state, lineage="LINE")
+        own = Path(tempfile.mkdtemp()) / "own.state"
+        own.write_bytes(b"qsgg" + b"\x11" * 64)
+        self.drive.attach(self.digest, self.q8, _abi(), own, lineage="LINE")
+        got = self.drive.cache_for_lineage(self.digest, self.q8, _abi(), "LINE")
+        self.assertEqual(got.read_bytes(), own.read_bytes())
+
+    def test_a_different_lineage_is_still_refused(self):
+        self.drive.attach(self.digest, self.q4, _abi(), self.state, lineage="LINE")
+        self.assertIsNone(
+            self.drive.cache_for_lineage(self.digest, self.q8, _abi(), "OTHER"))
+
+    def test_a_different_cache_abi_is_still_refused(self):
+        # Re-rounding weights keeps the cache layout; changing the KV dtype does not.
+        self.drive.attach(self.digest, self.q4, _abi(), self.state, lineage="LINE")
+        self.assertIsNone(self.drive.cache_for_lineage(
+            self.digest, self.q8, _abi(k_dtype="q8_0"), "LINE"))
+
+    def test_an_attachment_with_no_recorded_lineage_is_never_matched(self):
+        # Absence is not a match.
+        self.drive.attach(self.digest, self.q4, _abi(), self.state)
+        self.assertIsNone(self.drive.cache_for_lineage(self.digest, self.q8, _abi(), "LINE"))
+
+    def test_an_empty_lineage_never_matches_anything(self):
+        self.drive.attach(self.digest, self.q4, _abi(), self.state, lineage="LINE")
+        self.assertIsNone(self.drive.cache_for_lineage(self.digest, self.q8, _abi(), ""))

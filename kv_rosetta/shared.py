@@ -174,6 +174,39 @@ def expected_reuse(architecture: str, *, sliding_window: bool = False,
                   f"recorded, so reuse is unknown rather than absent")
 
 
+#: Fields that identify a model apart from how its weights were rounded. Two GGUFs agreeing
+#: on all of these and differing only in `general.file_type` are quantisations of one model.
+LINEAGE_FIELDS = ("general.architecture", "general.basename", "general.name",
+                  "general.finetune", "general.size_label", "tokenizer.ggml.model")
+
+
+def lineage_digest(metadata: dict[str, Any]) -> str:
+    """Identify a model independently of its quantisation.
+
+    Keying attachments on the weights digest alone makes a re-quantisation look like a
+    different model, so a Q8 build could not use the Q4 build's cache and had to be warmed
+    separately. That is stricter than the evidence: measured on this host, a cache written by
+    Qwen2.5-3B-Instruct Q4_K_M and read by the same model at Q8_0 agreed on 0.984 of
+    teacher-forced positions and produced byte-identical text.
+
+    Deliberately excludes `general.file_type`, which is the quantisation, and includes the
+    fine-tune name, which is not: base and Instruct share a basename and score 0.930, a
+    measurably worse result that should not be shared silently.
+    """
+    if not isinstance(metadata, dict):
+        raise SharedError("model metadata must be a mapping")
+    arch = metadata.get("general.architecture")
+    if not arch:
+        raise SharedError("model metadata declares no architecture; lineage is undefined")
+    parts = [str(metadata.get(field, "")) for field in LINEAGE_FIELDS]
+    # The cache geometry belongs in the identity: two builds can share every label above and
+    # still lay their cache out differently, and those bytes are not interchangeable.
+    for field in ("block_count", "attention.head_count_kv", "attention.key_length",
+                  "attention.value_length", "rope.freq_base"):
+        parts.append(str(metadata.get(f"{arch}.{field}", "")))
+    return digest_of("ModelLineage", *parts)
+
+
 def attachment_key(model: ModelIdentity, abi: CacheABIIdentity) -> str:
     """Which model, and which cache layout, an attachment belongs to.
 
@@ -214,6 +247,8 @@ class AttachmentInfo:
     expects_reuse: bool | None = None
     reason: str = ""
     checkpoint_persistence: bool | None = None
+    lineage: str = ""
+    abi: str = ""
 
     @property
     def pays(self) -> bool:
@@ -308,13 +343,15 @@ class SharedDrive:
                 expects_reuse=expects if isinstance(expects, bool) else None,
                 reason=str(meta.get("reason", "")),
                 checkpoint_persistence=(persistence
-                                        if isinstance(persistence, bool) else None)))
+                                        if isinstance(persistence, bool) else None),
+                lineage=str(meta.get("lineage", "")),
+                abi=str(meta.get("abi", ""))))
         return tuple(out)
 
     def attach(self, content_digest: str, model: ModelIdentity, abi: CacheABIIdentity,
                state: Path | str, *, token_count: int | None = None,
                architecture: str = "", sliding_window: bool = False,
-               checkpoint_persistence: bool | None = None) -> Path:
+               checkpoint_persistence: bool | None = None, lineage: str = "") -> Path:
         """Deposit this model's cache for this content.
 
         `token_count` is checked against the content when supplied, because a state file
@@ -348,7 +385,13 @@ class SharedDrive:
         meta_tmp.write_text(json.dumps(
             {"architecture": arch, "expects_reuse": expects, "reason": reason,
              "checkpoint_persistence": checkpoint_persistence,
-             "sliding_window": sliding_window, "tokens": token_count}, indent=1))
+             "sliding_window": sliding_window, "lineage": lineage,
+             # The cache ABI cannot be recovered from the attachment key, which is a digest
+             # of model and ABI together. A lineage match must still compare it: re-rounding
+             # the weights preserves the cache layout, changing the KV dtype does not, and
+             # without this the lineage route hands an f16 reader a q8_0 cache.
+             "abi": abi.digest(),
+             "tokens": token_count}, indent=1))
         os.replace(meta_tmp, meta)
         return dest
 
@@ -435,6 +478,33 @@ class SharedDrive:
                                    target_tokens=len(target),
                                    exact=candidate.token_ids == target)
         return best
+
+    def cache_for_lineage(self, content_digest: str, model: ModelIdentity,
+                          abi: CacheABIIdentity, lineage: str) -> Path | None:
+        """This model's attachment, or one written by a quantisation of the same model.
+
+        The exact key wins when present. Otherwise an attachment recorded under the same
+        lineage AND the same cache ABI is offered, because re-rounding the weights does not
+        change the cache layout and costs 0.016 of top-1 agreement, while changing the cache
+        ABI produces bytes that are not interchangeable at all.
+
+        Nothing here relaxes the cross-model rule: a different lineage is still refused, and
+        an attachment with no recorded lineage is never matched by this route - absence is
+        not a match.
+        """
+        exact = self.cache_for(content_digest, model, abi)
+        if exact is not None:
+            return exact
+        if not lineage:
+            return None
+        wanted, wanted_abi = attachment_key(model, abi), abi.digest()
+        for info in self.describe(content_digest):
+            if info.key == wanted or not info.lineage or info.lineage != lineage:
+                continue
+            if info.abi != wanted_abi:
+                continue          # same model, incompatible cache layout
+            return info.path
+        return None
 
     def attachments(self, content_digest: str) -> tuple[str, ...]:
         """Which attachment keys are warmed for this content, newest last."""
