@@ -120,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
                 # est_tokens: that field counts the whole request rather than the
                 # cacheable prefix, and ranking on it picked a 9,146-token attachment
                 # over a 32,624-token one for the same model.
+                # Relevance first, size second. Ranking on size alone restored a
+                # 74,607-token attachment captured from a different harness over the
+                # 32,624-token one this model's own traffic produced; it matched nothing
+                # and the request prefilled cold anyway.
+                from kv_rosetta.daemon.capture import same_model
                 candidates = []
                 for entry in prefixes:
                     fingerprint = str(entry.get("fingerprint", ""))
@@ -127,8 +132,9 @@ def main(argv: list[str] | None = None) -> int:
                     if found is None:
                         continue
                     covered = int((found.manifest or {}).get("prompt_token_count") or 0)
-                    candidates.append((covered, fingerprint))
-                for covered, fingerprint in sorted(candidates, reverse=True):
+                    own = same_model(str(entry.get("model", "")), model)
+                    candidates.append((own, covered, fingerprint))
+                for own, covered, fingerprint in sorted(candidates, reverse=True):
                     result = sidecar.ensure(fingerprint, model, slot)
                     with sidecar._lock:
                         sidecar.stats.restores_served += 1

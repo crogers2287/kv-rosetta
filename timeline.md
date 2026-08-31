@@ -3808,3 +3808,43 @@ references that volume and all three loaded models are unaffected. Needs an oper
 **Blocked.** Moving the model to local storage -- the correct fix on the latency numbers -- is
 blocked until that volume is diagnosed. `/` (NVMe) has 77 GB free against a 66 GB model, which
 would fit but leave little headroom.
+
+## REQ-090 — Restore-on-load was choosing the biggest attachment, not the right one
+
+**Request.** "i just sent a Hermes message to Ash but its acting like it's cold".
+
+**Diagnosis from live state.** `qwen38-flash-next-kvx` slot 0 was `busy=True tokens=6144`, i.e.
+prefilling from scratch, and the last cfrproxy entry was 55 minutes old, so the request bypassed
+the proxy entirely. The three attachments warmed for that model were:
+
+| prefix | tokens | captured from |
+|---|---|---|
+| `521ce51eb799` | 9,146 | `qwen38-flash-next-3090` |
+| `95dd55cab923` | 32,624 | `qwen38-flash-next-3090` |
+| `6a052dfc878b` | **74,607** | **`27b`** |
+
+Restore-on-load picked the largest -- the one captured from a *different harness*. A KV cache is
+keyed to an exact token prefix, so that attachment matched nothing and the request prefilled cold
+anyway, having occupied the slot.
+
+**Self-inflicted, in REQ-088.** Ordering was changed from the bogus `est_tokens` to actual
+`prompt_token_count`, which fixed one error and introduced another: it optimises size where the
+property that matters is relevance. A large attachment for the wrong prompt is strictly worse than
+a small one for the right prompt.
+
+**Fixed.** `same_model(capture_label, runtime_model)` decides whether a prefix belongs to this
+model, tolerating the alias difference between the name clients call and the entry that serves it
+(`qwen38-flash-next-3090` against `qwen38-flash-next-kvx`) by dropping one trailing dash-segment
+from each and comparing stems. The restorer now sorts on `(own_model, tokens)`, so relevance
+outranks size. Verified against the live store: the chosen attachment moves from the 74,607-token
+`27b` prefix to the 32,624-token `qwen38-flash-next-3090` one.
+
+The stem comparison is a heuristic and is documented as one. It is deliberately conservative: a
+false negative costs a smaller attachment, a false positive costs a restore that matches nothing.
+
+**Proven by retained test.** 7 tests including the ordering property itself (own-model beats
+larger-borrowed). Suite green at 1,598.
+
+**Not fixed here.** Ash's traffic does not pass through cfrproxy, so none of it appears in the
+prefix corpus and no attachment can be built from it until it does. The prefixes warmed for
+flash-next came from proxied traffic under a different client.

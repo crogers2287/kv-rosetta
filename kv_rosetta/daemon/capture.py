@@ -220,6 +220,27 @@ def restorable(slots: list[dict[str, Any]], *, min_tokens: int = DEFAULT_MIN_TOK
     return None
 
 
+def same_model(capture_label: str, runtime_model: str) -> bool:
+    """Whether a prefix captured under one name belongs to this runtime model.
+
+    A prefix is only reusable by the model whose traffic produced it: the cache is keyed to
+    an exact token prefix, so an attachment captured from a different harness matches nothing
+    and merely occupies the slot. Names differ because clients call an alias -- traffic
+    labelled qwen38-flash-next-3090 is served by qwen38-flash-next-kvx -- so the comparison
+    drops one trailing dash-segment from each and compares stems.
+
+    A heuristic, deliberately conservative: a false negative costs a smaller attachment, a
+    false positive costs a restore that matches nothing.
+    """
+    left = (capture_label or "").strip().lower()
+    right = (runtime_model or "").strip().lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("-", 1)[0] == right.rsplit("-", 1)[0]
+
+
 def newly_loaded(current: frozenset[str], previous: frozenset[str]) -> frozenset[str]:
     """Models that appeared since the last poll.
 

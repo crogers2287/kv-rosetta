@@ -10,7 +10,7 @@ import unittest
 
 from kv_rosetta.daemon.capture import (
     Candidate, CaptureLoop, DEFAULT_MIN_TOKENS, choose_candidates, newly_loaded,
-    require_loaded_only, restorable, slot_is_capturable,
+    require_loaded_only, restorable, same_model, slot_is_capturable,
 )
 
 
@@ -266,3 +266,33 @@ class RestoreOnLoadTests(unittest.TestCase):
         loop = self._loop(["m"], slots, None)
         self.assertEqual(loop.restore_fresh(frozenset(["m"]), slots), [])
         self.assertEqual(loop.restored, 0)
+
+
+class SameModelTests(unittest.TestCase):
+    """A prefix is only reusable by the model whose traffic produced it. Ranking on size
+    alone restored a 74,607-token attachment from another harness over the 32,624-token
+    one this model actually uses; it matched nothing and the request prefilled cold."""
+
+    def test_exact_name_matches(self):
+        self.assertTrue(same_model("tiel-kvx-w6800", "tiel-kvx-w6800"))
+
+    def test_alias_of_the_same_entry_matches(self):
+        self.assertTrue(same_model("qwen38-flash-next-3090", "qwen38-flash-next-kvx"))
+
+    def test_a_different_model_does_not_match(self):
+        self.assertFalse(same_model("27b", "qwen38-flash-next-kvx"))
+
+    def test_a_different_family_does_not_match(self):
+        self.assertFalse(same_model("tiel-coder-q5-w6800", "qwen38-flash-next-kvx"))
+
+    def test_empty_names_never_match(self):
+        self.assertFalse(same_model("", "qwen38-flash-next-kvx"))
+        self.assertFalse(same_model("qwen38-flash-next-3090", ""))
+
+    def test_case_and_whitespace_are_ignored(self):
+        self.assertTrue(same_model("  Qwen38-Flash-Next-3090 ", "qwen38-flash-next-kvx"))
+
+    def test_relevance_outranks_size_when_sorted(self):
+        """The ordering the restorer relies on: own-model first, then larger."""
+        cands = [(False, 74607, "borrowed"), (True, 32624, "own"), (True, 9146, "own-small")]
+        self.assertEqual(sorted(cands, reverse=True)[0][2], "own")
