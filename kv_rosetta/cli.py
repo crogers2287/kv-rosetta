@@ -62,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--swap", default="http://127.0.0.1:9069")
     serve.add_argument("--manifest-root", default="~/.cfrproxy/cache")
     serve.add_argument("--store-root", default="~/.kvrosetta/admitted")
+    serve.add_argument("--no-capture", action="store_true",
+                       help="do not save warm slots automatically")
+    serve.add_argument("--capture-min-tokens", type=int, default=4096)
+    serve.add_argument("--capture-interval", type=float, default=20.0)
     pre = commands.add_parser(
         "prewarm", help="give a model its own attachment for a prefix, before it is needed")
     pre.add_argument("--model", required=True, help="llama-swap model name")
@@ -91,6 +95,20 @@ def main(argv: list[str] | None = None) -> int:
         # demand, and `models_woken` staying zero is the property that says so.
         print(f"kv-rosetta sidecar on http://{args.host}:{sidecar.port}  "
               f"store={args.store_root}  swap={args.swap}", flush=True)
+        if not args.no_capture:
+            # On by default. A cache is only missed once it is gone, so a capture that waits
+            # to be asked for never happens. This sends no requests and wakes nothing: it
+            # reads slot status and saves state that already exists on loaded models.
+            import threading
+
+            from kv_rosetta.daemon.capture import CaptureLoop
+
+            loop = CaptureLoop(args.swap, args.store_root,
+                               min_tokens=args.capture_min_tokens,
+                               interval=args.capture_interval,
+                               log=lambda m: print(f"[capture] {m}", flush=True))
+            threading.Thread(target=loop.run_forever, daemon=True,
+                             name="kvx-capture").start()
         try:
             sidecar.serve_forever()
         except KeyboardInterrupt:
