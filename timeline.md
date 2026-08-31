@@ -3323,3 +3323,63 @@ Full suite green at 1,253 tests. **Not covered** — chunked and symmetric windo
 is assigned in C++ rather than declared in the GGUF and are refused rather than assumed; and
 the checkpoint payload of a model with no SWA cache, where `PARTIAL_ONLY` writes a whole
 attention section that has never been measured. Detail in research-findings §36.
+
+## REQ-081 — Expert-pruned prefill warmer (Qwen3.8-Flash-Next, 512 → 8 experts)
+
+**Request.** "I also don't trust the two expert thing because we're still loading the full
+weights. I'd like to use an extremely stripped down model and see how it fares", framed by the
+user as "essentially this is going to act like a speculative decoding model, but for pre-fill".
+
+**Why `--override-kv` was not enough.** `qwen4exp.expert_used_count=int:2` changes routing only;
+the full weights still load. Measured on the live warmer once the flag genuinely reached argv:
+
+| config | prefill | rate |
+|---|---|---|
+| 10 experts/token (stock) | 4801 tok in 6391 ms | 751 tok/s |
+| 2 experts/token (override) | 4801 tok in 5050 ms | 951 tok/s |
+
+1.27× — prefill here is bound by streaming weights, not by active-expert compute. So the win has
+to come from a genuinely smaller file, which is what `scripts/prune_experts.py` builds.
+
+**What was built.** `scripts/prune_experts.py` slices the expert dimension out of a GGUF. The
+expert index is the outermost axis of `ffn_{down,gate,up}_exps` and of the `ffn_gate_inp` router,
+so the slice is a raw byte copy: no dequantisation, no value changes. Every field that determines
+cache geometry is asserted unchanged by re-reading the written file.
+
+| tensor group | before | after |
+|---|---|---|
+| `ffn_{down,gate,up}_exps` (512 experts) | 37.1 GB | 0.58 GB |
+| `per_layer_token_embd` (CPU, streams from RAM/SSD) | 28.8 GB | 28.8 GB |
+| attention, SSM, norms, output | 3.8 GB | 3.8 GB |
+| **file** | **69.7 GB** | **32.9 GB** |
+| **GPU footprint** | ~41 GB | **~4.4 GB** |
+
+**Verified against the source file** (`tensors 1224 → 1224`): 192 tensors sliced to exactly the
+first 8 experts byte-for-byte, 1,032 carried through unchanged, zero mismatches. All 12
+cache-geometry fields identical: block_count 48, embedding_length 2560, head_count 24,
+head_count_kv 2, key/value_length 256, full_attention_interval 4, ssm conv_kernel 4 / state_size
+128 / group_count 16 / time_step_rank 48 / inner_size 6144.
+
+**The property that makes this different from generic cross-model sharing.** Only experts were
+touched, so all 24 `attn_k`/`attn_v` tensors — the projections that actually produce KV — are
+bit-identical between warmer and full model. Divergence can enter only through the expert path
+perturbing hidden states, which predicts near-exact shallow attention layers and drift with depth.
+
+**Status of the speculative-decoding analogy** — stated so it is not repeated as a claim.
+Speculative decoding is lossless because the target *verifies* the draft in a batched pass. A
+shared prefill cache has no verify step: the target attends to the KV entries without checking
+them, so errors are absorbed rather than rejected. Spec decoding also wins by converting
+*sequential* decode into *parallel* verify; prefill is already parallel, so there is no sequential
+bottleneck to convert. This remains **untested** as a quality claim.
+
+**Proven by retained test.** 14 tests in `tests/test_prune_experts.py`; 10/10 mutation guards
+defended; full suite green at 1,544 tests. One guard (byte-divisibility across experts) was
+removed rather than tested — a numpy array of shape `(experts, …)` always divides evenly, so the
+check was unreachable, and an unreachable guard reads as protection that was never exercised.
+
+**Measured once on this host.** The prefill table above, and the byte-level verification.
+
+**Untested.** The pruned warmer has not been loaded: prefill rate, whether its state carries an
+SCKP appendix, and the per-layer KV divergence against the full model are all unmeasured. The
+llama-swap entry `qwen38-flash-next-warmer-8e` (CUDA0, tensor-split 1, KV f16, ctx 131072, vision
+off) is configured and visible in `/v1/models` but has never been started.
