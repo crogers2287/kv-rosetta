@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                 own slot, so it is by definition this model's traffic. One present in the
                 corpus is only relevant if its label denotes this model.
                 """
-                from kv_rosetta.daemon.capture import same_model
+                from kv_rosetta.daemon.capture import rank_restore_candidates, same_model
                 try:
                     labels = {str(e.get("fingerprint", "")): str(e.get("model", ""))
                               for e in sidecar.known_prefixes()}
@@ -140,9 +140,24 @@ def main(argv: list[str] | None = None) -> int:
                         continue
                     covered = int(man.get("prompt_token_count") or 0)
                     own = (fingerprint not in labels) or same_model(labels[fingerprint], model)
-                    candidates.append((own, covered, fingerprint))
+                    # Admit time, which the payload's mtime records exactly: nothing
+                    # rewrites an object after it is admitted.
+                    try:
+                        seen_at = obj.path.stat().st_mtime
+                    except OSError:
+                        seen_at = 0.0
+                    candidates.append((own, seen_at, covered, fingerprint))
 
-                for own, covered, fingerprint in sorted(candidates, reverse=True):
+                # Ranked by recency, NOT by size. There is no request to be relevant to at
+                # model-load time, so this is a guess, and the useful property of a guess is
+                # that being wrong repairs it. Recency has that: a miss is prefilled by the
+                # server, capture admits that prefix, and it is the newest thing here next
+                # time. Size does not -- a 75,523-token attachment outranked every Hermes
+                # prompt on this host indefinitely, so each load restored 75k tokens the
+                # request shared no prefix with and then paid the full 31k prefill anyway.
+                # A wrong restore costs more than no restore, so the tie-break that matters
+                # is which prefix traffic actually used last.
+                for own, seen_at, covered, fingerprint in rank_restore_candidates(candidates):
                     result = sidecar.ensure(fingerprint, model, slot)
                     with sidecar._lock:
                         sidecar.stats.restores_served += 1

@@ -74,11 +74,15 @@ def check_run(run: dict, index: int) -> None:
     # across cold runs is real evidence of determinism, and the record says plainly that
     # vectors were unavailable so a reader of the proof can weigh it accordingly.
     if run["vectors"]:
-        if any(not v for v in run["vectors"]):
-            raise PreflightError(
-                f"run {index} returned partially empty probability vectors; the empty ones "
-                f"compare equal to anything, so admitting this run would prove less than "
-                f"it appears to")
+        # Partially empty vectors are not a failed measurement, they are an absent one.
+        # A speculative reader emits a distribution only for the position the target
+        # actually sampled -- measured here at 1 of 24 and 1 of 8 -- because the rest were
+        # accepted from the draft. Counting those empties would manufacture agreement (they
+        # compare equal to anything), so they are discarded in `summarise` and the run is
+        # judged on text and tokens alone. Refusing instead would block a reader the gate
+        # can still measure: `cross_model_gate.teacher_forced` asks for one token at a time
+        # and gets its one vector every time, so the gate's own scoring is unaffected by
+        # what multi-token generation omits.
         if len(run["vectors"]) != len(run["token_ids"]):
             raise PreflightError(
                 f"run {index} has {len(run['vectors'])} vectors for "
@@ -107,7 +111,12 @@ def summarise(runs: list[dict], *, min_runs: int = MIN_RUNS) -> dict:
     # With no vectors anywhere, every run stringifies to "[]" and the distinct count
     # collapses to 1 -- passing vacuously, which is the failure the empty-vector check
     # exists to prevent. Say so in the record instead of letting a 1 stand for evidence.
-    have_vectors = any(run["vectors"] for run in runs)
+    partial = [index for index, run in enumerate(runs)
+               if run["vectors"] and any(not v for v in run["vectors"])]
+    # One partial run degrades the whole set: the verdict is about the reader, and a reader
+    # that omits distributions on some runs cannot be credited with vector agreement on the
+    # others.
+    have_vectors = (not partial) and any(run["vectors"] for run in runs)
     verdict = {
         "runs": len(runs),
         "distinct_texts": len(texts),
@@ -123,6 +132,13 @@ def summarise(runs: list[dict], *, min_runs: int = MIN_RUNS) -> dict:
     # having to notice the absence. llama.cpp emits no completion_probabilities on the
     # speculative path, so this is the only strength a speculative reader can reach.
     verdict["evidence"] = "text+tokens+vectors" if have_vectors else "text+tokens only"
+    if partial:
+        # Named in the record so a proof citing it cannot silently claim vector strength.
+        missing = sum(1 for v in runs[partial[0]]["vectors"] if not v)
+        verdict["probability_vectors_discarded"] = (
+            f"{len(partial)} of {len(runs)} runs carried distributions for only some "
+            f"positions ({missing} of {len(runs[partial[0]]['vectors'])} empty in the "
+            f"first such run); all vectors were discarded rather than counted")
     return verdict
 
 

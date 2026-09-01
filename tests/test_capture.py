@@ -524,3 +524,37 @@ class StoreBackedGrowthTests(unittest.TestCase):
         loop = CaptureLoop("http://swap", "/tmp")
         loop._largest["m"] = 5_000
         self.assertEqual(loop._already_stored("m"), 5_000)
+
+
+class RestoreRankingTests(unittest.TestCase):
+    """Which attachment a model-load restore reaches for."""
+
+    def _rank(self, candidates):
+        from kv_rosetta.daemon.capture import rank_restore_candidates
+        return [c[3] for c in rank_restore_candidates(candidates)]
+
+    def test_recent_beats_bigger(self):
+        # The regression this encodes: a 75,523-token attachment was restored on every
+        # load while the 31k prompt traffic actually used was never chosen, so each load
+        # restored a prefix the request did not share and then prefilled all of it anyway.
+        big_old = (True, 100.0, 75_523, "big")
+        small_new = (True, 200.0, 31_366, "hermes")
+        self.assertEqual(self._rank([big_old, small_new])[0], "hermes")
+
+    def test_own_still_outranks_recency(self):
+        # A foreign prefix cannot be restored onto this model however fresh it is.
+        foreign_new = (False, 900.0, 90_000, "foreign")
+        own_old = (True, 1.0, 10, "own")
+        self.assertEqual(self._rank([foreign_new, own_old])[0], "own")
+
+    def test_coverage_breaks_ties_within_one_instant(self):
+        self.assertEqual(
+            self._rank([(True, 5.0, 10, "small"), (True, 5.0, 900, "large")])[0], "large")
+
+    def test_a_miss_repairs_itself_on_the_next_load(self):
+        # Restoring "big" is wrong for Hermes traffic; the server prefills 31,366 tokens,
+        # capture admits them at a later instant, and that prefix leads from then on.
+        store = [(True, 100.0, 75_523, "big")]
+        self.assertEqual(self._rank(store)[0], "big")
+        store.append((True, 300.0, 31_366, "hermes"))
+        self.assertEqual(self._rank(store)[0], "hermes")

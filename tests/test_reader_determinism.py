@@ -41,12 +41,39 @@ class RunLevelRefusals(unittest.TestCase):
         real evidence; summarise() records that vectors were unavailable."""
         check_run(_run(vectors=[]), 0)
 
-    def test_individually_empty_vectors_are_still_refused(self):
-        # A partial result is worse than none: the empty entries compare equal to anything
-        # while the populated ones make the run look like full evidence.
-        with self.assertRaises(PreflightError) as caught:
-            check_run(_run(vectors=[{1: -0.1}, {}, {1: -0.2}]), 0)
-        self.assertIn("partially empty", str(caught.exception))
+    def test_individually_empty_vectors_are_accepted_but_not_counted(self):
+        # A speculative reader emits a distribution only where the target sampled -- 1 of
+        # 24 positions, measured on Tiel-Coder-35B-A3B-MTP. Refusing that blocks a reader
+        # the gate can still measure, because teacher-forced scoring asks one token at a
+        # time and always gets its one vector. The run is admitted; the vectors are what
+        # must not be credited.
+        check_run(_run(vectors=[{1: -0.1}, {}, {1: -0.2}]), 0)
+
+    def test_partial_vectors_are_discarded_rather_than_compared(self):
+        partial = [_run(vectors=[{1: -0.1}, {}, {}]) for _ in range(6)]
+        verdict = summarise(partial)
+        # Reproducible on the evidence that survives...
+        self.assertTrue(verdict["reproducible"])
+        # ...but never on the vectors: the empties would have compared equal across runs
+        # and manufactured a distinct count of 1.
+        self.assertIsNone(verdict["distinct_probability_vectors"])
+        self.assertFalse(verdict["probability_vectors_available"])
+        self.assertEqual(verdict["evidence"], "text+tokens only")
+        self.assertIn("discarded", verdict["probability_vectors_discarded"])
+
+    def test_one_partial_run_degrades_the_whole_set(self):
+        # The verdict is about the reader. A reader that omits distributions on one run
+        # cannot be credited with vector agreement on the other five.
+        runs = [_run() for _ in range(5)] + [_run(vectors=[{1: -0.1}, {}, {}])]
+        verdict = summarise(runs)
+        self.assertIsNone(verdict["distinct_probability_vectors"])
+        self.assertEqual(verdict["evidence"], "text+tokens only")
+
+    def test_differing_text_still_fails_with_partial_vectors(self):
+        # Discarding vectors must not become a way to pass: the text check still governs.
+        runs = [_run(vectors=[{1: -0.1}, {}, {}]) for _ in range(5)]
+        runs.append(_run(text="beta", vectors=[{1: -0.1}, {}, {}]))
+        self.assertFalse(summarise(runs)["reproducible"])
 
     def test_vector_count_must_match_token_count(self):
         with self.assertRaises(PreflightError) as caught:

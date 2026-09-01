@@ -316,6 +316,23 @@ def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_G
     return tokens >= previous * (1.0 + growth)
 
 
+def rank_restore_candidates(candidates):
+    """Order attachments for a model-load restore: own first, then most recently admitted.
+
+    There is no request to be relevant to when a model loads, so the choice is a guess.
+    The property that matters in a guess is that being wrong repairs it. Recency has that:
+    a miss is prefilled by the server, capture admits that prefix, and it is the newest
+    candidate next time. Size does not -- a 75,523-token attachment outranked every shorter
+    prompt on this host indefinitely, so each load restored 75k tokens the request shared no
+    prefix with and paid the full prefill anyway. A wrong restore costs the restore AND the
+    prefill, so it is worse than not restoring at all.
+
+    Each candidate is ``(own, seen_at, covered, fingerprint)``. Coverage stays in the tuple
+    as a tie-break for attachments admitted in the same instant, never as the lead term.
+    """
+    return sorted(candidates, reverse=True)
+
+
 def same_model(capture_label: str, runtime_model: str) -> bool:
     """Whether a prefix captured under one name belongs to this runtime model.
 

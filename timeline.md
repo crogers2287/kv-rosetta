@@ -4035,3 +4035,32 @@ duplicated, 56% of the store.
 unlink is logged, not raised: a leftover is waste, not a failed admit.
 
 **Evidence.** Store 17G → 7.5G; 13 manifests / 13 states intact. Suite 1636 OK.
+
+## REQ-096 — the load restore always chose the biggest attachment, never the used one
+
+**Reported.** "it didn't work. looks like it warm loaded 75k tokens. then proceeded to
+process 32k worth of Hermes prompt", with the llama-swap activity view as evidence.
+
+**Read of the trace.** Bottom-up on `tiel-kvx-w6800`: `cached 75,062 | prompt 461` (an
+attachment restored), then `cached — | prompt 31,366 @ 1209 t/s` (the Hermes request
+prefilled cold), then `cached 31,362 → 32,338` (incremental reuse of that fresh prefill).
+The restore worked mechanically and restored the wrong prefix.
+
+**Two causes.**
+1. *Mine, immediate.* kvxd had been stopped to free the W6800s for the MTP gate, so the
+   31,366-token prefill was never captured and could not help the next load. Restarted.
+2. *Structural.* `restore_on_load` ranked `(own, covered, fingerprint)` descending — by
+   SIZE. Tiel holds 8 attachments; the largest (75,523 tokens, prefix `7f9d9580dee3`)
+   therefore won every load forever. Size-ranking cannot self-correct.
+
+**Fix.** Rank by recency (`rank_restore_candidates`, extracted from the closure so it is
+testable), coverage demoted to a same-instant tie-break. At load time there is no request
+to be relevant to, so the choice is a guess; the property that matters in a guess is that
+being wrong repairs it. Recency has it — a miss is prefilled, capture admits that prefix,
+and it leads next time. A wrong restore costs the restore AND the full prefill, so it is
+worse than not restoring.
+
+**Status.** Fix proven by retained test (4 new, mutation-checked: reverting to size-ranking
+fails 2). Suite 1643 OK. The end-to-end claim — that Hermes now loads instantly on the
+second connection — is UNTESTED against live traffic and must not be repeated as proven
+until the activity view shows a Hermes-sized `cached` on a fresh load.
