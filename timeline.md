@@ -4150,3 +4150,32 @@ today's real traffic -- both live cases resolve correctly:
 
 **Status.** Proven by retained test (4 new). Mutation-checked against BOTH prior failure
 modes: reverting to pure recency fails 2, reverting to pure size fails 2. Suite 1647 OK.
+
+## REQ-100 — a refused restore was retried every tick, forever
+
+**Reported.** The operator saw the llama-swap activity view spamming identical rows:
+`ornith-kvx-w6800 | cached 70,718 | prompt 1,747 | generated 1 | ~600 t/s`, several per
+second, indefinitely.
+
+**Cause.** `restore_fresh` logged a refused restore and continued WITHOUT marking anything,
+so the next tick attempted the identical restore. 283 refusals were logged in one daemon
+lifetime, one every four seconds, each spending seconds of GPU restoring 70,718 tokens only
+to be refused by the tail contract (`cache_n=70718 prompt_n=1747 uncovered=1747
+allowance=725`). Both ornith and flash-next were affected.
+
+`_warmed` could not serve as the marker and its absence here was not an oversight that a
+one-line reuse would fix: a refused restore leaves its own tokens in the slot, so `tick()`
+sees the slot non-empty and discards the marker -- the failure erases its own record. That
+is the loop.
+
+**Fix.** A separate `_restore_refused_for` set, deliberately NOT cleared by slot content.
+It is cleared for a model only when a new attachment is admitted for it, which is the one
+event that makes a retry worthwhile.
+
+**Status.** Proven by retained test (3 new, mutation-checked: removing the marker fails 2).
+Suite 1650 OK.
+
+**Still open, deeper:** WHY the tail contract refuses. `cache_n=70718 prompt_n=1747
+uncovered=1747` says the restored attachment covers none of the probe prompt. Either the
+probe is not a continuation of the attachment, or the restorer is pairing an attachment
+with an unrelated prompt. Not diagnosed. The retry loop is fixed; the refusal itself is not.

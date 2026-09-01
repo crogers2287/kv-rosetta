@@ -117,6 +117,12 @@ class CaptureLoop:
         #: (model, slot) pairs already holding an attachment we put there. Dropped when the
         #: slot is seen non-empty, so once real work displaces the prefix we warm it again.
         self._warmed: set[tuple[str, int]] = set()
+        #: (model, slot) whose restore was refused. Deliberately NOT cleared when the slot
+        #: changes -- a refused restore leaves its own tokens in the slot, so clearing on
+        #: slot content is what made this retry every tick. Cleared only when a new
+        #: attachment is admitted for the model, i.e. when there is genuinely something new
+        #: to try.
+        self._restore_refused_for: set[tuple[str, int]] = set()
 
     # -- runtime access ----------------------------------------------------------------
 
@@ -174,11 +180,15 @@ class CaptureLoop:
                 continue
             if (model, slot) in self._warmed:
                 continue
+            if (model, slot) in self._restore_refused_for:
+                continue
             try:
                 info = self.restorer(model, slot)
             except Exception as exc:
                 self.restore_refused += 1
-                self._log(f"restore refused for {model} slot {slot}: {str(exc)[:160]}")
+                self._restore_refused_for.add((model, slot))
+                self._log(f"restore refused for {model} slot {slot}: {str(exc)[:160]} "
+                          f"-- not retrying until a new attachment is admitted")
                 continue
             if info is None:
                 self._log(f"{model} appeared but no attachment matches it yet")
@@ -251,6 +261,10 @@ class CaptureLoop:
                 else:
                     if info is not None:
                         self.admitted += 1
+                        # Something new to try: let refused slots attempt a restore again.
+                        self._restore_refused_for = {
+                            key for key in self._restore_refused_for
+                            if key[0] != cand.model}
                         self._log(f"admitted {cand.model}: {info}")
             done.append(cand)
         return done

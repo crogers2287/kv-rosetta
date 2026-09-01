@@ -595,3 +595,53 @@ class RestoreRankingTests(unittest.TestCase):
         self.assertEqual(self._rank(store)[0], "big")
         store.append((True, self.NOW - 60, 31_366, "hermes"))
         self.assertEqual(self._rank(store)[0], "hermes")
+
+
+class RestoreRefusalTests(unittest.TestCase):
+    """A refused restore must not be retried on every tick."""
+
+    def _loop(self, restorer):
+        from kv_rosetta.daemon.capture import CaptureLoop
+        return CaptureLoop("http://swap", "/tmp", restorer=restorer, log=lambda m: None)
+
+    def _slots(self, model, tokens=0):
+        return {model: [{"id": 0, "n_prompt_tokens": tokens, "is_processing": False,
+                         "state": "idle"}]}
+
+    def test_a_refusal_is_not_retried_next_tick(self):
+        # 283 refusals were logged in one daemon lifetime, one every four seconds, each
+        # spending seconds of GPU restoring 70,718 tokens only to be refused by the tail
+        # contract. The refusal itself must be remembered.
+        calls = []
+
+        def restorer(model, slot):
+            calls.append((model, slot))
+            raise RuntimeError("tail contract violated")
+
+        loop = self._loop(restorer)
+        loaded = frozenset(["m"])
+        loop.restore_fresh(loaded, self._slots("m"))
+        loop.restore_fresh(loaded, self._slots("m"))
+        loop.restore_fresh(loaded, self._slots("m"))
+        self.assertEqual(len(calls), 1, "a refused restore was retried")
+        self.assertEqual(loop.restore_refused, 1)
+
+    def test_the_marker_survives_the_slot_filling_up(self):
+        # This is why `_warmed` could not serve: a refused restore leaves its own tokens in
+        # the slot, so a marker cleared by slot content is cleared by the very failure it
+        # is meant to record.
+        def restorer(model, slot):
+            raise RuntimeError("tail contract violated")
+
+        loop = self._loop(restorer)
+        loop.restore_fresh(frozenset(["m"]), self._slots("m"))
+        loop._warmed.discard(("m", 0))          # what tick() does when the slot is non-empty
+        loop.restore_fresh(frozenset(["m"]), self._slots("m"))
+        self.assertEqual(loop.restore_refused, 1)
+
+    def test_a_new_attachment_clears_the_refusal(self):
+        # There is then genuinely something new to try, so the slot is eligible again.
+        loop = self._loop(lambda m, s: None)
+        loop._restore_refused_for.add(("m", 0))
+        loop._restore_refused_for = {k for k in loop._restore_refused_for if k[0] != "m"}
+        self.assertNotIn(("m", 0), loop._restore_refused_for)
