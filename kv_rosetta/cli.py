@@ -184,6 +184,23 @@ def main(argv: list[str] | None = None) -> int:
                 token_ids = list(ggsq_envelope.decode_prompt_tokens(
                     ggsq_envelope.parse_file_envelope(raw).token_ids))
                 fingerprint = prefix_fingerprint(token_ids)
+                # Already held? Re-admitting mints a second copy of the same bytes AND
+                # stamps it as the newest attachment for this model, which would hand the
+                # load restore a stale prefix on the strength of a fresh timestamp -- the
+                # ranking in `rank_restore_candidates` is only as honest as the times it
+                # reads. A daemon restart re-sees every resident slot, so without this the
+                # duplicate is minted on every restart.
+                for existing in sidecar.store().list_objects():
+                    prior = existing.manifest or {}
+                    if (prior.get("runtime_model") == model
+                            and prior.get("prefix_fingerprint") == fingerprint
+                            and int(prior.get("prompt_token_count") or 0) == len(token_ids)):
+                        try:
+                            (store_root / basename).unlink()
+                        except OSError:
+                            pass
+                        return (f"already held as {existing.digest[:12]} "
+                                f"({len(token_ids):,} tokens); capture discarded")
                 base = f"{args.swap.rstrip('/')}/upstream/{model}"
                 obj = AdmittedPath(LlamaCppHTTPAdapter(base, str(store_root)),
                                    sidecar.store()).admit(

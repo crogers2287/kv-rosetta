@@ -4088,3 +4088,21 @@ which is the failure REQ-094 existed to prevent.
 shrink rule fails 1, reverting to model-scoped history fails 1). Suite 1643 OK.
 UNTESTED against live traffic — the end-to-end claim needs a Hermes-sized `cached` value
 on a fresh load before it may be repeated as proven.
+
+## REQ-098 — re-admission minted duplicates and forged their recency
+
+**Found in** the live capture log immediately after REQ-097 went in:
+`captured tiel-kvx-w6800 slot 0: 75523 cells -> admitted 30d59bb7539b (prefix 7f9d9580dee3)`
+— a prefix the store already held under a different digest.
+
+**Why it matters more than the wasted disk.** A daemon restart clears the slot history, so
+every resident slot is re-captured and re-admitted with a NEW file mtime. REQ-096 ranks the
+load restore by admit time, so a stale prefix would be stamped newest and chosen — exactly
+the reported symptom, reproduced on every restart. The ranking is only as honest as the
+timestamps it reads.
+
+**Fix.** Admission is now idempotent: an artifact with the same runtime model, prefix
+fingerprint and token count is left alone and the fresh capture is discarded.
+
+**Evidence.** The store held two objects for prefix `7f9d9580dee3` at 75,523 tokens
+(`8f26fcf97d7a`, `30d59bb7539b`) before this.
