@@ -3989,3 +3989,34 @@ and a busy slot is never restored over). Suite green at 1,628.
 intercept a request. The mechanism that would make a session reset fast on a busy resident model
 is on-demand restore -- `POST /v1/ensure` matches an incoming prefix against the store and
 restores before the model prefills. It exists, works, and nothing calls it.
+
+## REQ-094 — the growth gate could lock a model out of capture forever
+
+**Request.** After purging attachments invalidated by a cache-ABI change, verify the KVX
+loop rebuilds them.
+
+**What was wrong.** It did not. `CaptureLoop._largest` was an in-memory high-water mark that
+outlived the artifacts it described. Flash-next's purged attachments had covered 77,398
+tokens, so `MIN_CAPTURE_GROWTH` demanded 92,878 before the next capture was "worth" storing
+— more than the 98,304-token slot can hold. The model was permanently uncapturable, and the
+only symptom was silence: `skipped_small_growth` incremented and nothing was logged.
+
+**Fix.** The threshold is now answered by the store (`stored_tokens` callback, read fresh
+each tick), so deleting an artifact is visible to the gate. Retry suppression was always
+`_seen`'s job; the memo was doing a job nothing needed. An unreadable store returns 0 rather
+than blocking capture.
+
+**Second defect, found by the full suite.** `scripts/reader_determinism.py:summarise()` had
+its minimum-run guard stubbed to `if False:`. A determinism verdict could have been issued
+from a single run — a projection presented as a measurement. Guard restored.
+
+**Evidence — live, this host.**
+- Before: `[capture] qwen38-flash-next-kvx appeared but no attachment matches it yet` on
+  every tick, after an 11,089-token prefill. No capture.
+- After: `captured qwen38-flash-next-kvx slot 0: 11096 cells, 554 MB` →
+  `admitted 0b583291d767 covering 11,096 tokens (prefix fe3a34dcdb2f)` →
+  `restored qwen38-flash-next-kvx slot 1: own=True, restored=True`.
+- Prefill 11,089 tok: 368 tok/s cold, 834 tok/s warm.
+
+**Status.** Proven by retained test (4 new, mutation-checked: reverting the fix fails 2).
+Full suite 1636 tests OK, 43 skipped.

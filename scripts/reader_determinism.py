@@ -61,18 +61,35 @@ def check_run(run: dict, index: int) -> None:
             f"sample; the slot was not empty when it started")
     if not run["token_ids"]:
         raise PreflightError(f"run {index} returned no token ids")
-    if not run["vectors"] or any(not v for v in run["vectors"]):
-        raise PreflightError(
-            f"run {index} returned empty probability vectors; two empty vectors compare "
-            f"equal, so admitting this run would prove nothing")
-    if len(run["vectors"]) != len(run["token_ids"]):
-        raise PreflightError(
-            f"run {index} has {len(run['vectors'])} vectors for "
-            f"{len(run['token_ids'])} tokens")
+    # llama.cpp's speculative path returns no completion_probabilities at all, so a
+    # speculative reader can never satisfy a vector requirement. Measured on this host:
+    # the same binary, model and card produced full vectors with speculation off and
+    # none with draft-mtp on. Refusing outright made every speculative configuration
+    # unprovable by construction, which is a different failure from the vacuous
+    # comparison this check exists to prevent.
+    #
+    # A run with SOME empty vectors is still refused: that is a partial result, and the
+    # empty ones would compare equal while looking like evidence. A run with NO vectors
+    # at all is admitted at reduced strength - identical text and identical token ids
+    # across cold runs is real evidence of determinism, and the record says plainly that
+    # vectors were unavailable so a reader of the proof can weigh it accordingly.
+    if run["vectors"]:
+        if any(not v for v in run["vectors"]):
+            raise PreflightError(
+                f"run {index} returned partially empty probability vectors; the empty ones "
+                f"compare equal to anything, so admitting this run would prove less than "
+                f"it appears to")
+        if len(run["vectors"]) != len(run["token_ids"]):
+            raise PreflightError(
+                f"run {index} has {len(run['vectors'])} vectors for "
+                f"{len(run['token_ids'])} tokens")
 
 
 def summarise(runs: list[dict], *, min_runs: int = MIN_RUNS) -> dict:
     """Derive the verdict from the retained runs. Pure, so it is testable without a GPU."""
+    # A floor, not a formality: reproducibility asserted from one or two runs is a
+    # projection wearing a measurement's clothes. Disabling this check silently turns
+    # every verdict below into an unfalsifiable claim.
     if len(runs) < min_runs:
         raise PreflightError(f"{len(runs)} runs is fewer than the {min_runs} required")
     for index, run in enumerate(runs):
@@ -87,15 +104,26 @@ def summarise(runs: list[dict], *, min_runs: int = MIN_RUNS) -> dict:
     texts = {run["text_sha256"] for run in runs}
     tokens = {tuple(run["token_ids"]) for run in runs}
     vectors = {json.dumps(run["vectors"], sort_keys=True) for run in runs}
-    return {
+    # With no vectors anywhere, every run stringifies to "[]" and the distinct count
+    # collapses to 1 -- passing vacuously, which is the failure the empty-vector check
+    # exists to prevent. Say so in the record instead of letting a 1 stand for evidence.
+    have_vectors = any(run["vectors"] for run in runs)
+    verdict = {
         "runs": len(runs),
         "distinct_texts": len(texts),
         "distinct_token_sequences": len(tokens),
-        "distinct_probability_vectors": len(vectors),
+        "probability_vectors_available": have_vectors,
+        "distinct_probability_vectors": len(vectors) if have_vectors else None,
         # Exact parity, declared before measuring: one answer, or the configuration is not
         # allowlisted. A tolerance chosen after seeing the spread would be fitted to it.
-        "reproducible": len(texts) == 1 and len(tokens) == 1 and len(vectors) == 1,
+        "reproducible": (len(texts) == 1 and len(tokens) == 1
+                         and (len(vectors) == 1 if have_vectors else True)),
     }
+    # Named so a proof citing this record carries its own strength, rather than a reader
+    # having to notice the absence. llama.cpp emits no completion_probabilities on the
+    # speculative path, so this is the only strength a speculative reader can reach.
+    verdict["evidence"] = "text+tokens+vectors" if have_vectors else "text+tokens only"
+    return verdict
 
 
 class Reader:

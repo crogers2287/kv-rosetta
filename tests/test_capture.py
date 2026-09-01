@@ -485,3 +485,42 @@ class KeepASlotWarmTests(unittest.TestCase):
         loop = self._loop(slots, lambda m, s: calls.append(s) or {"covers_tokens": 100})
         loop.tick()
         self.assertEqual(calls, [])
+
+
+class StoreBackedGrowthTests(unittest.TestCase):
+    """The growth threshold must follow the store, not a memo that outlives deletion."""
+
+    def _loop(self, held):
+        from kv_rosetta.daemon.capture import CaptureLoop
+        return CaptureLoop("http://swap", "/tmp", stored_tokens=lambda m: held.get(m, 0))
+
+    def test_threshold_comes_from_the_store(self):
+        loop = self._loop({"m": 40_000})
+        self.assertEqual(loop._already_stored("m"), 40_000)
+
+    def test_purging_the_store_unblocks_capture(self):
+        held = {"m": 77_398}
+        loop = self._loop(held)
+        # While the big attachment is held, a smaller prefill is correctly not worth storing.
+        self.assertFalse(worth_capturing(11_096, loop._already_stored("m")))
+        # Once it is purged -- an ABI change invalidates every attachment at once -- the
+        # very next prefill must be capturable again. The old in-memory high-water mark
+        # demanded 92,878 tokens here, more than the 98,304-token slot could ever reach.
+        held.clear()
+        self.assertTrue(worth_capturing(11_096, loop._already_stored("m")))
+
+    def test_unreadable_store_does_not_block_capture(self):
+        from kv_rosetta.daemon.capture import CaptureLoop
+
+        def boom(model):
+            raise RuntimeError("store offline")
+
+        loop = CaptureLoop("http://swap", "/tmp", stored_tokens=boom, log=lambda m: None)
+        self.assertEqual(loop._already_stored("m"), 0)
+        self.assertTrue(worth_capturing(11_096, loop._already_stored("m")))
+
+    def test_no_callback_falls_back_to_the_in_memory_memo(self):
+        from kv_rosetta.daemon.capture import CaptureLoop
+        loop = CaptureLoop("http://swap", "/tmp")
+        loop._largest["m"] = 5_000
+        self.assertEqual(loop._already_stored("m"), 5_000)

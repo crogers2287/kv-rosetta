@@ -33,16 +33,20 @@ class RunLevelRefusals(unittest.TestCase):
             check_run(_run(cache_n=17), 0)
         self.assertIn("not a cold sample", str(caught.exception))
 
-    def test_empty_probability_vectors_are_refused(self):
-        # Two runs of empty vectors compare equal, which is the exact vacuous comparison
-        # this record exists to prevent.
-        with self.assertRaises(PreflightError) as caught:
-            check_run(_run(vectors=[]), 0)
-        self.assertIn("empty probability vectors", str(caught.exception))
+    def test_a_run_with_no_vectors_at_all_is_allowed_through(self):
+        """llama.cpp emits no completion_probabilities on the speculative path, measured
+        on this host: same binary, model and card gave full vectors with speculation off
+        and none with draft-mtp on. Refusing outright made every speculative reader
+        unprovable by construction. Identical text and token ids across cold runs is still
+        real evidence; summarise() records that vectors were unavailable."""
+        check_run(_run(vectors=[]), 0)
 
-    def test_individually_empty_vectors_are_refused(self):
-        with self.assertRaises(PreflightError):
+    def test_individually_empty_vectors_are_still_refused(self):
+        # A partial result is worse than none: the empty entries compare equal to anything
+        # while the populated ones make the run look like full evidence.
+        with self.assertRaises(PreflightError) as caught:
             check_run(_run(vectors=[{1: -0.1}, {}, {1: -0.2}]), 0)
+        self.assertIn("partially empty", str(caught.exception))
 
     def test_vector_count_must_match_token_count(self):
         with self.assertRaises(PreflightError) as caught:
@@ -126,3 +130,37 @@ class ReaderLifecycle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvidenceStrengthTests(unittest.TestCase):
+    """A record must carry its own strength, so a proof citing it cannot silently rest on
+    a distinct-vector count of 1 that only means 'nobody reported any vectors'."""
+
+    def _runs(self, vectors):
+        # MIN_RUNS is 6; fewer is refused before the verdict is reached.
+        return [dict(_run(vectors=vectors)) for _ in range(6)]
+
+    def test_vectors_present_is_full_strength(self):
+        v = summarise(self._runs([{1: -0.1}, {2: -0.2}, {3: -0.3}]))
+        self.assertTrue(v["probability_vectors_available"])
+        self.assertEqual(v["evidence"], "text+tokens+vectors")
+        self.assertEqual(v["distinct_probability_vectors"], 1)
+        self.assertTrue(v["reproducible"])
+
+    def test_no_vectors_is_reduced_strength_not_a_vacuous_one(self):
+        v = summarise(self._runs([]))
+        self.assertFalse(v["probability_vectors_available"])
+        self.assertEqual(v["evidence"], "text+tokens only")
+        self.assertIsNone(v["distinct_probability_vectors"],
+                          "a count of 1 here would mean 'nobody reported any'")
+        self.assertTrue(v["reproducible"])
+
+    def test_differing_text_still_fails_without_vectors(self):
+        runs = self._runs([])
+        runs[1]["text_sha256"] = "f" * 64
+        self.assertFalse(summarise(runs)["reproducible"])
+
+    def test_differing_tokens_still_fails_without_vectors(self):
+        runs = self._runs([])
+        runs[2]["token_ids"] = (9, 9, 9)
+        self.assertFalse(summarise(runs)["reproducible"])

@@ -87,7 +87,8 @@ class CaptureLoop:
     """
 
     def __init__(self, swap: str, store_root, *, min_tokens: int = DEFAULT_MIN_TOKENS,
-                 interval: float = 20.0, log=None, restorer=None, admitter=None) -> None:
+                 interval: float = 20.0, log=None, restorer=None, admitter=None,
+                 stored_tokens=None) -> None:
         self.swap = swap.rstrip("/")
         self.store_root = store_root
         self.min_tokens = min_tokens
@@ -109,6 +110,12 @@ class CaptureLoop:
         self.admitted = 0
         self.admit_refused = 0
         self.skipped_small_growth = 0
+        #: Largest capture we already hold for a model. Answered by the store when one is
+        #: wired in, because a remembered high-water mark outlives the artifact it describes:
+        #: purging a 77k-token attachment used to leave the memo at 77k, and MIN_CAPTURE_GROWTH
+        #: then demanded 92k -- more than the slot holds -- so that model could never be
+        #: captured again. Retry suppression is `_seen`'s job, not this one's.
+        self.stored_tokens = stored_tokens
         self._largest: dict[str, int] = {}
         #: (model, slot) pairs already holding an attachment we put there. Dropped when the
         #: slot is seen non-empty, so once real work displaces the prefix we warm it again.
@@ -192,6 +199,16 @@ class CaptureLoop:
             done.append(model)
         return done
 
+    def _already_stored(self, model: str) -> int:
+        """Largest capture currently held for this model, preferring the store's answer."""
+        if self.stored_tokens is None:
+            return self._largest.get(model, 0)
+        try:
+            return int(self.stored_tokens(model))
+        except Exception as exc:            # a store we cannot read must not block capture
+            self._log(f"cannot size stored captures for {model}: {str(exc)[:120]}")
+            return 0
+
     def tick(self) -> list[Candidate]:
         loaded = self.loaded_models()
         by_model = {m: self.slots_for(m) for m in sorted(loaded)}
@@ -206,7 +223,7 @@ class CaptureLoop:
                               already=frozenset(self._seen)), loaded)
         done = []
         for cand in candidates:
-            if not worth_capturing(cand.tokens, self._largest.get(cand.model, 0)):
+            if not worth_capturing(cand.tokens, self._already_stored(cand.model)):
                 self.skipped_small_growth += 1
                 self._seen.add((cand.model, cand.tokens))
                 continue
