@@ -4179,3 +4179,40 @@ Suite 1650 OK.
 uncovered=1747` says the restored attachment covers none of the probe prompt. Either the
 probe is not a continuation of the attachment, or the restorer is pairing an attachment
 with an unrelated prompt. Not diagnosed. The retry loop is fixed; the refusal itself is not.
+
+## REQ-101 — the capture storm that stalled a live slot
+
+**Reported.** "this was working great then it started stalling out, i think something is
+fucked after compaction", with an activity view showing long durations on
+`ornith-kvx-w6800`.
+
+**The operator's read was right and the cause was mine.** REQ-097 made ANY shrink
+capture-worthy, reasoning that a smaller prompt means the slot was reset for a new
+conversation. A harness that compacts its context does not shrink once -- it oscillates:
+
+    86,952 -> 80,013 -> 103,866 -> 87,999
+
+Every dip fired a capture. 29 captures of 1.2-1.5 GB in one session, 29.1 GB from ornith
+alone, store at 55 GB and the disk at 93%. A capture calls `/slots/N?action=save`, which
+BLOCKS that slot while llama.cpp writes it, and admission then copies the bytes again --
+roughly 4 GB of I/O per capture, aimed at the busiest slot. That is the stall.
+
+**Two fixes, because there are two faults.**
+
+1. `SHRINK_IS_A_NEW_CONVERSATION = 0.5`: a shrink now reads as a new conversation only if
+   the count falls below half. A compaction dip does not; a genuine reset does.
+2. `MAX_ARTIFACTS_PER_MODEL = 4`, enforced by `prune_model_artifacts` on every admit.
+   Deduplication cannot bound this store: an evolving conversation yields a genuinely NEW
+   prefix on every turn, so all 30 ornith artifacts were distinct and REQ-098's dedupe
+   correctly did nothing. Only a cap bounds it.
+
+**Evidence.** Store pruned 59.0 -> 18 GB (45 artifacts removed, 40.5 GB freed); home free
+66 -> 103 GB.
+
+**Status.** Proven by retained test (8 new). Mutation-checked twice: restoring the eager
+shrink rule fails 2, disabling the cap fails 1. Suite 1657 OK.
+
+**Note on my own record here:** REQ-094 loosened the capture gate, REQ-097 loosened it
+further, and this tightened it back. Each loosening fixed a real starvation and created a
+real storm. The gate wants a measured policy, not another adjustment in whichever direction
+the last report pointed.

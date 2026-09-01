@@ -6,6 +6,7 @@ sends no requests: it reads slot status and saves state that already exists on m
 are already loaded.
 """
 
+import os
 import unittest
 
 from kv_rosetta.daemon.capture import (
@@ -645,3 +646,84 @@ class RestoreRefusalTests(unittest.TestCase):
         loop._restore_refused_for.add(("m", 0))
         loop._restore_refused_for = {k for k in loop._restore_refused_for if k[0] != "m"}
         self.assertNotIn(("m", 0), loop._restore_refused_for)
+
+
+class CaptureStormTests(unittest.TestCase):
+    """The oscillating-context case that stalled a live slot."""
+
+    def test_a_compaction_dip_is_not_a_new_conversation(self):
+        # Observed live on ornith slot 1: a harness compacting its context made the count
+        # oscillate 86,952 -> 80,013 -> 103,866 -> 87,999. Treating each dip as a new
+        # conversation fired 29 captures of 1.2-1.5 GB, each blocking the slot while it
+        # was written -- which is what the operator saw as stalling.
+        self.assertFalse(worth_capturing(80_013, 86_952))
+        self.assertFalse(worth_capturing(87_999, 103_866))
+
+    def test_a_real_reset_is_still_captured(self):
+        # A genuinely new conversation on a long-running slot starts far below the last.
+        self.assertTrue(worth_capturing(9_000, 86_952))
+        self.assertTrue(worth_capturing(1_200, 103_866))
+
+    def test_real_growth_is_still_captured(self):
+        self.assertTrue(worth_capturing(103_866, 80_013))
+
+    def test_the_boundary_is_half(self):
+        from kv_rosetta.daemon.capture import SHRINK_IS_A_NEW_CONVERSATION
+        self.assertEqual(SHRINK_IS_A_NEW_CONVERSATION, 0.5)
+        self.assertFalse(worth_capturing(50_001, 100_000))
+        self.assertTrue(worth_capturing(49_999, 100_000))
+
+
+class StoreCapTests(unittest.TestCase):
+    """An evolving conversation makes a new prefix per turn; only a cap bounds that."""
+
+    class _Obj:
+        def __init__(self, path, model):
+            self.path = path
+            self.manifest = {"runtime_model": model}
+
+    class _Store:
+        def __init__(self, objs): self._objs = objs
+        def list_objects(self): return list(self._objs)
+
+    def _make(self, tmp, model, n):
+        import pathlib
+        objs = []
+        for i in range(n):
+            p = pathlib.Path(tmp) / f"{model}-{i}.state"
+            p.write_bytes(b"x")
+            os.utime(p, (1_000_000 + i, 1_000_000 + i))     # ascending mtime
+            m = p.with_name(p.name.replace(".state", ".manifest.json"))
+            m.write_text("{}")
+            objs.append(CaptureStormTests and StoreCapTests._Obj(p, model))
+        return objs
+
+    def test_keeps_only_the_most_recent(self):
+        import tempfile
+        from kv_rosetta.daemon.capture import prune_model_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            objs = self._make(tmp, "m", 7)
+            dropped = prune_model_artifacts(self._Store(objs), "m", keep=4)
+            self.assertEqual(dropped, 3)
+            alive = [o for o in objs if o.path.exists()]
+            self.assertEqual(len(alive), 4)
+            # the four newest survived
+            self.assertEqual({o.path.name for o in alive},
+                             {"m-3.state", "m-4.state", "m-5.state", "m-6.state"})
+
+    def test_under_the_cap_is_a_noop(self):
+        import tempfile
+        from kv_rosetta.daemon.capture import prune_model_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            objs = self._make(tmp, "m", 3)
+            self.assertEqual(prune_model_artifacts(self._Store(objs), "m", keep=4), 0)
+            self.assertTrue(all(o.path.exists() for o in objs))
+
+    def test_other_models_are_untouched(self):
+        import tempfile
+        from kv_rosetta.daemon.capture import prune_model_artifacts
+        with tempfile.TemporaryDirectory() as tmp:
+            mine = self._make(tmp, "m", 6)
+            other = self._make(tmp, "other", 6)
+            prune_model_artifacts(self._Store(mine + other), "m", keep=2)
+            self.assertTrue(all(o.path.exists() for o in other))

@@ -177,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
                 from kv_rosetta.adapters import ggsq_envelope
                 from kv_rosetta.adapters.admitted_path import AdmittedPath
                 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
-                from kv_rosetta.daemon.capture import prefix_fingerprint
+                from kv_rosetta.daemon.capture import (prefix_fingerprint,
+                                                        prune_model_artifacts)
 
                 store_root = Path(args.store_root).expanduser()
                 raw = (store_root / basename).read_bytes()
@@ -216,8 +217,10 @@ def main(argv: list[str] | None = None) -> int:
                 except OSError as exc:          # a leftover is waste, not a failed admit
                     print(f"[capture] could not remove raw capture {basename}: "
                           f"{str(exc)[:80]}", flush=True)
+                evicted = prune_model_artifacts(sidecar.store(), model)
+                note = f"; evicted {evicted} old" if evicted else ""
                 return (f"{obj.digest[:12]} covering {len(token_ids):,} tokens "
-                        f"(prefix {fingerprint[:12]})")
+                        f"(prefix {fingerprint[:12]}){note}")
 
             loop = CaptureLoop(args.swap, args.store_root,
                                min_tokens=args.capture_min_tokens,

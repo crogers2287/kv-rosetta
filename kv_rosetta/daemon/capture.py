@@ -319,6 +319,12 @@ def prefix_fingerprint(token_ids) -> str:
 #: the previous one for that model to be worth its disk.
 MIN_CAPTURE_GROWTH = 0.20
 
+#: How far a slot's token count must FALL before it reads as a different conversation
+#: rather than a compaction of the same one. Half: a harness rewriting its history rarely
+#: loses more than that, and a genuinely new conversation on a long-running slot starts far
+#: below it.
+SHRINK_IS_A_NEW_CONVERSATION = 0.5
+
 
 def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_GROWTH) -> bool:
     """Whether a capture at this size adds enough over the last one to be worth storing."""
@@ -326,10 +332,14 @@ def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_G
         raise ValueError(f"token count {tokens} is not positive")
     if previous <= 0:
         return True
-    # A shrink is a different conversation, not a smaller version of the last one: the slot
-    # was reset and refilled. Capturing it is the only way a second prefix on a busy slot
-    # ever reaches the store.
-    if tokens < previous:
+    # A large shrink means the slot was reset and refilled with a different conversation,
+    # and capturing it is the only way a second prefix on a busy slot reaches the store.
+    # A SMALL shrink means no such thing: a harness that compacts its context makes the
+    # count oscillate (86,952 -> 80,013 -> 103,866 -> 87,999 was observed live), and
+    # treating each dip as a new conversation fired 29 captures of 1.2-1.5 GB in one
+    # session. Each one blocks the slot while llama.cpp writes it, so an eager rule here
+    # stalls the very conversation it is trying to preserve.
+    if tokens < previous * SHRINK_IS_A_NEW_CONVERSATION:
         return True
     return tokens >= previous * (1.0 + growth)
 
@@ -414,3 +424,43 @@ def newly_loaded(current: frozenset[str], previous: frozenset[str]) -> frozenset
     rule above forbids.
     """
     return current - previous
+
+
+#: How many attachments to keep per runtime model. An evolving conversation yields a
+#: genuinely NEW prefix on every turn, so no amount of deduplication bounds the store --
+#: 30 distinct ornith artifacts totalling 29.1 GB came from a single session and filled
+#: the disk to 93%. The restore ranking is recency-weighted, so anything far down that
+#: order is paying gigabytes for a prefix that will never be chosen.
+MAX_ARTIFACTS_PER_MODEL = 4
+
+
+def prune_model_artifacts(store, model: str, *, keep: int = MAX_ARTIFACTS_PER_MODEL) -> int:
+    """Drop all but the `keep` most recent attachments for one model. Returns how many went.
+
+    Called after a successful admit, so the store is bounded at the moment it grows rather
+    than by a sweep that may never run.
+    """
+    held = []
+    for obj in store.list_objects():
+        manifest = obj.manifest or {}
+        if manifest.get("runtime_model") != model:
+            continue
+        try:
+            held.append((obj.path.stat().st_mtime, obj))
+        except OSError:                     # vanished under us; nothing to prune
+            continue
+    if len(held) <= keep:
+        return 0
+    held.sort(key=lambda pair: pair[0], reverse=True)
+    dropped = 0
+    for _, obj in held[keep:]:
+        try:
+            obj.path.unlink()
+            manifest_path = obj.path.with_name(obj.path.name.replace(".state",
+                                                                    ".manifest.json"))
+            if manifest_path.exists():
+                manifest_path.unlink()
+            dropped += 1
+        except OSError:                     # a failed eviction is waste, not an error
+            continue
+    return dropped
