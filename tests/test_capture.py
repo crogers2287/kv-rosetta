@@ -487,43 +487,40 @@ class KeepASlotWarmTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
-class StoreBackedGrowthTests(unittest.TestCase):
-    """The growth threshold must follow the store, not a memo that outlives deletion."""
+class SlotScopedGrowthTests(unittest.TestCase):
+    """Growth is measured against this slot's last capture, not the model's biggest file."""
 
-    def _loop(self, held):
+    def _loop(self):
         from kv_rosetta.daemon.capture import CaptureLoop
-        return CaptureLoop("http://swap", "/tmp", stored_tokens=lambda m: held.get(m, 0))
+        return CaptureLoop("http://swap", "/tmp")
 
-    def test_threshold_comes_from_the_store(self):
-        loop = self._loop({"m": 40_000})
-        self.assertEqual(loop._already_stored("m"), 40_000)
+    def test_a_fresh_slot_is_always_captured(self):
+        loop = self._loop()
+        self.assertTrue(worth_capturing(11_096, loop._slot_history("m", 0)))
 
-    def test_purging_the_store_unblocks_capture(self):
-        held = {"m": 77_398}
-        loop = self._loop(held)
-        # While the big attachment is held, a smaller prefill is correctly not worth storing.
-        self.assertFalse(worth_capturing(11_096, loop._already_stored("m")))
-        # Once it is purged -- an ABI change invalidates every attachment at once -- the
-        # very next prefill must be capturable again. The old in-memory high-water mark
-        # demanded 92,878 tokens here, more than the 98,304-token slot could ever reach.
-        held.clear()
-        self.assertTrue(worth_capturing(11_096, loop._already_stored("m")))
+    def test_small_growth_on_the_same_slot_is_skipped(self):
+        # The disk-economy case this exists for: one conversation extending token by token
+        # would otherwise admit a near-duplicate of the last capture at full size.
+        loop = self._loop()
+        loop._captured_on_slot[("m", 0)] = 40_000
+        self.assertFalse(worth_capturing(41_000, loop._slot_history("m", 0)))
+        self.assertTrue(worth_capturing(48_000, loop._slot_history("m", 0)))
 
-    def test_unreadable_store_does_not_block_capture(self):
-        from kv_rosetta.daemon.capture import CaptureLoop
+    def test_a_different_conversation_on_the_slot_is_captured(self):
+        # The reported regression: with a 75,523-token attachment held for the model, a
+        # 31,366-token Hermes prompt needed 90,627 tokens to clear a model-scoped gate, so
+        # it was never captured and the load restore never had it to choose. Scoped to the
+        # slot, a shrink reads as what it is -- the slot was reset and refilled.
+        loop = self._loop()
+        loop._captured_on_slot[("m", 0)] = 75_523
+        self.assertTrue(worth_capturing(31_366, loop._slot_history("m", 0)))
 
-        def boom(model):
-            raise RuntimeError("store offline")
-
-        loop = CaptureLoop("http://swap", "/tmp", stored_tokens=boom, log=lambda m: None)
-        self.assertEqual(loop._already_stored("m"), 0)
-        self.assertTrue(worth_capturing(11_096, loop._already_stored("m")))
-
-    def test_no_callback_falls_back_to_the_in_memory_memo(self):
-        from kv_rosetta.daemon.capture import CaptureLoop
-        loop = CaptureLoop("http://swap", "/tmp")
-        loop._largest["m"] = 5_000
-        self.assertEqual(loop._already_stored("m"), 5_000)
+    def test_history_is_per_slot_not_per_model(self):
+        loop = self._loop()
+        loop._captured_on_slot[("m", 0)] = 75_523
+        # A busy slot cannot set the bar for a quiet one.
+        self.assertEqual(loop._slot_history("m", 1), 0)
+        self.assertTrue(worth_capturing(9_000, loop._slot_history("m", 1)))
 
 
 class RestoreRankingTests(unittest.TestCase):

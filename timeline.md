@@ -4064,3 +4064,27 @@ worse than not restoring.
 fails 2). Suite 1643 OK. The end-to-end claim — that Hermes now loads instantly on the
 second connection — is UNTESTED against live traffic and must not be repeated as proven
 until the activity view shows a Hermes-sized `cached` on a fresh load.
+
+## REQ-097 — the growth gate starved every prefix shorter than the biggest one
+
+**Found while** verifying REQ-096's fix would actually help. It would not have: after
+correcting the ranking, tiel STILL chose the 75,523-token attachment, because the Hermes
+prompt had never been captured and could not be.
+
+**Cause.** `worth_capturing` measured growth against the largest artifact held for the
+MODEL. With a 75,523-token attachment on disk, a 31,366-token prompt needed 90,627 tokens
+to be worth capturing. Different conversations are not smaller versions of the largest one,
+so every prefix shorter than the high-water mark was permanently starved — and the load
+restore therefore never had it to choose. REQ-094 fixed the stale-memo half of this and
+missed the scope error underneath it.
+
+**Fix.** Growth is now measured against what was last captured from THAT SLOT, and a shrink
+counts as capture-worthy because it means the slot was reset and refilled with a different
+conversation. The store-backed `stored_tokens` machinery from REQ-094 is superseded and
+removed rather than left wired but unused: a per-slot memo cannot go stale after a purge,
+which is the failure REQ-094 existed to prevent.
+
+**Status.** Proven by retained test (4 new, both halves mutation-checked: removing the
+shrink rule fails 1, reverting to model-scoped history fails 1). Suite 1643 OK.
+UNTESTED against live traffic — the end-to-end claim needs a Hermes-sized `cached` value
+on a fresh load before it may be repeated as proven.

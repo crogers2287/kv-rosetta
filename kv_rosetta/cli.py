@@ -202,26 +202,11 @@ def main(argv: list[str] | None = None) -> int:
                 return (f"{obj.digest[:12]} covering {len(token_ids):,} tokens "
                         f"(prefix {fingerprint[:12]})")
 
-            def stored_tokens(model: str) -> int:
-                """Largest token count the store actually holds for this model.
-
-                Read fresh every tick: an operator who deletes attachments (an ABI change
-                invalidates every one of them at once) must not leave the capture loop
-                holding a growth threshold no live slot can ever clear.
-                """
-                best = 0
-                for obj in sidecar.store().list_objects():
-                    man = obj.manifest or {}
-                    if man.get("runtime_model") == model:
-                        best = max(best, int(man.get("prompt_token_count") or 0))
-                return best
-
             loop = CaptureLoop(args.swap, args.store_root,
                                min_tokens=args.capture_min_tokens,
                                interval=args.capture_interval,
                                restorer=restore_on_load,
                                admitter=admit_capture,
-                               stored_tokens=stored_tokens,
                                log=lambda m: print(f"[capture] {m}", flush=True))
             threading.Thread(target=loop.run_forever, daemon=True,
                              name="kvx-capture").start()

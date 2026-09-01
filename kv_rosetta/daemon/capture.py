@@ -87,8 +87,7 @@ class CaptureLoop:
     """
 
     def __init__(self, swap: str, store_root, *, min_tokens: int = DEFAULT_MIN_TOKENS,
-                 interval: float = 20.0, log=None, restorer=None, admitter=None,
-                 stored_tokens=None) -> None:
+                 interval: float = 20.0, log=None, restorer=None, admitter=None) -> None:
         self.swap = swap.rstrip("/")
         self.store_root = store_root
         self.min_tokens = min_tokens
@@ -110,13 +109,9 @@ class CaptureLoop:
         self.admitted = 0
         self.admit_refused = 0
         self.skipped_small_growth = 0
-        #: Largest capture we already hold for a model. Answered by the store when one is
-        #: wired in, because a remembered high-water mark outlives the artifact it describes:
-        #: purging a 77k-token attachment used to leave the memo at 77k, and MIN_CAPTURE_GROWTH
-        #: then demanded 92k -- more than the slot holds -- so that model could never be
-        #: captured again. Retry suppression is `_seen`'s job, not this one's.
-        self.stored_tokens = stored_tokens
-        self._largest: dict[str, int] = {}
+        #: Tokens last captured from each (model, slot). Growth is measured against this,
+        #: not against the model's biggest artifact -- see `_slot_history`.
+        self._captured_on_slot: dict[tuple[str, int], int] = {}
         #: (model, slot) pairs already holding an attachment we put there. Dropped when the
         #: slot is seen non-empty, so once real work displaces the prefix we warm it again.
         self._warmed: set[tuple[str, int]] = set()
@@ -199,15 +194,17 @@ class CaptureLoop:
             done.append(model)
         return done
 
-    def _already_stored(self, model: str) -> int:
-        """Largest capture currently held for this model, preferring the store's answer."""
-        if self.stored_tokens is None:
-            return self._largest.get(model, 0)
-        try:
-            return int(self.stored_tokens(model))
-        except Exception as exc:            # a store we cannot read must not block capture
-            self._log(f"cannot size stored captures for {model}: {str(exc)[:120]}")
-            return 0
+    def _slot_history(self, model: str, slot_id: int) -> int:
+        """What we last captured from THIS slot, which is what growth is relative to.
+
+        Growth is a property of one conversation extending on one slot, not of a model.
+        Comparing against the model's largest artifact instead suppressed every prefix
+        shorter than the biggest one ever seen: with a 75,523-token attachment on disk a
+        31,366-token Hermes prompt needed 90,627 tokens to be "worth" capturing, so it was
+        never captured, so the load restore never had it to choose. Different conversations
+        are not small versions of the largest one.
+        """
+        return self._captured_on_slot.get((model, slot_id), 0)
 
     def tick(self) -> list[Candidate]:
         loaded = self.loaded_models()
@@ -223,7 +220,7 @@ class CaptureLoop:
                               already=frozenset(self._seen)), loaded)
         done = []
         for cand in candidates:
-            if not worth_capturing(cand.tokens, self._already_stored(cand.model)):
+            if not worth_capturing(cand.tokens, self._slot_history(cand.model, cand.slot_id)):
                 self.skipped_small_growth += 1
                 self._seen.add((cand.model, cand.tokens))
                 continue
@@ -238,7 +235,7 @@ class CaptureLoop:
                           f"{str(exc)[:120]}")
                 continue
             self._seen.add((cand.model, cand.tokens))
-            self._largest[cand.model] = max(self._largest.get(cand.model, 0), cand.tokens)
+            self._captured_on_slot[(cand.model, cand.slot_id)] = cand.tokens
             self.captured += 1
             self._log(f"captured {cand.model} slot {cand.slot_id}: "
                       f"{saved.get('n_saved')} cells, "
@@ -312,6 +309,11 @@ def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_G
     if tokens <= 0:
         raise ValueError(f"token count {tokens} is not positive")
     if previous <= 0:
+        return True
+    # A shrink is a different conversation, not a smaller version of the last one: the slot
+    # was reset and refilled. Capturing it is the only way a second prefix on a busy slot
+    # ever reaches the store.
+    if tokens < previous:
         return True
     return tokens >= previous * (1.0 + growth)
 
