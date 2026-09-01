@@ -4127,3 +4127,26 @@ attachment (REQ-096).
 STILL UNTESTED: the end-to-end win. No fresh model load has yet been observed serving a
 request against a restored conversation-sized prefix. Until the activity view shows that,
 "Hermes loads instantly on the second connection" is inferred, not measured.
+
+## REQ-099 — recency-ranked restore starved the system prompt it existed to serve
+
+**Reported.** "ornith kvx w6800 is reloading the system prompt cold every single time.
+84,000 tokens we just had to wait for."
+
+**Cause, mine.** REQ-096 replaced size-ranking with recency-ranking. On ornith the store
+held, in order: a 6,468-token capture at 09:47 and the 72,465-token system prompt at 09:28.
+Recency restored the 6,468-token trifle, so the harness's ~84k prompt was re-prefilled cold
+on every load. REQ-096 traded "always the biggest, never adapts" for "always the newest,
+however useless" -- both are wrong for the same reason: one term cannot express the choice.
+
+**Fix.** Rank by `restore_score = covered * 0.5 ** (age_hours / 6)`. Coverage is what a
+restore is worth; recency is the probability it still applies; the product is the thing to
+maximise. Ownership still dominates absolutely. Half-life 6h chosen so a system prompt
+captured earlier today outranks a minute-old trifle, while yesterday's giant loses to
+today's real traffic -- both live cases resolve correctly:
+
+    ornith      -> ['system-prompt' (72,465, 38m), 'tiny-newest' (6,468, 19m), ...]
+    flash-next  -> ['fresh' (31,366, 1m), 'stale-big' (75,523, 18h)]
+
+**Status.** Proven by retained test (4 new). Mutation-checked against BOTH prior failure
+modes: reverting to pure recency fails 2, reverting to pure size fails 2. Suite 1647 OK.

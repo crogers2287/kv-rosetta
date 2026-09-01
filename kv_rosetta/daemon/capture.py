@@ -14,6 +14,8 @@ It cannot wake anything, cannot cause a prefill, and cannot change what a slot h
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -318,7 +320,34 @@ def worth_capturing(tokens: int, previous: int, *, growth: float = MIN_CAPTURE_G
     return tokens >= previous * (1.0 + growth)
 
 
-def rank_restore_candidates(candidates):
+#: Half-life, in hours, applied to an attachment's covered-token count when ranking a
+#: model-load restore. Six hours: long enough that a system prompt captured earlier today
+#: still outranks a trivial capture from a minute ago, short enough that yesterday's big
+#: attachment loses to today's real traffic.
+RESTORE_HALF_LIFE_HOURS = 6.0
+
+
+def restore_score(covered: int, age_hours: float,
+                  *, half_life: float = RESTORE_HALF_LIFE_HOURS) -> float:
+    """Expected usefulness of an attachment: how much it covers, decayed by how stale it is.
+
+    Neither term works alone, and this project has now shipped both failures. Ranking by
+    size restored a 75,523-token attachment on every load while the prompt traffic actually
+    used was never chosen. Ranking by recency then restored a 6,468-token capture from a
+    passing interaction over the 72,465-token system prompt an agent harness sends every
+    time, so 84k tokens were re-prefilled cold on every load.
+
+    Coverage is what a restore is worth; recency is the probability it still applies. The
+    product is the thing to maximise.
+    """
+    if covered <= 0:
+        return 0.0
+    if age_hours <= 0:
+        return float(covered)
+    return covered * (0.5 ** (age_hours / half_life))
+
+
+def rank_restore_candidates(candidates, *, now=None):
     """Order attachments for a model-load restore: own first, then most recently admitted.
 
     There is no request to be relevant to when a model loads, so the choice is a guess.
@@ -329,10 +358,17 @@ def rank_restore_candidates(candidates):
     prefix with and paid the full prefill anyway. A wrong restore costs the restore AND the
     prefill, so it is worse than not restoring at all.
 
-    Each candidate is ``(own, seen_at, covered, fingerprint)``. Coverage stays in the tuple
-    as a tie-break for attachments admitted in the same instant, never as the lead term.
+    Each candidate is ``(own, seen_at, covered, fingerprint)``, `seen_at` a unix time.
+    Ownership still dominates -- a foreign prefix cannot be restored onto this model at any
+    score -- and the score orders the rest.
     """
-    return sorted(candidates, reverse=True)
+    if now is None:
+        now = time.time()
+    def key(candidate):
+        own, seen_at, covered, fingerprint = candidate
+        age_hours = max(0.0, (now - float(seen_at)) / 3600.0)
+        return (own, restore_score(covered, age_hours), fingerprint)
+    return sorted(candidates, key=key, reverse=True)
 
 
 def same_model(capture_label: str, runtime_model: str) -> bool:

@@ -528,14 +528,53 @@ class RestoreRankingTests(unittest.TestCase):
 
     def _rank(self, candidates):
         from kv_rosetta.daemon.capture import rank_restore_candidates
-        return [c[3] for c in rank_restore_candidates(candidates)]
+        return [c[3] for c in rank_restore_candidates(candidates, now=self.NOW)]
 
-    def test_recent_beats_bigger(self):
+    NOW = 1_000_000.0
+    H = 3600.0
+
+    def _ranked(self, candidates):
+        from kv_rosetta.daemon.capture import rank_restore_candidates
+        return [c[3] for c in rank_restore_candidates(candidates, now=self.NOW)]
+
+    def test_a_trivial_fresh_capture_does_not_displace_the_system_prompt(self):
+        # Reported live on ornith: a 6,468-token capture from a passing interaction was
+        # newer than the 72,465-token system prompt an agent harness sends every time, so
+        # pure recency restored the small one and 84k tokens were re-prefilled cold.
+        self.assertEqual(self._ranked([
+            (True, self.NOW - 19 * 60, 6_468, "tiny-newest"),
+            (True, self.NOW - 38 * 60, 72_465, "system-prompt"),
+        ])[0], "system-prompt")
+
+    def test_a_stale_giant_still_loses_to_todays_traffic(self):
+        # The REQ-096 case must keep working: coverage alone restored this 75,523-token
+        # attachment forever.
+        self.assertEqual(self._ranked([
+            (True, self.NOW - 18 * self.H, 75_523, "stale-big"),
+            (True, self.NOW - 60, 31_366, "fresh"),
+        ])[0], "fresh")
+
+    def test_ownership_outranks_any_score(self):
+        self.assertEqual(self._ranked([
+            (False, self.NOW, 900_000, "foreign"),
+            (True, self.NOW - 40 * self.H, 10, "own"),
+        ])[0], "own")
+
+    def test_score_decays_by_half_every_half_life(self):
+        from kv_rosetta.daemon.capture import restore_score, RESTORE_HALF_LIFE_HOURS
+        self.assertAlmostEqual(restore_score(1000, 0), 1000.0)
+        self.assertAlmostEqual(restore_score(1000, RESTORE_HALF_LIFE_HOURS), 500.0)
+        self.assertAlmostEqual(restore_score(1000, 2 * RESTORE_HALF_LIFE_HOURS), 250.0)
+        self.assertEqual(restore_score(0, 0), 0.0)
+
+    def test_recent_beats_bigger_when_the_age_gap_is_real(self):
         # The regression this encodes: a 75,523-token attachment was restored on every
         # load while the 31k prompt traffic actually used was never chosen, so each load
         # restored a prefix the request did not share and then prefilled all of it anyway.
-        big_old = (True, 100.0, 75_523, "big")
-        small_new = (True, 200.0, 31_366, "hermes")
+        # Recency wins here because the gap is many half-lives, not merely because it is
+        # newer -- a minute-old trifle must not displace an hour-old system prompt.
+        big_old = (True, self.NOW - 18 * self.H, 75_523, "big")
+        small_new = (True, self.NOW - 60, 31_366, "hermes")
         self.assertEqual(self._rank([big_old, small_new])[0], "hermes")
 
     def test_own_still_outranks_recency(self):
@@ -550,8 +589,9 @@ class RestoreRankingTests(unittest.TestCase):
 
     def test_a_miss_repairs_itself_on_the_next_load(self):
         # Restoring "big" is wrong for Hermes traffic; the server prefills 31,366 tokens,
-        # capture admits them at a later instant, and that prefix leads from then on.
-        store = [(True, 100.0, 75_523, "big")]
+        # capture admits them, and once "big" has aged past a few half-lives the fresh
+        # prefix leads from then on.
+        store = [(True, self.NOW - 18 * self.H, 75_523, "big")]
         self.assertEqual(self._rank(store)[0], "big")
-        store.append((True, 300.0, 31_366, "hermes"))
+        store.append((True, self.NOW - 60, 31_366, "hermes"))
         self.assertEqual(self._rank(store)[0], "hermes")
