@@ -4106,3 +4106,24 @@ fingerprint and token count is left alone and the fresh capture is discarded.
 
 **Evidence.** The store held two objects for prefix `7f9d9580dee3` at 75,523 tokens
 (`8f26fcf97d7a`, `30d59bb7539b`) before this.
+
+### REQ-096/097/098 — live verification on this host, 2026-09-01 08:13
+
+Measured once on this host, unattended, on real fleet traffic:
+
+```
+[capture] captured tiel-kvx-w6800 slot 1: 62199 cells, 821 MB
+[capture] admitted tiel-kvx-w6800: 4d6974f8c599 covering 62,199 tokens (prefix 4f569d45a726)
+[capture] admitted qwen38-flash-next-kvx: already held as 0b583291d767 (11,096 tokens); capture discarded
+```
+
+Two prefixes at 62,199 and 60,522 tokens were captured. Both sit BELOW the 75,523-token
+high-water mark that previously gated capture at 90,627 tokens, so neither could have been
+captured before REQ-097 — this is the starvation, measured and removed. Re-admission of an
+already-held prefix is discarded (REQ-098). Ranking over the resulting store selects
+`4f569d45a726` (62,199 tokens, the live conversation) rather than the stale 75,523-token
+attachment (REQ-096).
+
+STILL UNTESTED: the end-to-end win. No fresh model load has yet been observed serving a
+request against a restored conversation-sized prefix. Until the activity view shows that,
+"Hermes loads instantly on the second connection" is inferred, not measured.
