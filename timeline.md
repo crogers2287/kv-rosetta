@@ -4020,3 +4020,18 @@ from a single run — a projection presented as a measurement. Guard restored.
 
 **Status.** Proven by retained test (4 new, mutation-checked: reverting the fix fails 2).
 Full suite 1636 tests OK, 43 skipped.
+
+## REQ-095 — admission left a full-size duplicate of every capture on disk
+
+**Found while** verifying REQ-094's cleanliness, not reported.
+
+`admit_capture` copied each raw `auto-<model>-slot<n>-<tokens>.state` into a digest-named
+artifact and left the original in place. Nothing can ever read those: lookups go by prefix
+fingerprint and runtime model, and the auto- name carries neither. No manifest referenced
+one. Twelve had accumulated at **9.5 GB** — more than the 7.5 GB of artifacts they
+duplicated, 56% of the store.
+
+**Fix.** Admission unlinks the raw capture once the artifact is written. A failure to
+unlink is logged, not raised: a leftover is waste, not a failed admit.
+
+**Evidence.** Store 17G → 7.5G; 13 manifests / 13 states intact. Suite 1636 OK.

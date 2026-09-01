@@ -174,6 +174,16 @@ def main(argv: list[str] | None = None) -> int:
                                    sidecar.store()).admit(
                     store_root / basename, model=model, token_ids=token_ids,
                     save_response=saved, prefix_fingerprint=fingerprint)
+                # admit() copied the bytes into a digest-named artifact, so the raw
+                # capture is now a duplicate of it. Left behind, these accumulate at full
+                # size -- 12 of them reached 9.5 GB, more than the artifacts they duplicate
+                # -- and nothing ever reads them: lookups go by fingerprint and model, and
+                # `auto-<model>-slot<n>-<tokens>.state` carries neither.
+                try:
+                    (store_root / basename).unlink()
+                except OSError as exc:          # a leftover is waste, not a failed admit
+                    print(f"[capture] could not remove raw capture {basename}: "
+                          f"{str(exc)[:80]}", flush=True)
                 return (f"{obj.digest[:12]} covering {len(token_ids):,} tokens "
                         f"(prefix {fingerprint[:12]})")
 
