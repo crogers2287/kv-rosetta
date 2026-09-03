@@ -257,7 +257,10 @@ class CaptureLoop:
                     info = self.admitter(cand.model, name, saved)
                 except Exception as exc:          # an unusable capture is not fatal
                     self.admit_refused += 1
-                    self._log(f"admit refused for {cand.model}: {str(exc)[:160]}")
+                    # Wide enough to keep the save response's checkpoint fields: a refusal
+                    # cut at 160 chars lost 'n_checkpoints_saved', which was the whole
+                    # explanation of why a 4,096-token prompt could not be admitted.
+                    self._log(f"admit refused for {cand.model}: {str(exc)[:600]}")
                 else:
                     if info is not None:
                         self.admitted += 1

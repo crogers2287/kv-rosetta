@@ -4338,3 +4338,25 @@ a 4,096-token prompt is ~200 MB and exactly the harness prefix that pays off.
 blocker — `hybrid_support()` falls through to live `/props`, which reports
 `slot_checkpoint_persistence=True`, `sckp/1`, target state supported. `--slot-save-path`
 is set on the live process.
+
+### REQ-105 — outcome, 2026-09-03 17:15
+
+The floor was not what stood between the 27B and a restore. Measured after the restart:
+
+- The 69,518-token conversation WAS captured — at 17:00:10, by the previous daemon, the
+  first time it idled. My "it never idles" read was wrong by eleven minutes; the capture
+  path was working. Re-captured at 93,149 tokens at 17:11 (growth rule, +34%). Both
+  admitted, both restorable: 5 and 7 checkpoints, tails of 143 and 147 tokens.
+- The 4,096-token prompt on slot 2 was captured and then REFUSED at admission:
+  `no usable checkpoint coverage`. This runtime creates context checkpoints every 8,192
+  tokens (`--checkpoint-min-step` unset in `run-qwen38-27b-3090-agg.sh`, default 8,192),
+  so a 4,096-token hybrid prompt has no checkpoint and a restore of it would reuse nothing.
+  No kvxd floor fixes that; the lever is the runtime flag on the 27B launch, which the
+  15:34 fleet rebuild owns. Short harness prefixes on hybrid models are structurally
+  uncapturable at the default spacing.
+- The 27B now has no empty idle slot (slot 0 still holds the captured conversation), so
+  load-time restore cannot fire; the request-time path (REQ-104) is the only route to a
+  hit. The trace watch for the first `kvx→restored` remains armed.
+
+Also: the admit-refusal log line was cut at 160 chars and lost the checkpoint fields that
+explained this; widened to 600.
