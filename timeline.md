@@ -4383,3 +4383,16 @@ request-time answer carries both `requested` and `model`. `serve --swap-config` 
 refused, `find_artifact` and `restore_for_prompt` matching canonical artifacts through an
 alias. Full suite green. UNTESTED live: the fleet is currently `[]`, so no request can hit
 until something is loaded.
+
+### REQ-106 — live verification, 2026-09-03 17:41
+
+Daemon on `200f2b1`. Fleet: `ornith-kvx-w6800`, `tiel-kvx-w6800`.
+- Direct: `POST /v1/restore-for-prompt {"model":"ornith"}` (alias of the loaded
+  ornith-kvx-w6800) → `no attachment is a prefix of this prompt (18 tokens)` — rendered,
+  tokenized, searched. Before this fix the same call answered "not loaded; refusing to
+  wake it".
+- Through cfrproxy as `fred/ornith`: trace 166765 `kvx→miss: no attachment is a prefix of
+  this prompt (34 tokens)`; daemon log carries the identical verdict; `/running`
+  identical before and after.
+A hit still needs real harness traffic whose rendered prefix is a stored attachment
+(ornith A holds four, including the 72,465-token system prompt). Watch re-armed.
