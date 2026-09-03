@@ -4252,3 +4252,27 @@ reference; mutation-checked three ways (hash multiplier index, page straddle, EO
 each fails the suite). Full suite 1676 OK. Measured once on this host: page residency
 0.07% → 100% for a real attachment. **UNTESTED:** the prefill-speed effect. That A/B needs
 flash-next loaded and it is parked by a config write at 15:34 today that is not mine.
+
+## REQ-103 — the tail allowance guessed at a number the manifest already records
+
+**Symptom.** Every load-time restore on ornith and flash-next was refused:
+`tail contract violated: cache_n=70718 prompt_n=1747 uncovered=1747 allowance=725`.
+REQ-100 stopped the daemon retrying it every tick; this is why it was refused at all.
+
+**Cause.** `uncovered_allowance` bounded the reprocessed tail at 1% of the artifact. A
+hybrid resumes from its last context checkpoint, and this build spaces checkpoints 8,192
+tokens apart by default (`--checkpoint-min-step` is set by no launch script here), so a
+correct restore of a 72,465-token artifact legitimately leaves 1,747 tokens past the
+checkpoint — 2.4×, refused. The 1% was a guess at the checkpoint gap; the manifest records
+that gap exactly (`checkpoint.n_tokens`, the coverage the runtime itself reported at save).
+
+**Fix.** `uncovered_allowance(n_tokens, declared_coverage)` returns
+`max(8, n_tokens - declared_coverage)` — the artifact's own tail — and `restore()` passes
+`declared["n_tokens"]`. The proportional bound remains only as the fallback when no
+coverage is declared.
+
+**Status.** Proven by retained test: 5 unit cases plus 2 end-to-end (a 50-of-1,000 tail
+passes; a 60-of-1,000 tail, longer than the declared gap, still refuses). Mutation-checked:
+reverting the call site to the 1% rule fails the end-to-end case. Suite 1683 OK.
+UNTESTED live: no PLE/hybrid model is loaded (flash-next and ornith parked by the 15:34
+config write); the first live restore after they return is the proof.

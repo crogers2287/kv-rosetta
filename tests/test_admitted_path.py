@@ -489,3 +489,71 @@ class UncoveredAllowanceTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             uncovered_allowance(0)
         self.assertIn("is not positive", str(cm.exception))
+
+
+class ExactTailAllowanceTests(unittest.TestCase):
+    """The allowance is the artifact's own tail, not a fraction guessed at it."""
+
+    def test_the_live_refusal_is_now_allowed(self):
+        # cache_n=70718 prompt_n=1747 uncovered=1747 allowance=725 -- refused on every load
+        # (REQ-100). The manifest declared coverage 70,718 of 72,465, so 1,747 IS the tail.
+        self.assertGreaterEqual(uncovered_allowance(72_465, 70_718), 1_747)
+
+    def test_a_checkpoint_at_the_end_keeps_the_floor(self):
+        # pos_max at the last token: nothing past the checkpoint, floor of 8 still applies
+        self.assertEqual(uncovered_allowance(29_470, 29_470), 8)
+
+    def test_a_restore_that_covered_almost_nothing_is_still_refused_exactly(self):
+        # Declared coverage is what the manifest promised; a restore reusing far less than
+        # that fails the coverage-equality check before the tail is ever consulted, and the
+        # tail allowance must not be so loose that it would pass on its own.
+        self.assertLess(uncovered_allowance(9_146, 9_100), 9_146 - 2_000)
+
+    def test_declared_coverage_outside_the_artifact_is_refused(self):
+        with self.assertRaises(ValueError):
+            uncovered_allowance(100, 101)
+        with self.assertRaises(ValueError):
+            uncovered_allowance(100, -1)
+
+    def test_without_a_declaration_the_proportional_bound_remains(self):
+        self.assertEqual(uncovered_allowance(9_146), max(8, 92))
+
+
+class LongTailRestoreTest(AdmittedPathTest):
+    """End to end: a restore whose tail is longer than 1% but exactly what the manifest
+    declared must pass -- this is the shape of the live refusal, in miniature."""
+
+    def _long_state(self, n_tokens=1000, covered=950):
+        tokens = list(range(1, n_tokens + 1))
+        appendix = sckp_appendix(n_tokens=covered, pos_min=0, pos_max=covered - 1)
+        body = ggsq_body(tokens=tokens, version=3, trailer=appendix)
+        raw = self.dir / "long.bin"
+        raw.write_bytes(body)
+        save = {"n_written": len(body), "checkpoint_bytes": len(appendix),
+                "checkpoint_n_tokens": covered, "checkpoint_pos_min": 0,
+                "checkpoint_pos_max": covered - 1, "n_checkpoints_saved": 1,
+                "n_saved": n_tokens}
+        return raw, save, tokens
+
+    def test_a_tail_past_one_percent_but_equal_to_the_declared_gap_passes(self):
+        raw, save, tokens = self._long_state(1000, 950)
+        self.raw, self.save = raw, save
+        path, _ = self.path_for()
+        obj = path.admit(raw, model="", token_ids=tokens, save_response=save)
+        # 50 uncovered of 1,000: the old 1% rule allowed 10 and refused this.
+        path, adapter = self.path_for(probe={"timings": {"cache_n": 950, "prompt_n": 50}})
+        report = path.restore(obj.digest, model="", token_ids=tokens)
+        self.assertTrue(report.ok, report.reason)
+        self.assertEqual((report.cache_n, report.prompt_n), (950, 50))
+
+    def test_a_tail_longer_than_the_declared_gap_still_refuses(self):
+        raw, save, tokens = self._long_state(1000, 950)
+        self.raw, self.save = raw, save
+        path, _ = self.path_for()
+        obj = path.admit(raw, model="", token_ids=tokens, save_response=save)
+        # runtime reports it reused 950 but wants to reprocess 60: more than exists past
+        # the checkpoint, so the numbers do not describe this artifact.
+        path, adapter = self.path_for(probe={"timings": {"cache_n": 950, "prompt_n": 60}})
+        report = path.restore(obj.digest, model="", token_ids=tokens)
+        self.assertFalse(report.ok)
+        self.assertIn("tail contract violated", report.reason)

@@ -45,10 +45,25 @@ MAX_UNCOVERED_TAIL = 8
 MAX_UNCOVERED_FRACTION = 0.01
 
 
-def uncovered_allowance(n_tokens: int) -> int:
-    """How many trailing tokens a genuine restore may leave for the runtime to reprocess."""
+def uncovered_allowance(n_tokens: int, declared_coverage: int | None = None) -> int:
+    """How many trailing tokens a genuine restore may leave for the runtime to reprocess.
+
+    With `declared_coverage` -- the artifact's own recorded checkpoint coverage -- the
+    answer is exact: a hybrid resumes from its last context checkpoint, so the tail the
+    runtime must reprocess is precisely the tokens after that checkpoint, and the manifest
+    says how many that is. The proportional bound was a guess at that number, and a wrong
+    one: llama.cpp spaces checkpoints 8,192 tokens apart by default, so a correct restore
+    of a 72,465-token artifact legitimately left 1,747 uncovered against a 1% allowance of
+    725, and the restore was refused on every load (REQ-100's retry storm was the symptom).
+
+    Without a declared coverage the proportional bound stays, as the fallback it was.
+    """
     if n_tokens <= 0:
         raise ValueError(f"artifact token count {n_tokens} is not positive")
+    if declared_coverage is not None:
+        if not 0 <= declared_coverage <= n_tokens:
+            raise ValueError(f"declared coverage {declared_coverage} is outside 0..{n_tokens}")
+        return max(MAX_UNCOVERED_TAIL, n_tokens - declared_coverage)
     return max(MAX_UNCOVERED_TAIL, math.ceil(MAX_UNCOVERED_FRACTION * n_tokens))
 
 
@@ -299,7 +314,8 @@ class AdmittedPath:
             self._erase(slot, calls)
             return refuse(f"cache_n {cache_n} does not equal declared coverage "
                           f"{declared['n_tokens']}")
-        allowance = uncovered_allowance(len(token_ids))
+        # The manifest recorded how far the checkpoint reaches; the tail is what lies past it.
+        allowance = uncovered_allowance(len(token_ids), int(declared["n_tokens"]))
         if not 1 <= uncovered <= allowance or prompt_n != uncovered:
             self._erase(slot, calls)
             return refuse(f"tail contract violated: cache_n={cache_n} prompt_n={prompt_n} "
