@@ -4303,3 +4303,21 @@ ways (longest-prefix → first-match, LRU → most-recent, busy-slot guard remov
 the suite). Full suite 1716 OK. UNTESTED live: no model with attachments is loaded
 (flash-next, ornith parked by the 15:34 config write); the live proof is a haxor first
 request showing `cached` ≈ its system prompt through cfrproxy with the hook enabled.
+
+### REQ-104 — live verification, 2026-09-03 16:45
+
+cfrproxy hook deployed (`cab9a09`, gate widened to unpooled local models — the first
+version only fired for affinity-pool members, which excluded tiel/flash-next/the 27B; that
+was the contract I specified, corrected). Setting `kvx_restore` enabled.
+
+Measured, this host, through the proxy to `fred/tiel-kvx-w6800`:
+- turn 1 (new conversation): trace note `kvx→miss: no attachment is a prefix of this
+  prompt (221 tokens)` — 221 tokens for a ~30-word prompt is the runtime's own template
+  with its reasoning-effort preamble, i.e. rendered where it must be.
+- turn 2 (same conversation): no note — bound, not re-asked.
+- `/running` identical before and after: nothing woken, no slot touched on a miss.
+
+STILL UNTESTED: a hit. That needs a first request whose rendered prefix IS a stored
+attachment — real harness traffic, which cannot be fabricated here — or flash-next/ornith
+back so their stored prefixes can be exercised. A watch is armed on the trace table for the
+first `kvx→restored`.

@@ -399,6 +399,13 @@ def _make_handler(sidecar: Sidecar):
                     if result.get("restored"):
                         with sidecar._lock:
                             sidecar.stats.restores_served += 1
+                    # One line per call, so the daemon log is evidence of what cfrproxy
+                    # asked and what was answered -- the first live check had to be read
+                    # off the proxy's trace table because nothing here recorded the call.
+                    verdict = (f"restored {result.get('covers_tokens'):,} tokens into slot "
+                               f"{result.get('slot')}" if result.get("restored")
+                               else f"miss: {result.get('reason')}")
+                    print(f"[restore-for-prompt] {body.get('model')}: {verdict}", flush=True)
                     return {"ok": True, **result}
 
                 self._handle(route, prompt_action)
