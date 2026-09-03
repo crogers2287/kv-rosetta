@@ -4216,3 +4216,39 @@ shrink rule fails 2, disabling the cap fails 1. Suite 1657 OK.
 further, and this tightened it back. Each loosening fixed a real starvation and created a
 real storm. The gate wants a measured policy, not another adjustment in whichever direction
 the last report pointed.
+
+## REQ-102 — prefetch the PLE table pages a known prefix will read
+
+**Request.** Prompted by ortegaalfredo's "ngram hot-swappable knowledge" thread. The
+operator's first framing — patch the n-gram table so a fast model handles prefill for the
+big one — does not hold: the table is a per-token residual at one layer keyed by the last
+2–3 token ids, not the KV cache that prefill produces, and the fast-model-prefill variant
+was already measured at 0.625/0.688 top-1 against 0.99 required (REQ-082). What DOES hold
+is the addressing property underneath it: the 16 rows a token reads are a deterministic
+function of its trigram, so for a prefix whose token ids are stored — every admitted
+attachment carries them — the exact pages the prefill will fault in are known in advance.
+
+**Built.** `kv_rosetta/ple_prefetch.py`: the hash ported from the serving build's
+`llm_graph_input_ple::set_input` (qwen4exp.cpp) and cross-checked against the reference in
+ortegaalfredo/ngram-knowledge-injector (MIT; its hash is tested against llama.cpp C++
+golden vectors); a GGUF tensor-info walker (the repo reader is KV-only) that locates
+`per_layer_token_embd.weight` across shards; 4 KB page mapping with straddle handling;
+adjacent-page coalescing; `posix_fadvise(WILLNEED)`; and a correct `mincore` residency
+probe for measurement. Hooked into `restore_on_load` before `sidecar.ensure` (advisory,
+never raises, cached negative answer for models without a table) and exposed as
+`kv-rosetta ple-prefetch --model-gguf … --manifest … [--measure|--dry-run]`.
+
+**Evidence, this host, no model loaded.**
+- Locator vs gguf-py ground truth: shard 2, abs offset 528,505,792, IQ4_NL, 90 B/row,
+  320,001,536 rows, 28,800,138,240 bytes — byte-identical.
+- Real 29,601-token flash-next attachment: 473,616 rows → 361,985 distinct pages
+  (1.48 GB) in 335,937 runs; advised in 3.86 s; residency **252 → 361,985 pages**.
+- Rows hash across the whole 28.8 GB, so a 30k prefix costs ~1.5 GB of page cache, not
+  the ~150 MB first estimated. Fine against 251 GB RAM; recorded so nobody repeats the
+  smaller number.
+
+**Status.** Proven by retained test: 19 tests incl. 8 golden vectors from the C++-verified
+reference; mutation-checked three ways (hash multiplier index, page straddle, EOS cut —
+each fails the suite). Full suite 1676 OK. Measured once on this host: page residency
+0.07% → 100% for a real attachment. **UNTESTED:** the prefill-speed effect. That A/B needs
+flash-next loaded and it is parked by a config write at 15:34 today that is not mine.

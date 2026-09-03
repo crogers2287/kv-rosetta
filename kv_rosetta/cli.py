@@ -78,7 +78,42 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--allow-wake", action="store_true",
                      help="load the model if parked; off by default so this cannot become "
                           "the recompute warmer it replaces")
+    ple = commands.add_parser(
+        "ple-prefetch",
+        help="warm the PLE n-gram table pages a known prefix will read (qwen4exp only)")
+    ple.add_argument("--model-gguf", required=True,
+                     help="first shard of the served GGUF (the one /props reports)")
+    src = ple.add_mutually_exclusive_group(required=True)
+    src.add_argument("--manifest", help="an admitted-store *.manifest.json with prompt_token_ids")
+    src.add_argument("--token-ids", help="a JSON file holding a list of token ids")
+    ple.add_argument("--measure", action="store_true",
+                     help="report page-cache residency before and after (mincore)")
+    ple.add_argument("--dry-run", action="store_true",
+                     help="compute rows and pages; issue no fadvise")
     args = parser.parse_args(argv)
+
+    if args.command == "ple-prefetch":
+        import json as _json
+        from kv_rosetta import ple_prefetch
+        src_path = Path(args.manifest or args.token_ids).expanduser()
+        data = _json.loads(src_path.read_text())
+        ids = list(data.get("prompt_token_ids") or []) if isinstance(data, dict) else list(data)
+        if not ids:
+            print(f"error: no token ids in {src_path}")
+            return 2
+        if args.dry_run:
+            c = ple_prefetch.load_constants(args.model_gguf)
+            loc = ple_prefetch.locate_table(args.model_gguf)
+            pages = ple_prefetch.pages_for_rows(ple_prefetch.rows_for_sequence(ids, c), loc)
+            print(_json.dumps({"tokens": len(ids), "pages": len(pages),
+                               "bytes": len(pages) * ple_prefetch.PAGE,
+                               "runs": len(ple_prefetch.coalesce(pages)),
+                               "table": str(loc.path), "abs_offset": loc.abs_offset,
+                               "bytes_per_row": loc.bytes_per_row}, indent=2))
+            return 0
+        rep = ple_prefetch.warm_for_tokens(args.model_gguf, ids, measure=args.measure)
+        print(_json.dumps(rep.as_dict(), indent=2))
+        return 0
 
     if args.command == "prewarm":
         from kv_rosetta.prewarm import prewarm_cli
@@ -103,6 +138,38 @@ def main(argv: list[str] | None = None) -> int:
             import threading
 
             from kv_rosetta.daemon.capture import CaptureLoop
+
+            _ple_paths: dict[str, str | None] = {}
+
+            def warm_ple_pages(model: str, token_ids: list[int]) -> None:
+                """Prefetch the PLE table pages this prefix will read. Never raises.
+
+                Only a model with a PLE table (qwen4exp) has anything to warm; the served
+                GGUF is read once per model from /props and cached, including a negative
+                answer so a model without a table costs one probe, not one per restore.
+                """
+                if not token_ids:
+                    return
+                from kv_rosetta import ple_prefetch
+                try:
+                    if model not in _ple_paths:
+                        from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
+                        base = sidecar.upstream_base(model)
+                        path = str(LlamaCppHTTPAdapter(base, str(sidecar.store().root))
+                                   .props().get("model_path") or "")
+                        _ple_paths[model] = path if path and ple_prefetch.has_ple_table(path) \
+                            else None
+                    path = _ple_paths[model]
+                    if not path:
+                        return
+                    rep = ple_prefetch.warm_for_tokens(path, token_ids)
+                    print(f"[capture] ple-prefetch {model}: {rep.tokens:,} tokens -> "
+                          f"{rep.pages:,} pages ({rep.bytes / 1e6:.0f} MB) in "
+                          f"{rep.runs:,} runs, advised in {rep.advise_seconds:.2f}s",
+                          flush=True)
+                except Exception as exc:          # advisory: a failed warm is not a failed restore
+                    print(f"[capture] ple-prefetch skipped for {model}: {str(exc)[:120]}",
+                          flush=True)
 
             def restore_on_load(model: str, slot: int):
                 """The best attachment this model has, ranked by relevance then size.
@@ -131,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                     return None
 
                 candidates = []
+                token_ids_by_prefix: dict[str, list[int]] = {}
                 for obj in objects:
                     man = obj.manifest or {}
                     if man.get("runtime_model") != model:
@@ -138,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                     fingerprint = str(man.get("prefix_fingerprint") or "")
                     if not fingerprint:
                         continue
+                    token_ids_by_prefix[fingerprint] = list(man.get("prompt_token_ids") or [])
                     covered = int(man.get("prompt_token_count") or 0)
                     own = (fingerprint not in labels) or same_model(labels[fingerprint], model)
                     # Admit time, which the payload's mtime records exactly: nothing
@@ -158,6 +227,13 @@ def main(argv: list[str] | None = None) -> int:
                 # A wrong restore costs more than no restore, so the tie-break that matters
                 # is which prefix traffic actually used last.
                 for own, seen_at, covered, fingerprint in rank_restore_candidates(candidates):
+                    # The attachment's token ids say exactly which pages of the CPU-resident
+                    # PLE table its prefill will read. Warm those first: a cold table walk
+                    # is the 40-vs-720 tok/s prefill gap measured in REQ-089, and this asks
+                    # the kernel for precisely the pages this prefix touches, nothing else.
+                    # Advisory and non-fatal -- a model without a PLE table, or a table we
+                    # cannot locate, simply skips it.
+                    warm_ple_pages(model, token_ids_by_prefix.get(fingerprint, []))
                     result = sidecar.ensure(fingerprint, model, slot)
                     with sidecar._lock:
                         sidecar.stats.restores_served += 1
