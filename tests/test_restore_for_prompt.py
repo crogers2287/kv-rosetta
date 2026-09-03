@@ -22,7 +22,7 @@ class StubAdapter:
     def __init__(self, slots, *, prompt="rendered", ids=None, fail_render=False):
         self.slots = slots
         self.prompt = prompt
-        self.ids = ids if ids is not None else list(range(1, 41))
+        self.ids = ids if ids is not None else list(range(1, 4001))
         self.fail_render = fail_render
         self.calls: list[str] = []
 
@@ -68,42 +68,63 @@ class RestoreForPromptTest(SidecarTestCase):
         return sidecar, swap
 
     def test_picks_the_longest_matching_attachment(self):
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-a", ids[:10], FP_SHORT),
-                                    artifact("model-a", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-a", ids[:1000], FP_SHORT),
+                                    artifact("model-a", ids[:3000], FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure", return_value={"digest": FP_LONG}) as ensure:
             out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
         self.assertTrue(out["restored"], out)
-        self.assertEqual(out["covers_tokens"], 30)
+        self.assertEqual(out["covers_tokens"], 3000)
         self.assertEqual(ensure.call_args.args[0], FP_LONG)
         # rendered and tokenized by the runtime, in that order, before any lookup
         self.assertEqual(adapter.calls[:2], ["apply_template", "tokenize"])
 
-    def test_an_attachment_that_is_not_a_prefix_does_not_match(self):
-        ids = list(range(1, 41))
-        wrong = ids[:20]
+    def test_too_little_shared_prefix_is_a_miss(self):
+        # 5 shared tokens then divergence: a restore would cost more than it saves.
+        ids = list(range(1, 3001))
+        wrong = ids[:2000]
         wrong[5] = 999
         sidecar, _ = self._sidecar([artifact("model-a", wrong, FP_SHORT)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure") as ensure:
             out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
         self.assertFalse(out["restored"])
-        self.assertIn("no attachment is a prefix", out["reason"])
+        self.assertIn("shares at least", out["reason"])
         ensure.assert_not_called()
 
-    def test_an_attachment_longer_than_the_prompt_does_not_match(self):
-        ids = list(range(1, 11))
-        sidecar, _ = self._sidecar([artifact("model-a", list(range(1, 41)), FP_LONG)])
+    def test_an_attachment_longer_than_the_prompt_matches_on_the_shared_head(self):
+        # The live miss: capture saves whole conversations, so every artifact is longer
+        # than the next conversation's first request. What they share is the harness's
+        # system prompt, and llama.cpp reuses exactly that common prefix on restore.
+        ids = list(range(1, 3001))                       # a 3,000-token first request
+        stored = ids[:2500] + list(range(90_000, 95_000))  # older conversation: same head, 7,500 long
+        sidecar, _ = self._sidecar([artifact("model-a", stored, FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
-        with mock.patch.object(sidecar, "ensure") as ensure:
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
             out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
-        self.assertFalse(out["restored"])
-        ensure.assert_not_called()
+        self.assertTrue(out["restored"], out)
+        self.assertEqual(out["shared_tokens"], 2500)
+        self.assertEqual(out["covers_tokens"], 7500)
+        ensure.assert_called_once()
+
+    def test_the_largest_shared_head_wins_and_smaller_artifact_breaks_ties(self):
+        ids = list(range(1, 5001))
+        a = ids[:1500] + [7] * 100                    # shares 1,500
+        b = ids[:4000] + [8] * 100                    # shares 4,000
+        c = ids[:4000] + [9] * 5000                   # shares 4,000, bigger -> loses the tie
+        sidecar, _ = self._sidecar([artifact("model-a", a, "a" * 64),
+                                    artifact("model-a", c, "c" * 64),
+                                    artifact("model-a", b, "b" * 64)])
+        adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
+        self.assertEqual(out["shared_tokens"], 4000)
+        self.assertEqual(ensure.call_args.args[0], "b" * 64)
 
     def test_another_models_attachment_is_ignored(self):
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-b", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-b", ids[:3000], FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure") as ensure:
             out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
@@ -111,8 +132,8 @@ class RestoreForPromptTest(SidecarTestCase):
         ensure.assert_not_called()
 
     def test_prefers_an_empty_idle_slot(self):
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-a", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-a", ids[:3000], FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 500},
                                {"id": 1, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
@@ -123,8 +144,8 @@ class RestoreForPromptTest(SidecarTestCase):
     def test_with_no_empty_slot_takes_the_least_recently_restored(self):
         # This is the busy-fleet case the endpoint exists for. Slot 1 was restored into
         # more recently than slot 0, so slot 0 is what llama.cpp would evict.
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-a", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-a", ids[:3000], FP_LONG)])
         sidecar._slot_last_used = {("model-a", 0): 10.0, ("model-a", 1): 20.0}
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 500},
                                {"id": 1, "is_processing": False, "n_prompt_tokens": 700}], ids=ids)
@@ -135,8 +156,8 @@ class RestoreForPromptTest(SidecarTestCase):
         self.assertGreater(sidecar._slot_last_used[("model-a", 0)], 20.0)
 
     def test_never_touches_a_busy_slot(self):
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-a", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-a", ids[:3000], FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": True, "n_prompt_tokens": 0},
                                {"id": 1, "is_processing": True, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure") as ensure:
@@ -155,8 +176,8 @@ class RestoreForPromptTest(SidecarTestCase):
         self.assertEqual(adapter.calls, [])          # never even rendered
 
     def test_a_refused_restore_is_a_verdict_not_an_error(self):
-        ids = list(range(1, 41))
-        sidecar, _ = self._sidecar([artifact("model-a", ids[:30], FP_LONG)])
+        ids = list(range(1, 4001))
+        sidecar, _ = self._sidecar([artifact("model-a", ids[:3000], FP_LONG)])
         adapter = StubAdapter([{"id": 0, "is_processing": False, "n_prompt_tokens": 0}], ids=ids)
         with mock.patch.object(sidecar, "ensure", side_effect=Fallback("tail contract violated")):
             out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)

@@ -116,15 +116,15 @@ class LookupTests(AliasTestCase):
 
     def test_restore_for_prompt_via_alias_finds_canonical_artifacts(self):
         sidecar, _ = self.build(loaded=("qwen38-27b-3090-agg",))
-        ids = list(range(1, 41))
+        ids = list(range(1, 4001))
         fp = "c" * 64
-        sidecar.store = lambda: _Store([_artifact("qwen38-27b-3090-agg", ids[:30], fp)])
+        sidecar.store = lambda: _Store([_artifact("qwen38-27b-3090-agg", ids[:3000], fp)])
         with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
             out = sidecar.restore_for_prompt("qwen38-27b-kvx-3090",
                                              [{"role": "user", "content": "hi"}],
                                              adapter=_Adapter(ids))
         self.assertTrue(out["restored"], out)
-        self.assertEqual(out["covers_tokens"], 30)
+        self.assertEqual(out["covers_tokens"], 3000)
         self.assertEqual((out["requested"], out["model"]),
                          ("qwen38-27b-kvx-3090", "qwen38-27b-3090-agg"))
         self.assertEqual(ensure.call_args.args[1], "qwen38-27b-3090-agg")

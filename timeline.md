@@ -4396,3 +4396,34 @@ Daemon on `200f2b1`. Fleet: `ornith-kvx-w6800`, `tiel-kvx-w6800`.
   identical before and after.
 A hit still needs real harness traffic whose rendered prefix is a stored attachment
 (ornith A holds four, including the 72,465-token system prompt). Watch re-armed.
+
+## REQ-107 — match on the longest shared prefix, not "stored is a prefix of the prompt"
+
+**Found by** the second trace watch: one real new conversation in 55 minutes — Ornith,
+21,629 tokens — and it missed. Structurally guaranteed by REQ-104's rule: capture saves
+whole conversations at idle, so every stored artifact is LONGER than the next
+conversation's first request, and "stored ⊆ prompt" can never hold. Measured across the
+store: the 27B's four artifacts share 69,378 tokens (all four); tiel pairs 55,283; flash-next
+58,536; ornith-B 82,895. The shared head is the harness's system prompt plus common history,
+and it is what a restore is worth.
+
+**What the runtime does with a diverging prompt** (tools/server/server-context.cpp):
+`n_past = get_common_prefix()`, then it restores the latest context checkpoint at or before
+that point (`cur.pos_min < pos_min_thold`) and reprocesses the rest. So restoring an
+artifact that merely SHARES a head with the request warms exactly that head.
+
+**Fix.** `restore_for_prompt` now scores each artifact by longest common prefix, requires
+`MIN_USEFUL_LCP = 1024` (below that the prefill is cheaper than the restore), prefers the
+larger share and, on a tie, the smaller artifact. The answer carries `shared_tokens`.
+
+**Correction to REQ-105.** I wrote that short prefixes are structurally uncapturable at the
+default 8,192-token checkpoint spacing. Wrong. Checkpoints are created at USER-TURN
+boundaries (`spans.is_user_start`); `checkpoint_min_step` only suppresses one closer than
+8,192 tokens to the previous. Ornith's ~4.6k-token artifacts each carry 3 checkpoints with
+coverage right after the system prompt. The 27B's 4,096-token refusal had no checkpoint
+because that prompt had no chat turns, not because of spacing.
+
+**Status.** Proven by retained test: LCP match on a longer artifact, largest share wins,
+tie → smaller artifact, below-threshold miss, `shared_tokens` reported; alias tests
+rescaled. Mutation-checked: first-match and threshold-removed each fail. Full suite green.
+UNTESTED live: needs the next real new conversation; watch to be re-armed.

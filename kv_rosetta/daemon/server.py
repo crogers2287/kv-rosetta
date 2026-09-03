@@ -64,6 +64,21 @@ class Stats:
                 "uptime_s": time.time() - self.started}
 
 
+#: Shortest shared prefix worth restoring for. A restore writes hundreds of MB into a slot
+#: and probes it (seconds); the fleet prefills at roughly 500-1,500 tok/s, so below about
+#: a thousand tokens the prefill is the cheaper path.
+MIN_USEFUL_LCP = 1024
+
+
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token sequences."""
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
 class Fallback(Exception):
     """A prefix cannot be served. Not an error: the caller prefills, as it always would."""
 
@@ -312,21 +327,31 @@ class Sidecar:
         if not ids:
             return {"restored": False, "reason": "prompt tokenized to nothing"}
 
+        # Longest COMMON prefix, not "stored is a prefix of the prompt". Capture saves whole
+        # conversations at idle, so every stored artifact is longer than the first request
+        # of the next conversation from the same harness -- the strict rule could never
+        # match (measured: a 21,629-token first request against 25,958..42,726-token
+        # artifacts, miss). llama.cpp itself reuses get_common_prefix() and then restores
+        # the latest context checkpoint at or before it, so the shared head is what a
+        # restore is worth. Below MIN_USEFUL_LCP a restore costs more than the prefill it
+        # saves. Tie-break toward the smaller artifact: less to write into the slot.
         best = None
         for obj in self.store().list_objects():
             man = obj.manifest or {}
             if man.get("runtime_model") != model:
                 continue
-            stored = man.get("prompt_token_ids") or []
-            n = len(stored)
-            if n == 0 or n > len(ids) or ids[:n] != list(stored):
+            stored = list(man.get("prompt_token_ids") or [])
+            shared = _common_prefix_len(stored, ids)
+            if shared < MIN_USEFUL_LCP:
                 continue
-            if best is None or n > best[0]:
-                best = (n, str(man.get("prefix_fingerprint") or ""), obj)
+            key = (shared, -len(stored))
+            if best is None or key > best[0]:
+                best = (key, str(man.get("prefix_fingerprint") or ""), obj, len(stored))
         if best is None:
             return {"restored": False,
-                    "reason": f"no attachment is a prefix of this prompt ({len(ids)} tokens)"}
-        covers, fingerprint, _ = best
+                    "reason": f"no attachment shares at least {MIN_USEFUL_LCP} tokens with "
+                              f"this prompt ({len(ids)} tokens)"}
+        (shared, _), fingerprint, _, covers = best
 
         try:
             slots = adapter._get("/slots")
@@ -351,7 +376,7 @@ class Sidecar:
         memo[(model, slot)] = time.time()
         return {"restored": True, "covers_tokens": covers, "slot": slot,
                 "prefix": fingerprint[:12], "prompt_tokens": len(ids),
-                "model": model, "requested": requested,
+                "model": model, "requested": requested, "shared_tokens": shared,
                 "seconds": round(time.time() - started, 3), **result}
 
     # -- lifecycle ---------------------------------------------------------------------
