@@ -4321,3 +4321,20 @@ STILL UNTESTED: a hit. That needs a first request whose rendered prefix IS a sto
 attachment — real harness traffic, which cannot be fabricated here — or flash-next/ornith
 back so their stored prefixes can be exercised. A watch is armed on the trace table for the
 first `kvx→restored`.
+
+## REQ-105 — capture floor lowered 6,000 → 2,000
+
+**Why.** `qwen38-27b-3090-agg` had never been captured (0 captures, 213 restore polls
+finding nothing). `choose_candidates` run against its live slots returned `[]`: the one
+big conversation (69,215 tokens) has been generating non-stop since 16:51 and kvxd never
+disturbs a busy slot; the other real prefix on the model, 4,096 tokens, sat under the
+6,000-token floor. That floor was chosen against ~600 MB flash-next artifacts; on the 27B
+a 4,096-token prompt is ~200 MB and exactly the harness prefix that pays off.
+
+**Change.** Runtime flag only: `--capture-min-tokens 2000`. Store stays bounded by
+`MAX_ARTIFACTS_PER_MODEL = 4` (REQ-101), so a lower floor cannot regrow the disk.
+
+**Ruled out first.** The static `supports_prefix_reuse("qwen35")` refusal is not the
+blocker — `hybrid_support()` falls through to live `/props`, which reports
+`slot_checkpoint_persistence=True`, `sckp/1`, target state supported. `--slot-save-path`
+is set on the live process.
