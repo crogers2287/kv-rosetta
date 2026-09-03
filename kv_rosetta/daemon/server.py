@@ -219,6 +219,90 @@ class Sidecar:
                 "prompt_n": report.prompt_n, "seconds": report.seconds,
                 "phases": report.phases, "mode": "admitted_direct_restore"}
 
+    # -- restore at request time ---------------------------------------------------------
+
+    def restore_for_prompt(self, model: str, messages: list[dict[str, Any]],
+                           tools: list[dict[str, Any]] | None = None, *,
+                           adapter: Any | None = None) -> dict[str, Any]:
+        """Put the attachment that best matches an incoming prompt into a slot, now.
+
+        The load-time restore only ever fills an EMPTY slot, and after a model's first
+        request its slots are never empty again: llama.cpp keeps the last conversation's
+        cache in each one. So on a busy fleet a new conversation never met a restore --
+        llama.cpp evicted a slot and prefilled the whole prompt cold (measured: 30,335 and
+        7,399-token first requests both `cached: 0`). This is the request-time half.
+
+        The prefix is rendered and tokenized by the runtime that will serve it, because the
+        prefix a request presents is the chat-templated string, and the template is the
+        runtime's. The attachment chosen is the one whose stored token ids are the LONGEST
+        prefix of that sequence. The slot chosen is an idle one -- empty if any, otherwise
+        the one this sidecar restored into least recently -- which is the slot llama.cpp
+        would evict for this request anyway, so a warm session is never turned cold that
+        was not about to be.
+
+        Never wakes a model (upstream_base refuses an unloaded one) and never touches a
+        busy slot. Returns a dict that always carries `restored`; a miss is an answer, not
+        an error, because the caller is about to forward the request either way.
+        """
+        started = time.time()
+        if not messages:
+            return {"restored": False, "reason": "no messages to match"}
+        try:
+            base = self.upstream_base(model)
+        except Fallback as exc:
+            return {"restored": False, "reason": str(exc)}
+        if adapter is None:
+            from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
+            adapter = LlamaCppHTTPAdapter(base, str(self.store().root))
+        try:
+            prompt = adapter.apply_template(messages, tools)
+            ids = adapter.tokenize(prompt)
+        except Exception as exc:
+            return {"restored": False, "reason": f"runtime could not render the prompt: {exc}"}
+        if not ids:
+            return {"restored": False, "reason": "prompt tokenized to nothing"}
+
+        best = None
+        for obj in self.store().list_objects():
+            man = obj.manifest or {}
+            if man.get("runtime_model") != model:
+                continue
+            stored = man.get("prompt_token_ids") or []
+            n = len(stored)
+            if n == 0 or n > len(ids) or ids[:n] != list(stored):
+                continue
+            if best is None or n > best[0]:
+                best = (n, str(man.get("prefix_fingerprint") or ""), obj)
+        if best is None:
+            return {"restored": False,
+                    "reason": f"no attachment is a prefix of this prompt ({len(ids)} tokens)"}
+        covers, fingerprint, _ = best
+
+        try:
+            slots = adapter._get("/slots")
+        except Exception as exc:
+            return {"restored": False, "reason": f"could not read slots: {exc}"}
+        idle = [s for s in slots if not s.get("is_processing")]
+        if not idle:
+            return {"restored": False, "reason": "every slot is busy"}
+        memo = getattr(self, "_slot_last_used", None)
+        if memo is None:
+            memo = self._slot_last_used = {}
+        empty = [s for s in idle if int(s.get("n_prompt_tokens") or 0) == 0]
+        pool = empty or idle
+        slot = int(min(pool, key=lambda s: (memo.get((model, int(s["id"])), 0.0),
+                                            int(s["id"])))["id"])
+
+        try:
+            result = self.ensure(fingerprint, model, slot)
+        except Fallback as exc:
+            return {"restored": False, "reason": f"refused: {exc}", "slot": slot,
+                    "prefix": fingerprint[:12]}
+        memo[(model, slot)] = time.time()
+        return {"restored": True, "covers_tokens": covers, "slot": slot,
+                "prefix": fingerprint[:12], "prompt_tokens": len(ids),
+                "seconds": round(time.time() - started, 3), **result}
+
     # -- lifecycle ---------------------------------------------------------------------
 
     def serve_forever(self) -> None:
@@ -303,6 +387,22 @@ def _make_handler(sidecar: Sidecar):
 
         def do_POST(self) -> None:
             route = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if route == "/v1/restore-for-prompt":
+                # Always 200 with a `restored` verdict: the caller is about to forward the
+                # request whatever the answer, so a miss is information, not an error.
+                def prompt_action() -> dict[str, Any]:
+                    body = self._body()
+                    result = sidecar.restore_for_prompt(
+                        str(body.get("model", "")),
+                        list(body.get("messages") or []),
+                        list(body.get("tools") or []) or None)
+                    if result.get("restored"):
+                        with sidecar._lock:
+                            sidecar.stats.restores_served += 1
+                    return {"ok": True, **result}
+
+                self._handle(route, prompt_action)
+                return
             if route != "/v1/ensure":
                 self._send(404, {"ok": False, "error": f"unknown route {route}"})
                 return

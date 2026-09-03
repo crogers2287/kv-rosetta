@@ -997,6 +997,20 @@ class LlamaCppHTTPAdapter(Adapter):
         tokenized by the runtime that will serve it, never by an assumed tokenizer."""
         return list(self._post("/tokenize", {"content": text}).get("tokens", []))
 
+    def apply_template(self, messages: list[dict[str, Any]],
+                       tools: list[dict[str, Any]] | None = None) -> str:
+        """Render messages the way THIS runtime will before it tokenizes them.
+
+        The prefix a request actually presents to the model is the chat-templated string,
+        not the raw messages, and the template is the runtime's (`--jinja` and whatever
+        the GGUF embeds). Rendering anywhere else would produce a prefix the runtime never
+        sees, and a restore matched against it would be matched against nothing.
+        """
+        payload: dict[str, Any] = {"messages": messages}
+        if tools:
+            payload["tools"] = tools
+        return str(self._post("/apply-template", payload).get("prompt", ""))
+
     def erase(self, slot: int | None = None) -> int:
         return int(self._post(f"/slots/{self._slot(slot)}?action=erase", {}).get("n_erased", 0))
 

@@ -4276,3 +4276,30 @@ passes; a 60-of-1,000 tail, longer than the declared gap, still refuses). Mutati
 reverting the call site to the 1% rule fails the end-to-end case. Suite 1683 OK.
 UNTESTED live: no PLE/hybrid model is loaded (flash-next and ornith parked by the 15:34
 config write); the first live restore after they return is the proof.
+
+## REQ-104 — restore at request time, not only at model load
+
+**The gap.** `restore_fresh` only ever fills an EMPTY slot ("empty is the load-bearing
+half", by design: overwriting a held prompt turns a warm session cold). After a model's
+first request its slots are never empty again — llama.cpp keeps the last conversation's
+cache in each — so on a busy fleet a NEW conversation never met a restore. llama.cpp evicted
+a slot and prefilled cold: haxor's 30,335- and 7,399-token first requests both `cached: 0`
+while 4 attachments sat in the store. Every capture was useful exactly once, at model load.
+
+**Built.** `POST /v1/restore-for-prompt {model, messages, tools}` on kvxd. The prompt is
+rendered with the runtime's own `/apply-template` (measured: it injects a reasoning-effort
+system preamble the client never sent, so rendering anywhere else would match nothing) and
+tokenized with the runtime's `/tokenize`. The attachment chosen is the one whose stored
+token ids are the LONGEST prefix of that sequence. The slot chosen is idle — empty if any,
+else the one this sidecar restored into least recently, i.e. the one llama.cpp would evict
+for this request anyway, so no warm session is turned cold that was not about to be. Never
+wakes a model (`upstream_base` refuses), never touches a busy slot, and a miss is a 200
+with `restored:false` — the caller forwards the request either way. cfrproxy's side (call
+it synchronously, bounded, only for new conversations) is being built against this
+contract in parallel.
+
+**Status.** Proven by retained test: 12 tests incl. the HTTP route; mutation-checked three
+ways (longest-prefix → first-match, LRU → most-recent, busy-slot guard removed — each fails
+the suite). Full suite 1716 OK. UNTESTED live: no model with attachments is loaded
+(flash-next, ornith parked by the 15:34 config write); the live proof is a haxor first
+request showing `cached` ≈ its system prompt through cfrproxy with the hook enabled.
