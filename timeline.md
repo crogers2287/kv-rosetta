@@ -4427,3 +4427,29 @@ because that prompt had no chat turns, not because of spacing.
 tie → smaller artifact, below-threshold miss, `shared_tokens` reported; alias tests
 rescaled. Mutation-checked: first-match and threshold-removed each fail. Full suite green.
 UNTESTED live: needs the next real new conversation; watch to be re-armed.
+
+### REQ-107 — FIRST LIVE HITS, 2026-09-03 18:56–19:01
+
+Method: recovered the harness system prompt by detokenizing a stored Ornith artifact with
+the runtime itself, then sent it as a new conversation through cfrproxy (`fred/ornith`)
+with a fresh first user turn each time — the runtime re-renders it identically, so the
+shared head matches token-for-token. Daemon on `9c25a44`. Fleet unchanged throughout.
+
+| request | trace note | upstream time |
+|---|---|---|
+| 1 | `kvx→restored 4,645 (slot 0)` | 265 ms |
+| 2 | `kvx→restored 4,616 (slot 1)` | 269 ms |
+| 3 | `kvx→restored 4,616 (slot 0)` | 1.52 s wall |
+| 4 | `kvx→restored 4,616 (slot 1)` | 1.78 s wall |
+
+The decisive number, from llama-server's own counter across request 4:
+`llamacpp:prompt_tokens_total` **54,121 → 54,157 = 36 tokens computed** for a
+**4,612-token prompt**. The restored head was reused; only the new user turn and the
+template tail were prefilled. Cold, this prompt is ~4.6 s at Ornith's prefill rate.
+
+Tie-break observed as designed: equal shared head → the smaller artifact (4,645 over
+4,691); after request 1 was itself captured (4,616), it became the pick.
+
+Evidence class: measured once on this host, four consecutive requests, synthetic prompt
+recovered from real harness traffic. Still to see: the same on unprompted harness traffic
+(watch armed), and the PLE prefetch A/B on flash-next (parked).
