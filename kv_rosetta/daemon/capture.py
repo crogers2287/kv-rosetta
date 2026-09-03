@@ -218,6 +218,14 @@ class CaptureLoop:
         """
         return self._captured_on_slot.get((model, slot_id), 0)
 
+    def _discard_raw(self, name: str) -> None:
+        """Remove a raw capture that will never be admitted. A leftover is waste, not an error."""
+        from pathlib import Path
+        try:
+            Path(self.store_root).expanduser().joinpath(name).unlink()
+        except OSError:
+            pass
+
     def tick(self) -> list[Candidate]:
         loaded = self.loaded_models()
         by_model = {m: self.slots_for(m) for m in sorted(loaded)}
@@ -261,6 +269,11 @@ class CaptureLoop:
                     # cut at 160 chars lost 'n_checkpoints_saved', which was the whole
                     # explanation of why a 4,096-token prompt could not be admitted.
                     self._log(f"admit refused for {cand.model}: {str(exc)[:600]}")
+                    # A refused capture is bytes nothing will ever look up. REQ-095 removes
+                    # the raw file only after a successful admit; the refusal path left a
+                    # 232 MB state behind for a prompt that can never be admitted at this
+                    # checkpoint spacing, and would write it again after every restart.
+                    self._discard_raw(name)
                 else:
                     if info is not None:
                         self.admitted += 1

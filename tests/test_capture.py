@@ -8,6 +8,7 @@ are already loaded.
 
 import os
 import unittest
+from pathlib import Path
 
 from kv_rosetta.daemon.capture import (
     Candidate, CaptureLoop, DEFAULT_MIN_TOKENS, choose_candidates, newly_loaded,
@@ -727,3 +728,50 @@ class StoreCapTests(unittest.TestCase):
             other = self._make(tmp, "other", 6)
             prune_model_artifacts(self._Store(mine + other), "m", keep=2)
             self.assertTrue(all(o.path.exists() for o in other))
+
+
+class RefusedCaptureCleanupTests(unittest.TestCase):
+    """A capture the admitter refuses must not stay on disk."""
+
+    def _loop(self, tmp, admitter):
+        from kv_rosetta.daemon.capture import CaptureLoop
+
+        class Loop(CaptureLoop):
+            def loaded_models(self):
+                return frozenset(["m"])
+
+            def slots_for(self, model):
+                return [{"id": 0, "n_prompt_tokens": 4096, "is_processing": False}]
+
+            def _json(self, url, payload=None, timeout=900):
+                if "action=save" in url:
+                    # llama.cpp writes the file into --slot-save-path; stand in for it
+                    (Path(tmp) / payload["filename"]).write_bytes(b"x" * 64)
+                    return {"n_saved": 4096, "n_written": 64, "n_checkpoints_saved": 0}
+                return {}
+
+        return Loop("http://swap", tmp, min_tokens=2000, admitter=admitter, log=lambda m: None)
+
+    def test_a_refused_admit_removes_the_raw_capture(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            def refuse(model, name, saved):
+                raise RuntimeError("no usable checkpoint coverage")
+            loop = self._loop(tmp, refuse)
+            loop.tick()
+            self.assertEqual(loop.admit_refused, 1)
+            self.assertEqual(list(Path(tmp).iterdir()), [], "refused capture left on disk")
+
+    def test_a_successful_admit_is_untouched_by_the_cleanup(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            seen = []
+            def admit(model, name, saved):
+                seen.append(name)
+                return "ok"
+            loop = self._loop(tmp, admit)
+            loop.tick()
+            self.assertEqual(loop.admitted, 1)
+            # the admitter owns the file on success (REQ-095 unlinks it there); the
+            # refusal cleanup must not have run
+            self.assertEqual(seen, ["auto-m-slot0-4096.state"])
