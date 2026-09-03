@@ -4360,3 +4360,26 @@ The floor was not what stood between the 27B and a restore. Measured after the r
 
 Also: the admit-refusal log line was cut at 160 chars and lost the checkpoint fields that
 explained this; widened to 600.
+
+## REQ-106 — kvxd was alias-blind, so most traffic could never restore
+
+**Found by** the 55-minute trace watch after enabling the cfrproxy hook: 4 new
+conversations, 4 misses. Three were requests for `qwen38-27b-kvx-3090`, refused as
+"not loaded; refusing to wake it" — while llama-swap was serving them (all 200s). It is an
+**alias** of `qwen38-27b-3090-agg`. llama-swap resolves aliases itself and reports only
+canonical ids on `/running`; capture keys the store by that canonical id; a request arrives
+under whatever alias the client chose (`27b`, `hermes-v7`, `alexandria`, …). The raw
+comparison therefore refused every aliased request and could never find its artifacts.
+
+**Fix.** `Sidecar.canonical()` resolves alias → canonical from llama-swap's own
+`config.yaml` (`models.<id>.aliases`), the only place the mapping exists — `/v1/models`
+lists aliases and canonicals with identical metadata and no link. Read locally, cached by
+mtime, fails OPEN to the old behaviour if the file is missing, unparseable, or unconfigured.
+Applied in `require_loaded`, `ensure`, `find_artifact`, `restore_for_prompt`; the
+request-time answer carries both `requested` and `model`. `serve --swap-config` names it.
+
+**Status.** Proven by retained test: 9 tests — alias→canonical, pass-through, fail-open
+(missing and unparseable), mtime re-read, loaded check via alias, unloaded alias still
+refused, `find_artifact` and `restore_for_prompt` matching canonical artifacts through an
+alias. Full suite green. UNTESTED live: the fleet is currently `[]`, so no request can hit
+until something is loaded.

@@ -43,6 +43,9 @@ class SidecarConfig:
     manifest_root: str = "~/.cfrproxy/cache"
     store_root: str | None = None
     request_timeout: float = 30.0
+    #: llama-swap's own config, the only place its aliases are recorded. /running and the
+    #: store speak canonical ids; requests arrive under aliases. Read locally, never fetched.
+    swap_config: str = "~/llama-swap/config.yaml"
 
 
 @dataclass
@@ -93,6 +96,49 @@ class Sidecar:
 
     # -- llama-swap, read-only ---------------------------------------------------------
 
+    # -- aliases -----------------------------------------------------------------------
+
+    def _alias_map(self) -> dict[str, str]:
+        """alias -> canonical llama-swap model id, from llama-swap's own config.
+
+        llama-swap resolves aliases itself and reports only canonical ids on /running, and
+        the store keys artifacts by the canonical id capture saw there. A request arrives
+        under whatever alias the client used -- `qwen38-27b-kvx-3090`, `27b`, `hermes-v7`
+        -- so a raw comparison refused every one of them as "not loaded" while the model
+        was serving: three of the four request-time misses in the first live hour.
+
+        No HTTP surface exposes the mapping (/v1/models lists aliases and canonicals with
+        identical metadata and no link), so the file is read locally. Cached by mtime;
+        fails OPEN to an empty map, which is exactly the pre-existing behaviour.
+        """
+        # Tolerate a sidecar built without __init__ (tests do this): no config, no map.
+        configured = getattr(getattr(self, "config", None), "swap_config", "") or ""
+        if not configured:                    # no config named: nothing to resolve
+            return {}
+        path = Path(configured).expanduser()
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return {}
+        cached = getattr(self, "_alias_cache", None)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        try:
+            import yaml
+            doc = yaml.safe_load(path.read_text()) or {}
+            mapping: dict[str, str] = {}
+            for canonical, entry in (doc.get("models") or {}).items():
+                for alias in (entry or {}).get("aliases") or []:
+                    mapping[str(alias)] = str(canonical)
+        except Exception:                     # unreadable config: behave as before
+            mapping = {}
+        self._alias_cache = (stamp, mapping)
+        return mapping
+
+    def canonical(self, model: str) -> str:
+        """The id llama-swap and the store use for `model`; unchanged if it is not an alias."""
+        return self._alias_map().get(model, model)
+
     def running_models(self) -> list[str]:
         """Models llama-swap reports as loaded.
 
@@ -112,7 +158,7 @@ class Sidecar:
 
     def require_loaded(self, model: str) -> None:
         """Refuse unless the model is already resident. This is the whole safety property."""
-        if model not in self.running_models():
+        if self.canonical(model) not in self.running_models():
             raise Fallback(f"model {model!r} is not loaded; refusing to wake it - prefill "
                            f"natively instead")
 
@@ -161,6 +207,7 @@ class Sidecar:
         re-checked during the restore itself, against the live runtime rather than against
         what the manifest claims.
         """
+        model = self.canonical(model)
         for obj in self.store().list_objects():
             manifest = obj.manifest
             if manifest.get("prefix_fingerprint") == fingerprint and \
@@ -173,6 +220,7 @@ class Sidecar:
         if not isinstance(fingerprint, str) or len(fingerprint) != 64 or \
                 any(c not in "0123456789abcdef" for c in fingerprint):
             raise Fallback("fingerprint is not a 64-character lowercase hex digest")
+        model = self.canonical(model)             # the store and /running speak this id
         base = self.upstream_base(model)          # proves the model is loaded first
         found = self.find_artifact(fingerprint, model)
         if found is None:
@@ -245,6 +293,8 @@ class Sidecar:
         an error, because the caller is about to forward the request either way.
         """
         started = time.time()
+        requested = model
+        model = self.canonical(model)             # store keys and /running are canonical
         if not messages:
             return {"restored": False, "reason": "no messages to match"}
         try:
@@ -301,6 +351,7 @@ class Sidecar:
         memo[(model, slot)] = time.time()
         return {"restored": True, "covers_tokens": covers, "slot": slot,
                 "prefix": fingerprint[:12], "prompt_tokens": len(ids),
+                "model": model, "requested": requested,
                 "seconds": round(time.time() - started, 3), **result}
 
     # -- lifecycle ---------------------------------------------------------------------

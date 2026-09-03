@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--swap", default="http://127.0.0.1:9069")
     serve.add_argument("--manifest-root", default="~/.cfrproxy/cache")
     serve.add_argument("--store-root", default="~/.kvrosetta/admitted")
+    serve.add_argument("--swap-config", default="~/llama-swap/config.yaml",
+                       help="llama-swap's config, read locally for alias -> model resolution")
     serve.add_argument("--no-capture", action="store_true",
                        help="do not save warm slots automatically")
     serve.add_argument("--capture-min-tokens", type=int, default=4096)
@@ -124,7 +126,8 @@ def main(argv: list[str] | None = None) -> int:
 
         sidecar = build_server(SidecarConfig(
             host=args.host, port=args.port, swap=args.swap,
-            manifest_root=args.manifest_root, store_root=args.store_root))
+            manifest_root=args.manifest_root, store_root=args.store_root,
+            swap_config=args.swap_config))
         # Deliberately no warm loop. A sidecar that reaches out to keep caches hot
         # recreates the behaviour it replaces: it wakes parked models and pays a full
         # prefill on a schedule whether or not anyone asked. This serves restores on
