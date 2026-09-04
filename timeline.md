@@ -4521,3 +4521,21 @@ that bare name to its `deepseek` provider first; the haxor profiles send
 
 Fleet now: flash-next (3090s, 35 aliases), ornith A (ROCm0), tiel (ROCm1); ornith-B, the 27B
 aggregate and k2-horizon parked as found. kvxd is `kvxd.service`, active.
+
+### First real harness traffic through the hook — 2026-09-04 07:58–08:10
+
+- A 19-turn agent session on `qwen3.8-flash-next` (alias → flash-next): every turn 200;
+  turn 1 missed (23,008 tokens, no stored flash-next artifact shared ≥1,024 with it —
+  correct, its artifacts were older prefixes). kvxd captured that conversation twice as it
+  grew (28,857 → 36,385 tokens), evicting old artifacts under the cap. That agent's NEXT
+  new conversation is the expected first harness-driven hit.
+- Interleaved 08:04–08:05: a Claude-Code-style client (`<system-reminder>` in the user
+  turn, model `fred/qwen38-flash-next-kvx`) sent 112,525- and 110,400-token prompts at
+  flash-next's 98,304-token slots → upstream 502, then cfrproxy's fallback walk (400s).
+  Not a fleet defect: the limit is advertised (`metadata.context: 98304`, and
+  `context_length` on `/v1/models`); the client overran it. cfrproxy recognises
+  context-exceeded errors after the fact (`globalfallback.go`) but does not pre-check the
+  advertised limit, so each such request costs a forwarded prefill attempt before failing.
+  Candidate improvement, not built: a pre-flight check against `context_length` returning
+  a clean 400 (kvxd's `/tokenize` gives exact counts for local models).
+- kvxd stats across it: 0 refusals, 0 errors, 0 models woken; `kvxd.service` active.
