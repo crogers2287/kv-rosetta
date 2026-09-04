@@ -26,8 +26,9 @@ class StubAdapter:
         self.fail_render = fail_render
         self.calls: list[str] = []
 
-    def apply_template(self, messages, tools=None):
+    def apply_template(self, messages, tools=None, extra=None):
         self.calls.append("apply_template")
+        self.extra = extra
         if self.fail_render:
             raise RuntimeError("no template")
         return self.prompt
@@ -196,6 +197,23 @@ class RestoreForPromptTest(SidecarTestCase):
         out = sidecar.restore_for_prompt("model-a", [], adapter=StubAdapter([]))
         self.assertFalse(out["restored"])
 
+    def test_template_fields_reach_the_render(self):
+        # Measured on Flash-Next: without `reasoning_effort` the template injects an
+        # "xhigh" preamble the real request (sent with `medium`) does not carry, and the
+        # rendered head shared THREE tokens with the real one. The render must see every
+        # field the template reads.
+        sidecar, _ = self._sidecar([])
+        adapter = StubAdapter([])
+        sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter,
+                                   template_fields={"reasoning_effort": "medium"})
+        self.assertEqual(adapter.extra, {"reasoning_effort": "medium"})
+
+    def test_no_template_fields_renders_plain(self):
+        sidecar, _ = self._sidecar([])
+        adapter = StubAdapter([])
+        sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
+        self.assertIsNone(adapter.extra)
+
 
 class RouteTest(SidecarTestCase):
     def test_the_route_answers_200_with_a_verdict(self):
@@ -213,7 +231,8 @@ class RouteTest(SidecarTestCase):
                     break
                 threading.Event().wait(0.01)
             body = json.dumps({"model": "model-a", "messages": MSGS,
-                               "tools": [{"type": "function"}]}).encode()
+                               "tools": [{"type": "function"}],
+                               "reasoning_effort": "medium", "max_tokens": 4}).encode()
             req = urllib.request.Request(
                 f"http://127.0.0.1:{sidecar.port}/v1/restore-for-prompt", data=body,
                 headers={"Content-Type": "application/json"})
@@ -224,3 +243,6 @@ class RouteTest(SidecarTestCase):
         self.assertEqual(out["restored"], False)
         self.assertEqual(rfp.call_args.args[0], "model-a")
         self.assertEqual(rfp.call_args.args[2], [{"type": "function"}])
+        # the template-affecting field is forwarded; the generation parameter is not
+        self.assertEqual(rfp.call_args.kwargs.get("template_fields"),
+                         {"reasoning_effort": "medium"})

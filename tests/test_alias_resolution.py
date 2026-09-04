@@ -101,7 +101,7 @@ class _Store:
 
 class _Adapter:
     def __init__(self, ids): self.ids = ids
-    def apply_template(self, messages, tools=None): return "rendered"
+    def apply_template(self, messages, tools=None, extra=None): return "rendered"
     def tokenize(self, text): return list(self.ids)
     def _get(self, path): return [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
 

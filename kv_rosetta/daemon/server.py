@@ -286,6 +286,7 @@ class Sidecar:
 
     def restore_for_prompt(self, model: str, messages: list[dict[str, Any]],
                            tools: list[dict[str, Any]] | None = None, *,
+                           template_fields: dict[str, Any] | None = None,
                            adapter: Any | None = None) -> dict[str, Any]:
         """Put the attachment that best matches an incoming prompt into a slot, now.
 
@@ -320,7 +321,9 @@ class Sidecar:
             from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
             adapter = LlamaCppHTTPAdapter(base, str(self.store().root))
         try:
-            prompt = adapter.apply_template(messages, tools)
+            # Every field the template reads must reach the render, or the head diverges
+            # in its first tokens (measured: 3 shared tokens without `reasoning_effort`).
+            prompt = adapter.apply_template(messages, tools, extra=template_fields)
             ids = adapter.tokenize(prompt)
         except Exception as exc:
             return {"restored": False, "reason": f"runtime could not render the prompt: {exc}"}
@@ -468,10 +471,16 @@ def _make_handler(sidecar: Sidecar):
                 # request whatever the answer, so a miss is information, not an error.
                 def prompt_action() -> dict[str, Any]:
                     body = self._body()
+                    # Template-affecting fields ride along from the real request; the
+                    # adapter keeps only the ones it knows change the render.
+                    template_fields = {k: body[k] for k in (
+                        "reasoning_effort", "chat_template_kwargs", "enable_thinking",
+                        "reasoning_format", "thinking") if k in body}
                     result = sidecar.restore_for_prompt(
                         str(body.get("model", "")),
                         list(body.get("messages") or []),
-                        list(body.get("tools") or []) or None)
+                        list(body.get("tools") or []) or None,
+                        template_fields=template_fields or None)
                     if result.get("restored"):
                         with sidecar._lock:
                             sidecar.stats.restores_served += 1

@@ -997,18 +997,33 @@ class LlamaCppHTTPAdapter(Adapter):
         tokenized by the runtime that will serve it, never by an assumed tokenizer."""
         return list(self._post("/tokenize", {"content": text}).get("tokens", []))
 
+    #: Request fields that change what the chat template renders. Measured on
+    #: Qwen3.8-Flash-Next: with no `reasoning_effort` the template defaults to xhigh and
+    #: injects "Reasoning effort is set to xhigh..." at the head of the system block; with
+    #: `reasoning_effort: medium` (what cfrproxy sends on every request) it injects nothing.
+    #: A render missing the field shared THREE tokens with the real request's head, so
+    #: every real request missed while synthetic probes without the field hit.
+    TEMPLATE_FIELDS = ("reasoning_effort", "chat_template_kwargs", "enable_thinking",
+                       "reasoning_format", "thinking")
+
     def apply_template(self, messages: list[dict[str, Any]],
-                       tools: list[dict[str, Any]] | None = None) -> str:
+                       tools: list[dict[str, Any]] | None = None,
+                       extra: dict[str, Any] | None = None) -> str:
         """Render messages the way THIS runtime will before it tokenizes them.
 
         The prefix a request actually presents to the model is the chat-templated string,
         not the raw messages, and the template is the runtime's (`--jinja` and whatever
         the GGUF embeds). Rendering anywhere else would produce a prefix the runtime never
-        sees, and a restore matched against it would be matched against nothing.
+        sees, and a restore matched against it would be matched against nothing. The same
+        holds for any field the template reads: `extra` carries those from the real
+        request, and only those -- generation parameters do not belong in a render.
         """
         payload: dict[str, Any] = {"messages": messages}
         if tools:
             payload["tools"] = tools
+        for key in self.TEMPLATE_FIELDS:
+            if extra and key in extra and extra[key] is not None:
+                payload[key] = extra[key]
         return str(self._post("/apply-template", payload).get("prompt", ""))
 
     def erase(self, slot: int | None = None) -> int:
