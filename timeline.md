@@ -4539,3 +4539,30 @@ aggregate and k2-horizon parked as found. kvxd is `kvxd.service`, active.
   Candidate improvement, not built: a pre-flight check against `context_length` returning
   a clean 400 (kvxd's `/tokenize` gives exact counts for local models).
 - kvxd stats across it: 0 refusals, 0 errors, 0 models woken; `kvxd.service` active.
+
+## REQ-110 — the render lacked the request's template fields; every real request missed
+
+**Found by** the morning's traffic: eight consecutive new conversations from the same
+agent (`<system-conventions>`, 60–63k tokens each) missed while kvxd held that agent's
+captured conversation (28,857 / 36,385 tokens). Synthetic probes had hit. The difference
+was one field.
+
+**Measured, Flash-Next's own `/apply-template`:** with no `reasoning_effort` the template
+defaults to xhigh and injects "Reasoning effort is set to xhigh…" at the head of the system
+block; with `reasoning_effort: medium` — what cfrproxy's `thinking=medium` sets on every
+request — it injects nothing. Longest common prefix of the two renders: **3 tokens**.
+Captured artifacts are rendered by the runtime from the real request (head `# Tools…`);
+kvxd rendered from `messages`+`tools` only (head: the xhigh preamble). Nothing could match.
+
+**Fix, kvxd half.** `apply_template(..., extra=)` forwards `reasoning_effort`,
+`chat_template_kwargs`, `enable_thinking`, `reasoning_format`, `thinking` to
+`/apply-template`; `restore_for_prompt` takes `template_fields`; the route lifts them from
+the body. Generation parameters are deliberately not forwarded.
+**cfrproxy half** (in flight): `kvxRestoreBody` must forward the same five fields.
+
+**Live after restart:** the same request renders to 291 tokens without the field and
+**253 with `medium`** — the preamble is gone, matching the runtime's real render.
+
+**Status.** Proven by retained test (render receives the fields; route forwards
+`reasoning_effort` and not `max_tokens`). Suite green. The end-to-end hit on real traffic
+waits on cfrproxy's deploy and the agent's next conversation; watch armed.
