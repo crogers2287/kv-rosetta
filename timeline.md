@@ -4593,3 +4593,13 @@ issues no save), `::test_timeout_classification_covers_urllib_wrapping`. Suite 1
 
 **Not changed:** the race itself (read `/slots` → save) is inherent to the HTTP seam; the fix
 bounds its cost to 60 s once per prefix instead of one full generation per tick.
+
+**Verification stamp (2026-09-04 09:30, live, after `kvxd` restart to pid 3393345):**
+`POST …/slots/1?action=erase` → `{"n_erased":7642}`; a second conversation with the same
+system prompt sent through cfrproxy (:8420) → kvxd journal
+`[restore-for-prompt] qwen38-flash-next-kvx: restored 7,642 tokens into slot 1`; cfrproxy trace
+`status 200, prompt_tokens 7639, cached_tokens 7612, note "thinking=medium kvx→restored 7,642
+(slot 1)"`; server `prompt_tokens_total` delta **34** for a 7,639-token prompt; 3.7 s total.
+This is the whole chain (capture → admit → request-time restore → cache hit) on the harness
+path with the REQ-110 template fields, not a synthetic sidecar call. Closes REQ-110 and REQ-111.
+Test artifact and slot removed afterwards.
