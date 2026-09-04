@@ -68,6 +68,10 @@ class Stats:
 #: and probes it (seconds); the fleet prefills at roughly 500-1,500 tok/s, so below about
 #: a thousand tokens the prefill is the cheaper path.
 MIN_USEFUL_LCP = 1024
+# REQ-112: cfrproxy's probe timed out (3 s) while the restore finished behind it, then a retry
+# restored the same prefix again into ANOTHER idle slot. A restore answered within this window
+# for the same (model, prefix) is reported as already done, from /slots, without touching one.
+RECENT_RESTORE_S = 30.0
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -320,11 +324,15 @@ class Sidecar:
         if adapter is None:
             from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
             adapter = LlamaCppHTTPAdapter(base, str(self.store().root))
+        stages: dict[str, float] = {}
+        mark = time.time()
         try:
             # Every field the template reads must reach the render, or the head diverges
             # in its first tokens (measured: 3 shared tokens without `reasoning_effort`).
             prompt = adapter.apply_template(messages, tools, extra=template_fields)
+            stages["render"] = round(time.time() - mark, 3); mark = time.time()
             ids = adapter.tokenize(prompt)
+            stages["tokenize"] = round(time.time() - mark, 3); mark = time.time()
         except Exception as exc:
             return {"restored": False, "reason": f"runtime could not render the prompt: {exc}"}
         if not ids:
@@ -339,6 +347,7 @@ class Sidecar:
         # restore is worth. Below MIN_USEFUL_LCP a restore costs more than the prefill it
         # saves. Tie-break toward the smaller artifact: less to write into the slot.
         best = None
+        mark = time.time()
         for obj in self.store().list_objects():
             man = obj.manifest or {}
             if man.get("runtime_model") != model:
@@ -351,18 +360,39 @@ class Sidecar:
             if best is None or key > best[0]:
                 best = (key, str(man.get("prefix_fingerprint") or ""), obj, len(stored))
         if best is None:
-            return {"restored": False,
+            stages["scan"] = round(time.time() - mark, 3)
+            return {"restored": False, "stages": stages,
                     "reason": f"no attachment shares at least {MIN_USEFUL_LCP} tokens with "
                               f"this prompt ({len(ids)} tokens)"}
         (shared, _), fingerprint, _, covers = best
+        stages["scan"] = round(time.time() - mark, 3); mark = time.time()
 
         try:
             slots = adapter._get("/slots")
         except Exception as exc:
             return {"restored": False, "reason": f"could not read slots: {exc}"}
+        stages["slots"] = round(time.time() - mark, 3); mark = time.time()
+
+        # Already restored for this prefix moments ago? The caller gave up on that answer
+        # (or is retrying); the slot is either serving that request now or still holding
+        # the restored cache. Say so instead of restoring again into a second slot.
+        recent = getattr(self, "_recent_restores", None)
+        if recent is None:
+            recent = self._recent_restores = {}
+        hit = recent.get((model, fingerprint))
+        if hit and time.time() - hit["at"] <= RECENT_RESTORE_S:
+            held = next((s for s in slots if int(s["id"]) == hit["slot"]), None)
+            if held is not None and (held.get("is_processing") or
+                                     int(held.get("n_prompt_tokens") or 0) >= hit["covers"]):
+                stages["ensure"] = 0.0
+                return {"restored": True, "already": True, "covers_tokens": hit["covers"],
+                        "slot": hit["slot"], "prefix": fingerprint[:12],
+                        "prompt_tokens": len(ids), "model": model, "requested": requested,
+                        "shared_tokens": shared, "stages": stages,
+                        "seconds": round(time.time() - started, 3)}
         idle = [s for s in slots if not s.get("is_processing")]
         if not idle:
-            return {"restored": False, "reason": "every slot is busy"}
+            return {"restored": False, "reason": "every slot is busy", "stages": stages}
         memo = getattr(self, "_slot_last_used", None)
         if memo is None:
             memo = self._slot_last_used = {}
@@ -374,10 +404,13 @@ class Sidecar:
         try:
             result = self.ensure(fingerprint, model, slot)
         except Fallback as exc:
+            stages["ensure"] = round(time.time() - mark, 3)
             return {"restored": False, "reason": f"refused: {exc}", "slot": slot,
-                    "prefix": fingerprint[:12]}
+                    "prefix": fingerprint[:12], "stages": stages}
+        stages["ensure"] = round(time.time() - mark, 3)
         memo[(model, slot)] = time.time()
-        return {"restored": True, "covers_tokens": covers, "slot": slot,
+        recent[(model, fingerprint)] = {"slot": slot, "at": time.time(), "covers": covers}
+        return {"restored": True, "covers_tokens": covers, "slot": slot, "stages": stages,
                 "prefix": fingerprint[:12], "prompt_tokens": len(ids),
                 "model": model, "requested": requested, "shared_tokens": shared,
                 "seconds": round(time.time() - started, 3), **result}
@@ -430,25 +463,36 @@ def _make_handler(sidecar: Sidecar):
                 raise ValueError("request body is not a JSON object")
             return value
 
+        def _reply(self, status: int, payload: dict[str, Any]) -> None:
+            try:
+                self._send(status, payload)
+            except (BrokenPipeError, ConnectionResetError):
+                # REQ-112: the caller's probe timeout expired before the verdict. The work
+                # is done and memoised (see RECENT_RESTORE_S); its retry gets it instantly.
+                print(f"[{self.path.split('?', 1)[0]}] caller hung up before the verdict "
+                      f"({payload.get('seconds', 0):.2f}s): "
+                      f"{'restored' if payload.get('restored') else payload.get('reason', payload.get('error', '?'))}",
+                      flush=True)
+
         def _handle(self, route: str, action) -> None:
             try:
-                self._send(200, action())
+                self._reply(200, action())
             except Fallback as exc:
                 with sidecar._lock:
                     sidecar.stats.fallbacks += 1
-                self._send(200, {"ok": False, "fallback": True, "reason": exc.reason,
+                self._reply(200, {"ok": False, "fallback": True, "reason": exc.reason,
                                  "action": "prefill_natively"})
             except AdapterError as exc:
                 with sidecar._lock:
                     sidecar.stats.refusals += 1
-                self._send(409, {"ok": False, "refused": True, "reason": str(exc)})
+                self._reply(409, {"ok": False, "refused": True, "reason": str(exc)})
             except ValueError as exc:
-                self._send(400, {"ok": False, "error": str(exc)})
+                self._reply(400, {"ok": False, "error": str(exc)})
             except Exception as exc:                  # never leak a traceback to a caller
                 log.exception("unhandled error on %s", route)
                 with sidecar._lock:
                     sidecar.stats.errors += 1
-                self._send(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                self._reply(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
 
         def do_GET(self) -> None:
             route = self.path.split("?", 1)[0].rstrip("/") or "/"
@@ -487,10 +531,17 @@ def _make_handler(sidecar: Sidecar):
                     # One line per call, so the daemon log is evidence of what cfrproxy
                     # asked and what was answered -- the first live check had to be read
                     # off the proxy's trace table because nothing here recorded the call.
-                    verdict = (f"restored {result.get('covers_tokens'):,} tokens into slot "
+                    verdict = (f"{'already ' if result.get('already') else ''}restored "
+                               f"{result.get('covers_tokens'):,} tokens into slot "
                                f"{result.get('slot')}" if result.get("restored")
                                else f"miss: {result.get('reason')}")
-                    print(f"[restore-for-prompt] {body.get('model')}: {verdict}", flush=True)
+                    timing = " ".join(f"{k}={v:.2f}s" for k, v in
+                                      (result.get("stages") or {}).items())
+                    phases = " ".join(f"{k}={v:.2f}s" for k, v in
+                                      (result.get("phases") or {}).items() if v >= 0.05)
+                    print(f"[restore-for-prompt] {body.get('model')}: {verdict} | "
+                          f"{result.get('seconds', 0):.2f}s {timing}"
+                          f"{' | ensure: ' + phases if phases else ''}", flush=True)
                     return {"ok": True, **result}
 
                 self._handle(route, prompt_action)

@@ -215,6 +215,98 @@ class RestoreForPromptTest(SidecarTestCase):
         self.assertIsNone(adapter.extra)
 
 
+class RecentRestoreTest(SidecarTestCase):
+    """REQ-112: cfrproxy's probe timed out while the restore finished behind it, then its
+    retry restored the same prefix into a SECOND idle slot 8 s later. The second call must
+    answer from /slots: already restored, slot S, no ensure()."""
+
+    def _sidecar(self, objs, loaded=("model-a",)):
+        sidecar, _ = self.build(loaded=loaded)
+        sidecar.store = lambda: StubStore(objs)
+        return sidecar
+
+    def _objs(self):
+        return [artifact("model-a", range(1, 3001), "a" * 64)]
+
+    def test_a_retry_within_the_window_is_answered_without_restoring_again(self):
+        sidecar = self._sidecar(self._objs())
+        idle = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0},
+                {"id": 1, "is_processing": False, "n_prompt_tokens": 0}]
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            first = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(idle))
+            self.assertTrue(first["restored"]); self.assertNotIn("already", first)
+            # cfrproxy forwarded the request: the restored slot is now serving it
+            busy = [{"id": first["slot"], "is_processing": True, "n_prompt_tokens": 3001},
+                    {"id": 1 - first["slot"], "is_processing": False, "n_prompt_tokens": 0}]
+            second = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(busy))
+        self.assertEqual(ensure.call_count, 1, "the retry must not restore again")
+        self.assertEqual((second["restored"], second["already"], second["slot"]),
+                         (True, True, first["slot"]))
+        self.assertEqual(second["stages"]["ensure"], 0.0)
+
+    def test_an_idle_slot_still_holding_the_cache_also_counts(self):
+        sidecar = self._sidecar(self._objs())
+        idle = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            first = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(idle))
+            held = [{"id": 0, "is_processing": False, "n_prompt_tokens": 3000}]
+            second = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(held))
+        self.assertEqual(ensure.call_count, 1)
+        self.assertTrue(second.get("already"), second)
+
+    def test_an_evicted_slot_is_restored_again(self):
+        # The memo is a hint; /slots is the truth. Idle with fewer tokens = evicted.
+        sidecar = self._sidecar(self._objs())
+        idle = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(idle))
+            evicted = [{"id": 0, "is_processing": False, "n_prompt_tokens": 400}]
+            second = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(evicted))
+        self.assertEqual(ensure.call_count, 2)
+        self.assertNotIn("already", second)
+
+    def test_the_memo_expires(self):
+        from kv_rosetta.daemon import server as module
+        sidecar = self._sidecar(self._objs())
+        idle = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(idle))
+            for v in sidecar._recent_restores.values():
+                v["at"] -= module.RECENT_RESTORE_S + 1
+            busy = [{"id": 0, "is_processing": True, "n_prompt_tokens": 3001},
+                    {"id": 1, "is_processing": False, "n_prompt_tokens": 0}]
+            second = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(busy))
+        self.assertEqual(ensure.call_count, 2)
+        self.assertEqual(second["slot"], 1)
+
+    def test_every_verdict_reports_stage_timings(self):
+        sidecar = self._sidecar(self._objs())
+        idle = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        with mock.patch.object(sidecar, "ensure", return_value={"phases": {"x": 1.0}}):
+            hit = sidecar.restore_for_prompt("model-a", MSGS, adapter=StubAdapter(idle))
+        self.assertEqual(set(hit["stages"]), {"render", "tokenize", "scan", "slots", "ensure"})
+        miss = sidecar.restore_for_prompt("model-a", MSGS,
+                                          adapter=StubAdapter(idle, ids=list(range(9, 20))))
+        self.assertFalse(miss["restored"]); self.assertIn("scan", miss["stages"])
+
+
+class HungUpCallerTest(unittest.TestCase):
+    def test_a_broken_pipe_is_one_log_line_not_a_traceback(self):
+        import io
+        from contextlib import redirect_stdout
+        from kv_rosetta.daemon.server import _make_handler
+        Handler = _make_handler(SimpleNamespace(_lock=mock.MagicMock(), stats=SimpleNamespace()))
+        h = Handler.__new__(Handler)
+        h.path = "/v1/restore-for-prompt"
+        h.send_response = h.send_header = h.end_headers = lambda *a, **k: None
+        h.wfile = SimpleNamespace(write=mock.Mock(side_effect=BrokenPipeError()))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            h._handle("/v1/restore-for-prompt",
+                      lambda: {"restored": True, "seconds": 6.2})     # must not raise
+        self.assertIn("caller hung up before the verdict (6.20s): restored", out.getvalue())
+
+
 class RouteTest(SidecarTestCase):
     def test_the_route_answers_200_with_a_verdict(self):
         import threading
