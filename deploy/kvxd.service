@@ -1,0 +1,29 @@
+[Unit]
+Description=KV Rosetta sidecar (kvxd): capture, admit and restore llama.cpp slot caches
+Documentation=file:///home/crogers2287/kv-rosetta/timeline.md
+# llama-swap is what it talks to; cfrproxy is what talks to it. Neither is a hard
+# dependency: every path here fails open to a native prefill.
+After=network.target
+
+[Service]
+WorkingDirectory=/home/crogers2287/kv-rosetta
+# Flags are the ones measured into place on 2026-09-01..03:
+#   --capture-min-tokens 2000   REQ-105: 6,000 starved every harness prefix under it
+#   --capture-interval 4        one poll every 4 s; captures only idle slots >= the floor
+#   --swap-config               REQ-106: alias -> canonical resolution, read locally
+# The store is bounded in code (MAX_ARTIFACTS_PER_MODEL = 4, REQ-101).
+ExecStart=/usr/bin/python3 -u -m kv_rosetta.cli serve \
+    --swap http://127.0.0.1:9069 \
+    --store-root /home/crogers2287/.kvrosetta/admitted \
+    --swap-config /home/crogers2287/llama-swap/config.yaml \
+    --port 8431 \
+    --capture-min-tokens 2000 \
+    --capture-interval 4
+Restart=on-failure
+RestartSec=3
+# The daemon logs one line per capture/admit/restore/refusal; the journal is the record.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

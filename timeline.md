@@ -4453,3 +4453,42 @@ Tie-break observed as designed: equal shared head → the smaller artifact (4,64
 Evidence class: measured once on this host, four consecutive requests, synthetic prompt
 recovered from real harness traffic. Still to see: the same on unprompted harness traffic
 (watch armed), and the PLE prefetch A/B on flash-next (parked).
+
+## REQ-108 — the best config, written into llama-swap and systemd
+
+**Request.** "add whatever the best config is to llamaswap."
+
+**Layout.** flash-next unparked (it was in `parked`; the 3090s were empty) — the operator's
+stated priority. Ornith A on ROCm0 and tiel on ROCm1 left as found; ornith-B, the 27B
+aggregate and k2-horizon left parked as found. The config write triggered llama-swap's
+full reload (it restarts everything on any config change); all three came back: ornith
+145 s, tiel 207 s, flash-next with 2 × 98,304 slots and `/slots` answering.
+
+**Persistence.** kvxd had run as a shell background task all day and would have died with
+the session. `deploy/kvxd.service` (user unit, linger on): `--capture-min-tokens 2000
+--capture-interval 4 --swap-config ~/llama-swap/config.yaml`, Restart=on-failure,
+journal logging. Enabled and started; `systemctl --user` reports active, 0 restarts.
+
+**Two proofs that were waiting on flash-next, landed within seconds of the service start:**
+- PLE prefetch hook (REQ-102) fired live: `66,448 tokens → 617,142 pages (2,528 MB),
+  advised in 0.72 s`, ahead of the restore.
+- The restore succeeded: `slot 1: covers_tokens 66,448, restored: True` — no tail
+  refusal. That is REQ-103's allowance fix proven on flash-next.
+
+**PLE prefetch A/B, measured (29,601-token artifact, identical /completion requests,
+only table-page residency differs):**
+
+| run | table pages resident | prefill |
+|---|---|---|
+| A: evicted (`posix_fadvise DONTNEED`, 2.9% resident) | 10,561 / 361,985 | **340 tok/s, 87.0 s** |
+| B: prefetched (`WILLNEED`, 0.43 s, 100% resident) | 361,985 / 361,985 | **793 tok/s, 37.3 s** |
+
+**2.33× on a real prefix, for a 0.43 s prefetch.** Caveat recorded honestly: a second
+DONTNEED did NOT evict (llama-server had just touched the pages through its own mapping;
+residency stayed 100%), so the "A2" run is a second warm sample at 790 tok/s, not a second
+cold one — the script's printed 1.40× averaged a warm run into the baseline and is wrong.
+The cold figure rests on one eviction, verified by residency 2.9% before the run.
+
+**Left alone, on evidence:** checkpoint spacing (checkpoints land at user-turn
+boundaries; REQ-107 correction), KV types and per-slot context (already measured into
+place), cfrproxy `kvx_restore` (enabled in its settings table).
