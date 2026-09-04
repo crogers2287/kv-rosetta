@@ -4603,3 +4603,43 @@ system prompt sent through cfrproxy (:8420) → kvxd journal
 This is the whole chain (capture → admit → request-time restore → cache hit) on the harness
 path with the REQ-110 template fields, not a synthetic sidecar call. Closes REQ-110 and REQ-111.
 Test artifact and slot removed afterwards.
+
+## REQ-112 — cfrproxy's 3 s probe expired mid-restore; the retry restored again into a second slot
+
+**Request (2026-09-04 16:40, from the cfrproxy session "cfrproxy-09"):** live request-time restores
+on `ornith-kvx-w6800` all landed cold: `/v1/restore-for-prompt` takes 5–8 s, cfrproxy's probe
+timeout was 3 s, so the restore completed after the request was forwarded (journal: `restored
+40,876 tokens into slot 1` at 16:37:56 followed by `BrokenPipeError`; trace 169049 `kvx→timeout`,
+cached 0, 89 s). A second restore 8 s later went into slot 0. Asks: per-stage timings; idempotent
+retry; a timeout recommendation; what to pin on the forwarded request.
+
+**Measured (this host, today):** miss-path stages at 70,911 tokens: render+tokenize 0.29 s, store
+scan 0.14 s (19 manifests, 1.1 M stored ids), `/slots` 0.00 s → a miss answers in **< 0.5 s**.
+Hit path, one real 69,906-token restore (flash-next, 09:31:28): `ensure` **8.98 s** =
+`runtime_restore` 2.39 s + `reuse_probe` 4.91 s + `pristine_restore` 1.65 s. The probe is the
+gate that keeps "never report success from n_restored alone" honest; the pristine restore
+undoes its token. The ornith 40,876-token restores were not timed (pre-fix); 5–8 s is
+consistent with these numbers scaled.
+
+**Fix (`bd0e084`, `kv_rosetta/daemon/server.py`):**
+1. Every verdict carries `stages` (render, tokenize, scan, slots, ensure) and the restore's
+   own `phases`; the journal line is now
+   `[restore-for-prompt] <model>: restored N tokens into slot S | 9.0s render=.. tokenize=.. scan=.. slots=.. ensure=.. | ensure: runtime_restore=.. reuse_probe=.. pristine_restore=..`
+2. `RECENT_RESTORE_S = 30`: a repeat for the same (model, prefix) inside the window is
+   answered `already restored, slot S` straight from `/slots` (slot processing, or idle and
+   still holding ≥ covers tokens) with no restore; an evicted slot restores again.
+3. A caller that hung up before the verdict is one log line
+   (`caller hung up before the verdict (6.20s): restored`), not three tracebacks; the work
+   is memoised for its retry.
+
+**Answers for cfrproxy:** hold **15 s** on the probe (a 70k hit needs ~9–10 s here; a miss is
+< 0.5 s; a timeout-then-retry now costs one `/slots` read). Pin `id_slot=<slot>` and leave
+`cache_prompt` at its default `true`; nothing else is needed — the restored slot holds the
+prefix and llama.cpp's common-prefix reuse does the rest. The two restores 8 s apart were two
+probes (second after the first's timeout), which the memo now collapses.
+
+**Retained tests:** `tests/test_restore_for_prompt.py::RecentRestoreTest` (5: retry answered
+without a second ensure; idle slot still holding the cache counts; evicted slot restores again;
+memo expires; every verdict reports stages) and `::HungUpCallerTest`. Suite green.
+**Restart:** kvxd pid 3393345 → 1246055, health OK, capture loop ticking. **Untested live:**
+no ornith restore has passed through the new code yet; the next one will print the stage line.
