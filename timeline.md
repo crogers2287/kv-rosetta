@@ -4643,3 +4643,47 @@ without a second ensure; idle slot still holding the cache counts; evicted slot 
 memo expires; every verdict reports stages) and `::HungUpCallerTest`. Suite green.
 **Restart:** kvxd pid 3393345 → 1246055, health OK, capture loop ticking. **Untested live:**
 no ornith restore has passed through the new code yet; the next one will print the stage line.
+
+## REQ-113 — seeded, pinned harness prefixes; a dry-run restore probe (asked by cfrproxy-09)
+
+**Request (2026-09-04 18:40, cfrproxy session):** the first conversation a harness opens on a
+model it has never served finds no attachment and prefills cold (Claude Code on ornith today:
+`kvx→miss`, 67k tokens, 79 s, client gave up and retried); kvxd captured that session only
+afterwards (b2bc6bc33139, 67,082 tokens) and capture churn evicts it ("evicted 1 old" on every
+admit). Asked for (1) pinned/seeded artifacts, (2) matching on the static head, (3) a cheap
+"would you hit" probe.
+
+**Decisions.** (2) needs nothing new: matching is longest-common-prefix and a captured
+conversation shares its head with every new session up to the user-turn start, which is where
+this build's hybrid checkpoint sits — so a seed renders system + tools + a one-token user turn,
+not the bare head (a prompt with no turn gets no checkpoint and restores useless). (1) and (3)
+built. cfrproxy sends the exact body it would forward (messages, tools in the forwarded
+format, `reasoning_effort` etc.), so the render is the runtime's own and kvxd never converts a
+cfrproxy manifest; kvwarm can be retired.
+
+**Built:** `POST /v1/seed` (same body as restore-for-prompt, optional `user_turn`) → dry-run
+probe; "already held" if a held artifact shares ≥ prompt − 32 tokens; else prefill with
+`max_tokens 1, id_slot, cache_prompt` into the idle slot with the fewest cached tokens, verify
+`n_prompt_tokens`, save, admit, **pin**. `<digest>.pin` markers; `prune_model_artifacts`
+neither counts nor evicts pinned. `dry_run: true` on `/v1/restore-for-prompt` → `would_restore`,
+`covers_tokens`, `shared_tokens` after render+tokenize+scan only. CLI `seed --body`, `pin`,
+`unpin`. Store staging name made thread-unique.
+
+**Measured live (flash-next, 7,617-token synthetic prefix, 18:44):** probe miss 0.62 s (scan
+0.46 s); seed 7.3 s = prefill 1.16 + save 1.20 + admit 4.64; probe hit 0.21 s (`shared 7,613 of
+7,623`); re-seed → `already` in 0.23 s; `.pin` present. Two defects found by that run and fixed
+in the same commit: the seed took slot 0 (idle, 57,840-token session, held as 10fe9009c46d so
+restorable) over slot 1 (798) — now fewest-tokens-first; and the seed's admit collided with the
+capture thread's on `.incoming.<pid>.tmp` (ENOENT) — now pid+tid+nonce.
+
+**Retained tests:** `tests/test_seed.py` (10: pin survives prune and is outside the count;
+unpin; seed happy path appends a user turn, pins, reports stages; least-to-lose slot; already
+held; shorter held prefix does not block; busy/unloaded untouched; short prefill not captured;
+no admitter → nothing prefilled; dry-run touches no slot),
+`tests/test_admitted_store.py::ConcurrentAdmitTest`. Suite green.
+
+**Untested live:** a real Claude Code / Hermes seed on ornith — cfrproxy-09 owns the forwarded
+body; expected cost is one 67k prefill (~80 s of one idle W6800 slot) per harness per model.
+**Answer to cfrproxy-09:** 1 built (seed + pin; retire kvwarm), 2 unnecessary given LCP +
+user-turn checkpoint (seed appends the turn), 3 built (`dry_run`). After the billing-header
+strip, seed once per harness version; the old artifacts age out.
