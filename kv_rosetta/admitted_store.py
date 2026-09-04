@@ -40,6 +40,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+import uuid
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,7 +117,9 @@ class AdmittedStore:
         """
         raw = Path(raw)
         digest = hashlib.sha256()
-        tmp = self.root / f".incoming.{os.getpid()}.tmp"
+        # REQ-113: pid alone collided when the seed route and the capture thread admitted
+        # at once in one process (ENOENT on the other's rename). Thread id + a nonce.
+        tmp = self.root / f".incoming.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
         written = 0
         try:
             with open(raw, "rb") as src, open(tmp, "wb") as dst:

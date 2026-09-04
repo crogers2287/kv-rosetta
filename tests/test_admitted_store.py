@@ -289,3 +289,35 @@ class StoreOwnershipTest(unittest.TestCase):
         # Both must hold; a wrong owner is refused even at a correct mode.
         self.assertEqual(stat.S_IMODE(self.store.root.stat().st_mode), 0o700)
         self.assertTrue(self.store.resolve(self.obj.digest).digest)
+
+
+class ConcurrentAdmitTest(unittest.TestCase):
+    def test_two_threads_admitting_at_once_do_not_share_a_staging_file(self):
+        # REQ-113 live: the seed route and the capture thread admitted in the same process
+        # at the same moment; the staging name was `.incoming.<pid>.tmp` for both, so one
+        # truncated the other's copy and its rename failed with ENOENT.
+        import os
+        import threading
+        from unittest import mock
+        d = Path(tempfile.mkdtemp())
+        store = AdmittedStore(d / "store")
+        raws = []
+        for i in range(2):
+            raw = d / f"raw{i}.bin"; raw.write_bytes(PAYLOAD + bytes([i])); raws.append(raw)
+        gate = threading.Barrier(2, timeout=10)
+        real_fsync = os.fsync
+        def slow_fsync(fd):                # both threads are inside the staging window here
+            gate.wait(); return real_fsync(fd)
+        results, errors = [], []
+        def run(raw):
+            try:
+                results.append(store.admit(raw, {"prompt_token_count": 1}).digest)
+            except Exception as exc:       # pragma: no cover - the failure being pinned
+                errors.append(exc)
+        with mock.patch.object(os, "fsync", slow_fsync):
+            threads = [threading.Thread(target=run, args=(r,)) for r in raws]
+            for th in threads: th.start()
+            for th in threads: th.join(20)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(set(results)), 2)
+        self.assertEqual(list((d / "store").glob(".incoming*")), [])

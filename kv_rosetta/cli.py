@@ -80,6 +80,19 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--allow-wake", action="store_true",
                      help="load the model if parked; off by default so this cannot become "
                           "the recompute warmer it replaces")
+    seed = commands.add_parser(
+        "seed", help="prefill a static prefix into an idle slot of a loaded model, capture, "
+                     "admit and pin it (REQ-113); the body is the exact request the proxy "
+                     "would forward: model, messages, tools, template fields")
+    seed.add_argument("--body", required=True, help="JSON file with model/messages/tools/…")
+    seed.add_argument("--sidecar", default="http://127.0.0.1:8431")
+    seed.add_argument("--user-turn", default="seed",
+                      help="user turn appended when the prefix ends without one")
+    for name, help_ in (("pin", "mark an admitted artifact as a standing prefix"),
+                        ("unpin", "let capture churn evict an artifact again")):
+        sub = commands.add_parser(name, help=help_)
+        sub.add_argument("digest", help="full 64-hex artifact digest, or a unique prefix")
+        sub.add_argument("--store-root", default="~/.kvrosetta/admitted")
     ple = commands.add_parser(
         "ple-prefetch",
         help="warm the PLE n-gram table pages a known prefix will read (qwen4exp only)")
@@ -94,6 +107,33 @@ def main(argv: list[str] | None = None) -> int:
                      help="compute rows and pages; issue no fadvise")
     args = parser.parse_args(argv)
 
+    if args.command == "seed":
+        import json as _json
+        import urllib.request
+        body = _json.loads(Path(args.body).expanduser().read_text())
+        body.setdefault("user_turn", args.user_turn)
+        req = urllib.request.Request(f"{args.sidecar.rstrip('/')}/v1/seed",
+                                     data=_json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=1800) as r:
+            out = _json.load(r)
+        _json_print = _json.dumps(out, indent=2)
+        print(_json_print)
+        return 0 if out.get("seeded") or out.get("already") else 1
+    if args.command in ("pin", "unpin"):
+        from kv_rosetta.daemon.capture import pin_artifact, unpin_artifact
+        from kv_rosetta.admitted_store import AdmittedStore
+        store = AdmittedStore(Path(args.store_root).expanduser())
+        matches = [o for o in store.list_objects() if o.digest.startswith(args.digest)]
+        if len(matches) != 1:
+            print(f"error: {len(matches)} artifacts match {args.digest!r}")
+            return 2
+        if args.command == "pin":
+            pin_artifact(store, matches[0].digest, "operator\n"); print(f"pinned {matches[0].digest[:12]}")
+        else:
+            print(f"{'unpinned' if unpin_artifact(store, matches[0].digest) else 'was not pinned'} "
+                  f"{matches[0].digest[:12]}")
+        return 0
     if args.command == "ple-prefetch":
         import json as _json
         from kv_rosetta import ple_prefetch
@@ -244,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
                             "own": own, **result}
                 return None
 
-            def admit_capture(model: str, basename: str, saved: dict):
+            def admit_capture(model: str, basename: str, saved: dict, *, pin: bool = False):
                 """Turn a saved slot into an artifact restore-on-load can find.
 
                 Without this a capture is bytes on disk that nothing looks up: artifacts
@@ -256,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
                 from kv_rosetta.adapters import ggsq_envelope
                 from kv_rosetta.adapters.admitted_path import AdmittedPath
                 from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
-                from kv_rosetta.daemon.capture import (prefix_fingerprint,
+                from kv_rosetta.daemon.capture import (pin_artifact, prefix_fingerprint,
                                                         prune_model_artifacts)
 
                 store_root = Path(args.store_root).expanduser()
@@ -279,8 +319,11 @@ def main(argv: list[str] | None = None) -> int:
                             (store_root / basename).unlink()
                         except OSError:
                             pass
+                        if pin:
+                            pin_artifact(sidecar.store(), existing.digest, "seed\n")
                         return (f"already held as {existing.digest[:12]} "
-                                f"({len(token_ids):,} tokens); capture discarded")
+                                f"({len(token_ids):,} tokens); capture discarded"
+                                f"{'; pinned' if pin else ''}")
                 base = f"{args.swap.rstrip('/')}/upstream/{model}"
                 obj = AdmittedPath(LlamaCppHTTPAdapter(base, str(store_root)),
                                    sidecar.store()).admit(
@@ -296,11 +339,14 @@ def main(argv: list[str] | None = None) -> int:
                 except OSError as exc:          # a leftover is waste, not a failed admit
                     print(f"[capture] could not remove raw capture {basename}: "
                           f"{str(exc)[:80]}", flush=True)
+                if pin:                          # REQ-113: a seed is a standing prefix
+                    pin_artifact(sidecar.store(), obj.digest, "seed\n")
                 evicted = prune_model_artifacts(sidecar.store(), model)
                 note = f"; evicted {evicted} old" if evicted else ""
                 return (f"{obj.digest[:12]} covering {len(token_ids):,} tokens "
-                        f"(prefix {fingerprint[:12]}){note}")
+                        f"(prefix {fingerprint[:12]}){note}{'; pinned' if pin else ''}")
 
+            sidecar.admitter = admit_capture
             loop = CaptureLoop(args.swap, args.store_root,
                                min_tokens=args.capture_min_tokens,
                                interval=args.capture_interval,

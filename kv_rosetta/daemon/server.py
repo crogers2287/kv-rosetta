@@ -72,6 +72,9 @@ MIN_USEFUL_LCP = 1024
 # restored the same prefix again into ANOTHER idle slot. A restore answered within this window
 # for the same (model, prefix) is reported as already done, from /slots, without touching one.
 RECENT_RESTORE_S = 30.0
+# REQ-113: a seed whose rendered prompt is already covered by a held artifact, bar the
+# one-token user turn and assistant header it ends in, is not seeded again.
+SEED_TAIL_SLACK = 32
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -291,8 +294,12 @@ class Sidecar:
     def restore_for_prompt(self, model: str, messages: list[dict[str, Any]],
                            tools: list[dict[str, Any]] | None = None, *,
                            template_fields: dict[str, Any] | None = None,
-                           adapter: Any | None = None) -> dict[str, Any]:
+                           adapter: Any | None = None, dry_run: bool = False) -> dict[str, Any]:
         """Put the attachment that best matches an incoming prompt into a slot, now.
+
+        `dry_run` (REQ-113) stops after the scan: render, tokenize, match, answer
+        `would_restore` -- nothing is read from or written to a slot. ~0.4 s at 70k
+        tokens, so a router can count a local model as "prefix cached" before choosing it.
 
         The load-time restore only ever fills an EMPTY slot, and after a model's first
         request its slots are never empty again: llama.cpp keeps the last conversation's
@@ -361,11 +368,17 @@ class Sidecar:
                 best = (key, str(man.get("prefix_fingerprint") or ""), obj, len(stored))
         if best is None:
             stages["scan"] = round(time.time() - mark, 3)
-            return {"restored": False, "stages": stages,
+            return {"restored": False, "would_restore": False, "stages": stages,
+                    "prompt_tokens": len(ids), "model": model, "requested": requested,
                     "reason": f"no attachment shares at least {MIN_USEFUL_LCP} tokens with "
                               f"this prompt ({len(ids)} tokens)"}
         (shared, _), fingerprint, _, covers = best
         stages["scan"] = round(time.time() - mark, 3); mark = time.time()
+        if dry_run:
+            return {"restored": False, "would_restore": True, "covers_tokens": covers,
+                    "shared_tokens": shared, "prefix": fingerprint[:12],
+                    "prompt_tokens": len(ids), "model": model, "requested": requested,
+                    "stages": stages, "seconds": round(time.time() - started, 3)}
 
         try:
             slots = adapter._get("/slots")
@@ -414,6 +427,118 @@ class Sidecar:
                 "prefix": fingerprint[:12], "prompt_tokens": len(ids),
                 "model": model, "requested": requested, "shared_tokens": shared,
                 "seconds": round(time.time() - started, 3), **result}
+
+    # -- seed a standing prefix (REQ-113) ---------------------------------------------------
+
+    admitter = None          # set by `serve`: (model, basename, saved, *, pin) -> str
+
+    def seed(self, model: str, messages: list[dict[str, Any]],
+             tools: list[dict[str, Any]] | None = None, *,
+             template_fields: dict[str, Any] | None = None, user_turn: str = "seed",
+             adapter: Any | None = None) -> dict[str, Any]:
+        """Prefill a known static prefix into an idle slot, capture it, admit it, pin it.
+
+        The first conversation a harness opens on a model it has never served finds no
+        attachment and pays the whole prefill (measured: Claude Code on ornith, 67k tokens,
+        79 s, then the client gave up). The artifact only exists after that victim, and
+        capture churn evicts it. This makes the artifact exist first.
+
+        The caller sends the exact body it would forward (system, tools, template fields)
+        so the render is the runtime's own; a user turn is appended when the prefix ends
+        without one, because this build checkpoints hybrid caches at user-turn starts and
+        a prompt with no turn gets no checkpoint. Never wakes a model, never touches a busy
+        slot, and does nothing when a held artifact already covers the prompt.
+        """
+        started = time.time()
+        stages: dict[str, float] = {}
+        requested = model
+        model = self.canonical(model)
+        if not messages:
+            return {"seeded": False, "reason": "no messages to seed"}
+        try:
+            base = self.upstream_base(model)
+        except Fallback as exc:
+            return {"seeded": False, "reason": str(exc)}
+        if self.admitter is None:
+            return {"seeded": False, "reason": "this sidecar has no admitter; run `serve` "
+                                               "with a store root"}
+        if adapter is None:
+            from kv_rosetta.adapters.llamacpp_http import LlamaCppHTTPAdapter
+            adapter = LlamaCppHTTPAdapter(base, str(self.store().root))
+        msgs = list(messages)
+        if str(msgs[-1].get("role")) != "user":
+            msgs.append({"role": "user", "content": user_turn})
+
+        probe = self.restore_for_prompt(model, msgs, tools, template_fields=template_fields,
+                                        adapter=adapter, dry_run=True)
+        stages["probe"] = round(time.time() - started, 3)
+        need = int(probe.get("prompt_tokens") or 0)
+        if not need:
+            return {"seeded": False, "reason": probe.get("reason", "prompt rendered to nothing"),
+                    "stages": stages}
+        if probe.get("would_restore") and \
+                int(probe.get("shared_tokens") or 0) >= need - SEED_TAIL_SLACK:
+            return {"seeded": False, "already": True, "prefix": probe.get("prefix"),
+                    "covers_tokens": probe.get("covers_tokens"), "prompt_tokens": need,
+                    "model": model, "requested": requested, "stages": stages,
+                    "reason": f"already held: {probe.get('prefix')} shares "
+                              f"{probe.get('shared_tokens'):,} of {need:,} tokens"}
+
+        mark = time.time()
+        try:
+            slots = adapter._get("/slots")
+        except Exception as exc:
+            return {"seeded": False, "reason": f"could not read slots: {exc}", "stages": stages}
+        idle = [s for s in slots if not s.get("is_processing")]
+        if not idle:
+            return {"seeded": False, "reason": "every slot is busy", "stages": stages}
+        memo = getattr(self, "_slot_last_used", None)
+        if memo is None:
+            memo = self._slot_last_used = {}
+        # No request is forcing an eviction here, so take the idle slot with the LEAST to
+        # lose: fewest cached tokens, then least recently restored into. (The first live
+        # seed took slot 0 by id and turned a 57,840-token idle session cold over a
+        # 798-token one.)
+        slot = int(min(idle, key=lambda s: (int(s.get("n_prompt_tokens") or 0),
+                                            memo.get((model, int(s["id"])), 0.0),
+                                            int(s["id"])))["id"])
+
+        body: dict[str, Any] = {"model": model, "messages": msgs, "max_tokens": 1,
+                                "stream": False, "id_slot": slot, "cache_prompt": True,
+                                **(template_fields or {})}
+        if tools:
+            body["tools"] = tools
+        try:
+            adapter._post("/v1/chat/completions", body)
+        except Exception as exc:
+            return {"seeded": False, "reason": f"prefill failed: {str(exc)[:200]}",
+                    "slot": slot, "stages": stages}
+        stages["prefill"] = round(time.time() - mark, 3); mark = time.time()
+
+        # The slot must hold what was rendered; n_prompt_tokens is the server's own count.
+        try:
+            held = next(s for s in adapter._get("/slots") if int(s["id"]) == slot)
+        except Exception as exc:
+            return {"seeded": False, "reason": f"could not re-read slot {slot}: {exc}",
+                    "slot": slot, "stages": stages}
+        n = int(held.get("n_prompt_tokens") or 0)
+        if n < need - 8:
+            return {"seeded": False, "slot": slot, "stages": stages,
+                    "reason": f"slot {slot} holds {n:,} tokens after the prefill, expected "
+                              f"{need:,}; not captured"}
+        name = f"seed-{model}-slot{slot}-{n}.state"
+        try:
+            saved = adapter._post(f"/slots/{slot}?action=save", {"filename": name})
+            stages["save"] = round(time.time() - mark, 3); mark = time.time()
+            admitted = self.admitter(model, name, saved, pin=True)
+            stages["admit"] = round(time.time() - mark, 3)
+        except Exception as exc:
+            return {"seeded": False, "slot": slot, "stages": stages,
+                    "reason": f"capture/admit failed: {str(exc)[:200]}"}
+        memo[(model, slot)] = time.time()
+        return {"seeded": True, "slot": slot, "tokens": n, "admitted": str(admitted),
+                "model": model, "requested": requested, "stages": stages,
+                "seconds": round(time.time() - started, 3)}
 
     # -- lifecycle ---------------------------------------------------------------------
 
@@ -524,17 +649,24 @@ def _make_handler(sidecar: Sidecar):
                         str(body.get("model", "")),
                         list(body.get("messages") or []),
                         list(body.get("tools") or []) or None,
-                        template_fields=template_fields or None)
+                        template_fields=template_fields or None,
+                        dry_run=bool(body.get("dry_run")))
                     if result.get("restored"):
                         with sidecar._lock:
                             sidecar.stats.restores_served += 1
                     # One line per call, so the daemon log is evidence of what cfrproxy
                     # asked and what was answered -- the first live check had to be read
                     # off the proxy's trace table because nothing here recorded the call.
-                    verdict = (f"{'already ' if result.get('already') else ''}restored "
-                               f"{result.get('covers_tokens'):,} tokens into slot "
-                               f"{result.get('slot')}" if result.get("restored")
-                               else f"miss: {result.get('reason')}")
+                    if body.get("dry_run"):
+                        verdict = (f"probe: would restore {result.get('covers_tokens'):,} "
+                                   f"(shared {result.get('shared_tokens'):,})"
+                                   if result.get("would_restore")
+                                   else f"probe miss: {result.get('reason')}")
+                    else:
+                        verdict = (f"{'already ' if result.get('already') else ''}restored "
+                                   f"{result.get('covers_tokens'):,} tokens into slot "
+                                   f"{result.get('slot')}" if result.get("restored")
+                                   else f"miss: {result.get('reason')}")
                     timing = " ".join(f"{k}={v:.2f}s" for k, v in
                                       (result.get("stages") or {}).items())
                     phases = " ".join(f"{k}={v:.2f}s" for k, v in
@@ -545,6 +677,28 @@ def _make_handler(sidecar: Sidecar):
                     return {"ok": True, **result}
 
                 self._handle(route, prompt_action)
+                return
+            if route == "/v1/seed":
+                def seed_action() -> dict[str, Any]:
+                    body = self._body()
+                    template_fields = {k: body[k] for k in (
+                        "reasoning_effort", "chat_template_kwargs", "enable_thinking",
+                        "reasoning_format", "thinking") if k in body}
+                    result = sidecar.seed(
+                        str(body.get("model", "")),
+                        list(body.get("messages") or []),
+                        list(body.get("tools") or []) or None,
+                        template_fields=template_fields or None,
+                        user_turn=str(body.get("user_turn") or "seed"))
+                    timing = " ".join(f"{k}={v:.2f}s" for k, v in
+                                      (result.get("stages") or {}).items())
+                    verdict = (f"seeded {result.get('tokens'):,} tokens into slot "
+                               f"{result.get('slot')} -> {result.get('admitted')}"
+                               if result.get("seeded") else f"not seeded: {result.get('reason')}")
+                    print(f"[seed] {body.get('model')}: {verdict} | "
+                          f"{result.get('seconds', 0):.2f}s {timing}", flush=True)
+                    return {"ok": True, **result}
+                self._handle(route, seed_action)
                 return
             if route != "/v1/ensure":
                 self._send(404, {"ok": False, "error": f"unknown route {route}"})

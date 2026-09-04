@@ -476,8 +476,36 @@ def newly_loaded(current: frozenset[str], previous: frozenset[str]) -> frozenset
 MAX_ARTIFACTS_PER_MODEL = 4
 
 
+def pin_path(store, digest: str):
+    """A pin is a marker file beside the artifact; the manifest itself is never rewritten."""
+    from pathlib import Path
+    return Path(store.root) / f"{digest}.pin"
+
+
+def is_pinned(store, obj) -> bool:
+    try:
+        return pin_path(store, obj.digest).exists()
+    except Exception:
+        return False
+
+
+def pin_artifact(store, digest: str, note: str = "") -> None:
+    """REQ-113: a standing prefix (a seeded harness head) must survive capture churn."""
+    pin_path(store, digest).write_text(note or "pinned\n")
+
+
+def unpin_artifact(store, digest: str) -> bool:
+    path = pin_path(store, digest)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def prune_model_artifacts(store, model: str, *, keep: int = MAX_ARTIFACTS_PER_MODEL) -> int:
-    """Drop all but the `keep` most recent attachments for one model. Returns how many went.
+    """Drop all but the `keep` most recent UNPINNED attachments for one model.
+
+    Returns how many went. Pinned artifacts (REQ-113) are outside the count entirely.
 
     Called after a successful admit, so the store is bounded at the moment it grows rather
     than by a sweep that may never run.
@@ -486,6 +514,8 @@ def prune_model_artifacts(store, model: str, *, keep: int = MAX_ARTIFACTS_PER_MO
     for obj in store.list_objects():
         manifest = obj.manifest or {}
         if manifest.get("runtime_model") != model:
+            continue
+        if is_pinned(store, obj):           # standing prefixes neither count nor go
             continue
         try:
             held.append((obj.path.stat().st_mtime, obj))
