@@ -4566,3 +4566,30 @@ the body. Generation parameters are deliberately not forwarded.
 **Status.** Proven by retained test (render receives the fields; route forwards
 `reasoning_effort` and not `max_tokens`). Suite green. The end-to-end hit on real traffic
 waits on cfrproxy's deploy and the agent's next conversation; watch armed.
+
+## REQ-111 — one parked slot save froze every model's captures for 5m39s
+
+**Request (2026-09-04, operator):** captures stopped dead at 09:19:47 while an eligible idle
+slot (flash-next slot 1, 7,642 tokens) sat uncaptured; no traceback, daemon still answering HTTP.
+
+**Cause (measured):** kvxd read `/slots` (slot 1 idle), then a request landed on slot 1 inside the
+4 s tick window, then kvxd issued `POST …/slots/1?action=save`. This build defers `SLOT_SAVE` on
+`slot->is_processing()` (`server-context.cpp:2629`) and only re-queues it from
+`callback_on_release` (`:1303`). The tick is single-threaded and the save call carried the
+`_json` default read timeout of 900 s, so the whole loop waited on the parked save — `metrics`
+showed `requests_deferred 1`, kvxd held one ESTABLISHED socket to :9069, the save answered at
+09:25:26 when slot 1 released (5m39s), and every other model's captures stalled with it.
+
+**Fix (`kv_rosetta/daemon/capture.py`):** `SLOT_SAVE_TIMEOUT_S = 60` on the save call (real
+captures of 610 MB..1.4 GB answer in single-digit seconds here); a timeout is classified by
+`_is_timeout` (TimeoutError, `URLError(reason=TimeoutError)`, "timed out"), counted as
+`parked`, logged `capture parked for <model> slot <n>: slot busy…`, and the (model, tokens)
+pair is marked seen so the next tick does not re-park the loop on the same prefix. Ordinary
+refusals keep their REQ-era behaviour (retried, not remembered).
+
+**Retained tests:** `tests/test_capture.py::test_a_parked_save_is_bounded_and_not_retried`
+(save timeout ≤ 60 s and < 900; parked and refused both count; the pair is seen; a second tick
+issues no save), `::test_timeout_classification_covers_urllib_wrapping`. Suite 1732 green.
+
+**Not changed:** the race itself (read `/slots` → save) is inherent to the HTTP seam; the fix
+bounds its cost to 60 s once per prefix instead of one full generation per tick.

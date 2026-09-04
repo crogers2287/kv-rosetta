@@ -145,6 +145,39 @@ class LoopBehaviour(unittest.TestCase):
         loop2_seen = loop._seen
         self.assertEqual(loop2_seen, set())
 
+    def test_a_parked_save_is_bounded_and_not_retried(self):
+        # REQ-111: a save issued in the window between reading /slots and a request landing
+        # on that slot is deferred by llama-server until the slot is released. The tick is
+        # single-threaded, so waiting for it froze every model's captures (5m39s measured).
+        from kv_rosetta.daemon.capture import CaptureLoop, SLOT_SAVE_TIMEOUT_S
+        loop = CaptureLoop("http://swap", "/store")
+        timeouts, saves = [], []
+        def fake(url, payload=None, timeout=900):
+            if url.endswith("/running"):
+                return {"running": [{"model": "a", "state": "ready"}]}
+            if url.endswith("/slots"):
+                return [_slot(0, 50000)]
+            if "action=save" in url:
+                saves.append(url); timeouts.append(timeout)
+                raise TimeoutError("timed out")
+            raise AssertionError(url)
+        loop._json = fake
+        self.assertEqual(loop.tick(), [])
+        self.assertLessEqual(timeouts[0], SLOT_SAVE_TIMEOUT_S)
+        self.assertLess(SLOT_SAVE_TIMEOUT_S, 900)
+        self.assertEqual((loop.refused, loop.parked), (1, 1))
+        self.assertIn(("a", 50000), loop._seen)      # unlike a refusal: not retried
+        loop.tick()
+        self.assertEqual(len(saves), 1, "a parked save must not re-park the loop")
+
+    def test_timeout_classification_covers_urllib_wrapping(self):
+        from urllib.error import URLError
+        from kv_rosetta.daemon.capture import _is_timeout
+        self.assertTrue(_is_timeout(TimeoutError()))
+        self.assertTrue(_is_timeout(URLError(TimeoutError("x"))))
+        self.assertTrue(_is_timeout(RuntimeError("The read operation timed out")))
+        self.assertFalse(_is_timeout(RuntimeError("save refused by runtime")))
+
     def test_nothing_is_ever_sent_to_a_completion_endpoint(self):
         # The property that separates this from the recompute warmer.
         loop = self._loop([{"model": "a", "state": "ready"}], {"a": [_slot(0, 50000)]})

@@ -80,6 +80,22 @@ def require_loaded_only(candidates: list[Candidate], loaded: frozenset[str]) -> 
     return [c for c in candidates if c.model in loaded]
 
 
+# REQ-111: llama-server parks a slot save issued while that slot is generating (SLOT_SAVE on
+# is_processing() -> queue_tasks.defer) and only releases it when the slot is released. The
+# capture tick is single-threaded, so one parked save froze every model's captures for the
+# length of that generation (5m39s measured, bounded only by the 900 s read timeout). A save
+# that has not answered in this long is parked, not slow: 610 MB..1.4 GB captures complete in
+# single-digit seconds on this host.
+SLOT_SAVE_TIMEOUT_S = 60.0
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, TimeoutError) or "timed out" in str(exc).lower()
+
+
 class CaptureLoop:
     """Poll loaded models and preserve warm slots as they settle.
 
@@ -106,6 +122,7 @@ class CaptureLoop:
         self._previous: frozenset[str] = frozenset()
         self.captured = 0
         self.refused = 0
+        self.parked = 0            # REQ-111: saves parked behind a busy slot
         self.restored = 0
         self.restore_refused = 0
         self.admitted = 0
@@ -248,9 +265,18 @@ class CaptureLoop:
             try:
                 saved = self._json(
                     f"{self.swap}/upstream/{cand.model}/slots/{cand.slot_id}?action=save",
-                    {"filename": name})
+                    {"filename": name}, timeout=SLOT_SAVE_TIMEOUT_S)
             except Exception as exc:
                 self.refused += 1
+                if _is_timeout(exc):
+                    # Parked behind a request that landed on the slot after we read /slots.
+                    # The server will still run it on release; we do not wait for it and do
+                    # not re-park the loop on the same prefix (REQ-111).
+                    self.parked += 1
+                    self._seen.add((cand.model, cand.tokens))
+                    self._log(f"capture parked for {cand.model} slot {cand.slot_id}: slot "
+                              f"busy, no answer in {SLOT_SAVE_TIMEOUT_S:.0f}s; not retried")
+                    continue
                 self._log(f"capture refused for {cand.model} slot {cand.slot_id}: "
                           f"{str(exc)[:120]}")
                 continue
