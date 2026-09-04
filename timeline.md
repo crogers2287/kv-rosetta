@@ -4492,3 +4492,32 @@ The cold figure rests on one eviction, verified by residency 2.9% before the run
 **Left alone, on evidence:** checkpoint spacing (checkpoints land at user-turn
 boundaries; REQ-107 correction), KV types and per-slot context (already measured into
 place), cfrproxy `kvx_restore` (enabled in its settings table).
+
+## REQ-109 — 28 aliases were parked with the 27B; the Grant agent 502'd twenty times
+
+**Found by** the harness watch: one request in its window, `27b`, resolved correctly by
+kvxd (REQ-106) to `qwen38-27b-3090-agg` — which is PARKED. cfrproxy's trace: HTTP 502
+"unable to start process: upstream command exited prematurely but successfully" (park-gate).
+Twenty such 502s in three hours, all from the Grant agent (`# SOUL.md - Grant`). The 15:34
+fleet rebuild had moved the alias block (`27b`, `alexandria`, `hermes-v7`, `qwen38-27b`,
+`ds4`, `deepseek-v4-flash`, … 28 names) from flash-next onto the 27B aggregate, then parked
+the aggregate — the same "parked without freeing its names" landmine as flash-next earlier.
+
+**Fix.** Moved all 28 aliases back to `qwen38-flash-next-kvx` (now 35), per the standing
+directive that flash-next is the priority and carries the aliases. The aggregate keeps
+none and stays parked as found.
+
+**Measured after.** llama-swap `/v1/models`: `27b` → Flash-Next. Through cfrproxy: `27b`
+200, `alexandria` 200 (kvx note present, i.e. resolved and searched). `deepseek-v4-flash`
+through cfrproxy goes to the DeepSeek cloud provider, not the fleet — cfrproxy resolves
+that bare name to its `deepseek` provider first; the haxor profiles send
+`deepseek/deepseek-v4-flash` explicitly, so this is intended routing, left alone.
+
+**Two llama-swap facts learned the hard way, for the next person:**
+1. Any write to `config.yaml` is a FULL fleet restart (every model unloads). Two writes in
+   a row cost ~3.5 min of downtime each. Batch config edits.
+2. After that restart, llama-swap does not reload models by itself — each comes back only
+   on its next request. A settle loop that only polls `/running` never sees them return.
+
+Fleet now: flash-next (3090s, 35 aliases), ornith A (ROCm0), tiel (ROCm1); ornith-B, the 27B
+aggregate and k2-horizon parked as found. kvxd is `kvxd.service`, active.
