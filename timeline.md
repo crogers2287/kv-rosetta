@@ -4687,3 +4687,60 @@ body; expected cost is one 67k prefill (~80 s of one idle W6800 slot) per harnes
 **Answer to cfrproxy-09:** 1 built (seed + pin; retire kvwarm), 2 unnecessary given LCP +
 user-turn checkpoint (seed appends the turn), 3 built (`dry_run`). After the billing-header
 strip, seed once per harness version; the old artifacts age out.
+
+## REQ-114 — abort a restore whose caller left; a live turn pre-empts a background seed
+
+**Request (2026-09-04 22:04, cfrproxy-09):** on ornith a 27,655-token restore took 85.61 s
+(render 0.02, scan 0.22, ensure 85.8 = runtime_restore 5.55 / reuse_probe 9.85 /
+**pristine_restore 70.19**) while slot 1 was busy with a queued 92,671-token seed prefill (122 s).
+cfrproxy's 15 s probe expired, the hook went cold, and kvxd logged "caller hung up before the
+verdict (85.61s): restored" — the restore finished for nobody. Asks: (a) abort mid-ensure when
+the caller is gone; (b) a live restore should beat a background seed on the same runtime.
+
+**Cause:** the pristine restore is a slot action queued behind the seed's in-flight prefill on the
+same context; it only ran between the seed's decode batches, so 70 s of its 70.19 s was waiting on
+the seed, not restoring. The reuse probe (a 1-token `/completion`) had already verified reuse.
+
+**Built.**
+- **Caller-gone (REQ-114a):** the HTTP handler polls its own client socket
+  (`_caller_gone`: non-blocking `select` + `MSG_PEEK`) and passes a `cancelled` callable into
+  `restore_for_prompt`/`ensure`/`AdmittedPath.restore`. Polled between phases: gone **before** the
+  reuse probe → refuse, restore left unverified, nothing probed; gone **after** the probe → keep
+  the verified prefix (reuse is already proven) and **skip the pristine restore** — the slot holds
+  the prefix plus the probe's one token, which the next request's common prefix truncates. The
+  70 s is never spent for an absent caller.
+- **Seed yields to a live turn (REQ-114b):** `serve` registers each running seed in `_seeds[model]`
+  with an `abort`. A `restore-for-prompt` on a runtime with a seed in flight drops the seed's
+  socket; llama-server polls `is_connection_closed` and cancels the prefill (the seed returns
+  `yielded`). The restore waits up to `SEED_YIELD_WAIT_S = 5` for the slot, else answers
+  `busy: seeding` so the router goes elsewhere. `serve` also allows one seed per runtime
+  (a second is refused).
+- Seed's prefill now goes through a new `LlamaCppHTTPAdapter.prefill` on a connection the adapter
+  can `abort_prefill` (socket shutdown).
+
+**Measured live (flash-next, 22:16):** seed A 7.35 s; big seed B backgrounded, live restore for A
+3 s later → seed B returned `yielded` (connection dropped), restore answered `busy: seeding … did
+not yield in 5s` (slots wait 5.09 s) and fell to native prefill. Caller-gone: a restore with a
+0.4 s client timeout logged `refused: caller gone before the reuse probe; restore left
+unverified` and probed nothing.
+
+**Known limitation (recorded, not chased):** after forcing the seed to yield, the slot did not
+free inside the 5 s window, so the live turn did not itself reuse the freed slot — it fell to
+native prefill (safe). The yield frees the runtime for the *next* request; inheriting the freed
+slot in the same call would need a longer/adaptive wait. Flagged for cfrproxy-09.
+
+**Retained tests:** `tests/test_admitted_path.py::CancelledRestoreTest` (gone before → no probe,
+`aborted_before=reuse_probe`; gone after → ok, one restore call, no erase, pristine skipped);
+`tests/test_seed.py::SeedYieldTests` (live restore aborts the seed and proceeds; a seed that
+won't yield → `busy: seeding` fast, no ensure; second seed refused) and `::CallerGoneTest`
+(open idle socket not gone; closed peer gone). Suite green.
+
+**Restart:** kvxd pid 2842115 → 1550812, health OK, loop ticking. Test artifacts, pins and slots
+cleaned up.
+
+**Answer to cfrproxy-09:** both built. (a) done — a caller gone after the probe costs the probe
+(~10 s at your sizes) not the 70 s pristine restore; gone before costs nothing. (b) the seed
+yields AND the restore refuses fast — you get both; hold your 15 s and expect either a restore or
+a prompt `busy: seeding` verdict within ~5 s. Your own moves (cap heads at 60k, skip fork
+sub-agent heads, one background seed at a time) are the right complements; kvxd also enforces one
+seed per runtime now.
