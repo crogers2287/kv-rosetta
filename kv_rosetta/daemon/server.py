@@ -75,6 +75,10 @@ RECENT_RESTORE_S = 30.0
 # REQ-113: a seed whose rendered prompt is already covered by a held artifact, bar the
 # one-token user turn and assistant header it ends in, is not seeded again.
 SEED_TAIL_SLACK = 32
+# REQ-114: a live restore pre-empts a background seed on the same runtime. The seed's
+# connection is dropped (llama-server cancels the prefill) and the restore waits this long
+# for the slot to come free before answering "busy: seeding" so the router can go elsewhere.
+SEED_YIELD_WAIT_S = 5.0
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -237,7 +241,8 @@ class Sidecar:
                 return obj
         return None
 
-    def ensure(self, fingerprint: str, model: str, slot: int = 0) -> dict[str, Any]:
+    def ensure(self, fingerprint: str, model: str, slot: int = 0,
+               cancelled=None) -> dict[str, Any]:
         """Restore a prefix into a loaded model, or explain why the caller should prefill."""
         if not isinstance(fingerprint, str) or len(fingerprint) != 64 or \
                 any(c not in "0123456789abcdef" for c in fingerprint):
@@ -282,7 +287,7 @@ class Sidecar:
                 raise Fallback(f"artifact {found.digest[:12]} cannot be restored into "
                                f"{model!r}: {'; '.join(problems)}")
         report = AdmittedPath(adapter, self.store()).restore(
-            found.digest, model=model, token_ids=token_ids, slot=slot)
+            found.digest, model=model, token_ids=token_ids, slot=slot, cancelled=cancelled)
         if not report.ok:
             raise Fallback(f"restore refused: {report.reason}")
         return {"restored": True, "digest": found.digest, "cache_n": report.cache_n,
@@ -294,7 +299,8 @@ class Sidecar:
     def restore_for_prompt(self, model: str, messages: list[dict[str, Any]],
                            tools: list[dict[str, Any]] | None = None, *,
                            template_fields: dict[str, Any] | None = None,
-                           adapter: Any | None = None, dry_run: bool = False) -> dict[str, Any]:
+                           adapter: Any | None = None, dry_run: bool = False,
+                           cancelled=None) -> dict[str, Any]:
         """Put the attachment that best matches an incoming prompt into a slot, now.
 
         `dry_run` (REQ-113) stops after the scan: render, tokenize, match, answer
@@ -380,6 +386,31 @@ class Sidecar:
                     "prompt_tokens": len(ids), "model": model, "requested": requested,
                     "stages": stages, "seconds": round(time.time() - started, 3)}
 
+        # A background seed on this runtime yields to a live turn (REQ-114).
+        seeding = getattr(self, "_seeds", {}).get(model)
+        if seeding is not None:
+            seeding["yielded"] = True
+            try:
+                seeding["abort"]()
+            except Exception:
+                pass
+            deadline = time.time() + SEED_YIELD_WAIT_S
+            while True:
+                try:
+                    slots = adapter._get("/slots")
+                except Exception as exc:
+                    return {"restored": False, "reason": f"could not read slots: {exc}"}
+                held = next((s for s in slots if int(s["id"]) == seeding["slot"]), None)
+                if held is None or not held.get("is_processing"):
+                    break
+                if time.time() >= deadline:
+                    stages["slots"] = round(time.time() - mark, 3)
+                    return {"restored": False, "busy": "seeding", "stages": stages,
+                            "reason": f"busy: seeding slot {seeding['slot']} "
+                                      f"({seeding['tokens']:,} tokens) did not yield in "
+                                      f"{SEED_YIELD_WAIT_S:.0f}s"}
+                time.sleep(0.25)
+            stages["yield"] = round(time.time() - mark, 3); mark = time.time()
         try:
             slots = adapter._get("/slots")
         except Exception as exc:
@@ -414,8 +445,11 @@ class Sidecar:
         slot = int(min(pool, key=lambda s: (memo.get((model, int(s["id"])), 0.0),
                                             int(s["id"])))["id"])
 
+        if cancelled is not None and cancelled():
+            return {"restored": False, "reason": "caller gone before the restore", "slot": slot,
+                    "prefix": fingerprint[:12], "stages": stages}
         try:
-            result = self.ensure(fingerprint, model, slot)
+            result = self.ensure(fingerprint, model, slot, cancelled=cancelled)
         except Fallback as exc:
             stages["ensure"] = round(time.time() - mark, 3)
             return {"restored": False, "reason": f"refused: {exc}", "slot": slot,
@@ -508,11 +542,27 @@ class Sidecar:
                                 **(template_fields or {})}
         if tools:
             body["tools"] = tools
+        seeds = getattr(self, "_seeds", None)
+        if seeds is None:
+            seeds = self._seeds = {}
+        if model in seeds:
+            return {"seeded": False, "reason": f"a seed is already running on {model!r} "
+                                               f"(slot {seeds[model]['slot']})", "stages": stages}
+        prefill = getattr(adapter, "prefill", None) or \
+            (lambda b: adapter._post("/v1/chat/completions", b))
+        entry = {"slot": slot, "tokens": need, "started": time.time(), "yielded": False,
+                 "abort": getattr(adapter, "abort_prefill", lambda: False)}
+        seeds[model] = entry
         try:
-            adapter._post("/v1/chat/completions", body)
+            prefill(body)
         except Exception as exc:
+            if entry["yielded"]:
+                return {"seeded": False, "yielded": True, "slot": slot, "stages": stages,
+                        "reason": "yielded to a live restore-for-prompt on this runtime"}
             return {"seeded": False, "reason": f"prefill failed: {str(exc)[:200]}",
                     "slot": slot, "stages": stages}
+        finally:
+            seeds.pop(model, None)
         stages["prefill"] = round(time.time() - mark, 3); mark = time.time()
 
         # The slot must hold what was rendered; n_prompt_tokens is the server's own count.
@@ -575,6 +625,18 @@ def _make_handler(sidecar: Sidecar):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _caller_gone(self) -> bool:
+            """True once the client has closed its side (REQ-114). Non-blocking."""
+            import select
+            import socket as _socket
+            try:
+                readable, _, _ = select.select([self.connection], [], [], 0)
+                if not readable:
+                    return False
+                return self.connection.recv(1, _socket.MSG_PEEK) == b""
+            except (OSError, ValueError):
+                return True
 
         def _body(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or 0)
@@ -650,7 +712,8 @@ def _make_handler(sidecar: Sidecar):
                         list(body.get("messages") or []),
                         list(body.get("tools") or []) or None,
                         template_fields=template_fields or None,
-                        dry_run=bool(body.get("dry_run")))
+                        dry_run=bool(body.get("dry_run")),
+                        cancelled=self._caller_gone)
                     if result.get("restored"):
                         with sidecar._lock:
                             sidecar.stats.restores_served += 1
@@ -694,7 +757,9 @@ def _make_handler(sidecar: Sidecar):
                                       (result.get("stages") or {}).items())
                     verdict = (f"seeded {result.get('tokens'):,} tokens into slot "
                                f"{result.get('slot')} -> {result.get('admitted')}"
-                               if result.get("seeded") else f"not seeded: {result.get('reason')}")
+                               if result.get("seeded") else
+                               f"{'yielded' if result.get('yielded') else 'not seeded'}: "
+                               f"{result.get('reason')}")
                     print(f"[seed] {body.get('model')}: {verdict} | "
                           f"{result.get('seconds', 0):.2f}s {timing}", flush=True)
                     return {"ok": True, **result}

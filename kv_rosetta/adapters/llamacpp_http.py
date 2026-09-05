@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import os
 import time
 import urllib.error
@@ -96,6 +97,44 @@ class LlamaCppHTTPAdapter(Adapter):
                 return json.loads(r.read())
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             raise AdapterError(f"POST {path} failed: {exc}") from exc
+
+    def prefill(self, body: dict[str, Any]) -> Any:
+        """A chat completion whose connection this adapter can drop (REQ-114).
+
+        llama-server polls `is_connection_closed` while a task runs and cancels it when
+        the client is gone, so shutting the socket is how a background seed yields.
+        """
+        import http.client
+        import urllib.parse
+        parts = urllib.parse.urlsplit(self.base_url)
+        conn = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=_TIMEOUT)
+        self._prefill_conn = conn
+        try:
+            conn.request("POST", parts.path.rstrip("/") + "/v1/chat/completions",
+                         body=json.dumps(body).encode(),
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status >= 400:
+                raise AdapterError(f"POST /v1/chat/completions failed: {resp.status} "
+                                   f"{data[:200]!r}")
+            return json.loads(data)
+        except (OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
+            raise AdapterError(f"POST /v1/chat/completions failed: {exc}") from exc
+        finally:
+            self._prefill_conn = None
+            conn.close()
+
+    def abort_prefill(self) -> bool:
+        conn = getattr(self, "_prefill_conn", None)
+        sock = getattr(conn, "sock", None)
+        if sock is None:
+            return False
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        return True
 
     def props(self, refresh: bool = False) -> dict[str, Any]:
         if self._props is None or refresh:

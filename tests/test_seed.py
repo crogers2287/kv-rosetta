@@ -175,3 +175,122 @@ class ProbeTests(SidecarTestCase):
         miss = sidecar.restore_for_prompt("model-a", MSGS, dry_run=True,
                                           adapter=StubAdapter([], ids=list(range(9, 30))))
         self.assertEqual(miss["would_restore"], False)
+
+
+class YieldingSeedAdapter(SeedAdapter):
+    """A prefill that blocks until aborted, marking its slot busy meanwhile."""
+
+    def __init__(self, slots, ids, *, abortable=True):
+        super().__init__(slots, ids)
+        import threading
+        self.blocked = threading.Event()
+        self.started = threading.Event()
+        self.abortable = abortable
+        self.aborted = False
+
+    def prefill(self, body):
+        self.posts.append(("/v1/chat/completions", body))
+        slot = next(s for s in self.slots if s["id"] == body["id_slot"])
+        slot["is_processing"] = True
+        self.started.set()
+        self.blocked.wait(10)
+        if self.aborted:
+            slot["is_processing"] = False
+            raise RuntimeError("connection shut down")
+        slot["is_processing"] = False
+        slot["n_prompt_tokens"] = len(self.ids)
+        return {"choices": []}
+
+    def abort_prefill(self):
+        if not self.abortable:
+            return False
+        self.aborted = True
+        self.blocked.set()
+        return True
+
+
+class SeedYieldTests(SidecarTestCase):
+    """REQ-114: a live turn always beats a background seed on the same runtime."""
+
+    ids = list(range(1, 3001))
+
+    def _sidecar(self, objs):
+        sidecar, _ = self.build(loaded=("model-a",))
+        sidecar.store = lambda: StubStore(list(objs))
+        sidecar.admitter = lambda model, name, saved, *, pin=False: "x"
+        return sidecar
+
+    def test_a_live_restore_aborts_the_seed_and_proceeds(self):
+        import threading
+        held = artifact("model-a", self.ids[:2000], "d" * 64)
+        sidecar = self._sidecar([held])
+        slots = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0},
+                 {"id": 1, "is_processing": False, "n_prompt_tokens": 0}]
+        adapter = YieldingSeedAdapter(slots, self.ids)
+        seed_out = {}
+        seed_msgs = [{"role": "system", "content": "a different, unheld head"}]
+        seeder = threading.Thread(target=lambda: seed_out.update(
+            sidecar.seed("model-a", seed_msgs, adapter=adapter)))
+        seeder.start()
+        self.assertTrue(adapter.started.wait(5), "seed never began its prefill")
+        with mock.patch.object(sidecar, "ensure", return_value={}) as ensure:
+            out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
+        seeder.join(5)
+        self.assertTrue(adapter.aborted, "the seed's connection must be dropped")
+        self.assertEqual((seed_out.get("seeded"), seed_out.get("yielded")), (False, True))
+        self.assertTrue(out["restored"], out)
+        self.assertIn("yield", out["stages"])
+        ensure.assert_called_once()
+        self.assertNotIn("model-a", sidecar._seeds)
+
+    def test_a_seed_that_will_not_yield_makes_the_restore_answer_busy_fast(self):
+        import threading
+        from kv_rosetta.daemon import server as module
+        held = artifact("model-a", self.ids[:2000], "d" * 64)
+        sidecar = self._sidecar([held])
+        slots = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}]
+        adapter = YieldingSeedAdapter(slots, self.ids, abortable=False)
+        seeder = threading.Thread(target=lambda: sidecar.seed(
+            "model-a", [{"role": "system", "content": "unheld"}], adapter=adapter))
+        seeder.start()
+        self.assertTrue(adapter.started.wait(5))
+        with mock.patch.object(module, "SEED_YIELD_WAIT_S", 0.3), \
+                mock.patch.object(sidecar, "ensure") as ensure:
+            out = sidecar.restore_for_prompt("model-a", MSGS, adapter=adapter)
+        adapter.blocked.set(); seeder.join(5)
+        self.assertEqual((out["restored"], out["busy"]), (False, "seeding"))
+        self.assertIn("did not yield", out["reason"])
+        ensure.assert_not_called()
+
+    def test_a_second_seed_on_the_same_runtime_is_refused_while_one_runs(self):
+        import threading
+        sidecar = self._sidecar([])
+        slots = [{"id": 0, "is_processing": False, "n_prompt_tokens": 0},
+                 {"id": 1, "is_processing": False, "n_prompt_tokens": 0}]
+        adapter = YieldingSeedAdapter(slots, self.ids)
+        seeder = threading.Thread(target=lambda: sidecar.seed(
+            "model-a", [{"role": "system", "content": "one"}], adapter=adapter))
+        seeder.start(); self.assertTrue(adapter.started.wait(5))
+        out = sidecar.seed("model-a", [{"role": "system", "content": "two"}],
+                           adapter=SeedAdapter(slots, self.ids))
+        adapter.blocked.set(); seeder.join(5)
+        self.assertFalse(out["seeded"]); self.assertIn("already running", out["reason"])
+
+
+class CallerGoneTest(unittest.TestCase):
+    def _handler(self, conn):
+        from kv_rosetta.daemon.server import _make_handler
+        Handler = _make_handler(SimpleNamespace(_lock=mock.MagicMock(), stats=SimpleNamespace()))
+        h = Handler.__new__(Handler); h.connection = conn
+        return h
+
+    def test_an_open_idle_connection_is_not_gone(self):
+        import socket
+        a, b = socket.socketpair(); self.addCleanup(a.close); self.addCleanup(b.close)
+        self.assertFalse(self._handler(a)._caller_gone())
+
+    def test_a_closed_peer_is_gone(self):
+        import socket
+        a, b = socket.socketpair(); self.addCleanup(a.close)
+        b.close()
+        self.assertTrue(self._handler(a)._caller_gone())

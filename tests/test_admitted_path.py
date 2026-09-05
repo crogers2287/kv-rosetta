@@ -557,3 +557,31 @@ class LongTailRestoreTest(AdmittedPathTest):
         report = path.restore(obj.digest, model="", token_ids=tokens)
         self.assertFalse(report.ok)
         self.assertIn("tail contract violated", report.reason)
+
+
+class CancelledRestoreTest(AdmittedPathTest):
+    """REQ-114: a caller that hung up gets no more work done on its behalf."""
+
+    def test_gone_before_the_probe_refuses_and_probes_nothing(self):
+        obj = self.admitted()
+        path, adapter = self.path_for()
+        report = path.restore(obj.digest, model="", token_ids=TOKENS, cancelled=lambda: True)
+        self.assertFalse(report.ok)
+        self.assertIn("caller gone", report.reason)
+        self.assertNotIn("/completion", report.calls)
+        self.assertEqual(report.phases.get("aborted_before"), "reuse_probe")
+
+    def test_gone_after_the_probe_keeps_the_verified_prefix_and_skips_the_pristine_restore(self):
+        obj = self.admitted()
+        path, adapter = self.path_for()
+        polls = []
+        def gone():                      # first poll (before probe) no, second (before pristine) yes
+            polls.append(1); return len(polls) >= 2
+        report = path.restore(obj.digest, model="", token_ids=TOKENS, cancelled=gone)
+        self.assertTrue(report.ok, report.reason)          # reuse WAS verified
+        self.assertEqual(report.cache_n, 3)
+        self.assertIn("/completion", report.calls)
+        self.assertEqual(report.calls.count("/slots/0?action=restore"), 1,
+                         "no second (pristine) restore after the caller left")
+        self.assertNotIn("/slots/0?action=erase", report.calls)
+        self.assertEqual(report.phases.get("aborted_before"), "pristine_restore")

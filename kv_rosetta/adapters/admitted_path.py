@@ -223,8 +223,15 @@ class AdmittedPath:
     # -- restore (on the request path) ------------------------------------------------
 
     def restore(self, digest: str, *, model: str, token_ids: list[int],
-                slot: int = 0) -> AdmittedRestoreReport:
-        """Resolve an admitted object and restore it in place. No payload copy or read."""
+                slot: int = 0, cancelled=None) -> AdmittedRestoreReport:
+        """Resolve an admitted object and restore it in place. No payload copy or read.
+
+        `cancelled` (REQ-114) is polled between phases: a caller that has hung up gets no
+        more work done on its behalf. Before the probe the restore is unverified and is
+        refused. After the probe reuse IS verified, so the pristine restore -- 70 s live
+        while a seed prefilled beside it -- is skipped: the slot keeps the verified prefix
+        plus the probe's one token, which the next request's common prefix truncates.
+        """
         started = time.time()
         phases: dict[str, float] = {}
         reads = RequestPathReads()
@@ -300,6 +307,10 @@ class AdmittedPath:
             return refuse("restore metadata does not match the admitted state: "
                           + "; ".join(differing))
 
+        if cancelled is not None and cancelled():
+            phases["aborted_before"] = "reuse_probe"
+            return refuse("caller gone before the reuse probe; restore left unverified")
+
         mark = time.time()
         calls.append("/completion")
         probe = self.adapter._post("/completion", {
@@ -320,6 +331,15 @@ class AdmittedPath:
             self._erase(slot, calls)
             return refuse(f"tail contract violated: cache_n={cache_n} prompt_n={prompt_n} "
                           f"uncovered={uncovered} allowance={allowance}")
+
+        if cancelled is not None and cancelled():
+            phases["pristine_restore"] = 0.0
+            phases["aborted_before"] = "pristine_restore"
+            return AdmittedRestoreReport(
+                ok=True, digest=digest, cache_n=cache_n, prompt_n=prompt_n,
+                reason=f"verified reuse: cache_n={cache_n} of {len(token_ids)}; caller gone, "
+                       f"pristine restore skipped (slot holds prefix + 1 probe token)",
+                seconds=time.time() - started, phases=phases, reads=reads, calls=calls)
 
         mark = time.time()
         calls.append(f"/slots/{slot}?action=erase")
